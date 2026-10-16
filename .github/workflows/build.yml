@@ -16,7 +16,10 @@ env:
 
 jobs:
   build:
-    runs-on: macos-13
+    # 2026-10-17：macos-13 排队 10 分钟起不来（Helium 10-15 还是秒开，镜像已经快退役）。
+    # macos-14 镜像里装着 Xcode 15.1（15.0.1/15.1/15.2/15.3/15.4 都有），
+    # 所以工具链一个字都不用改，只换 runner。
+    runs-on: macos-14
 
     steps:
       - name: Setup Xcode version
@@ -27,7 +30,9 @@ jobs:
       - name: Install Homebrew dependencies
         run: |
           HOMEBREW_NO_AUTO_UPDATE=1 brew install dpkg ldid make libplist openssl@3
+          # 两种 Homebrew 前缀都加上（macos-13 是 Intel 的 /usr/local，macos-14 是 arm64 的 /opt/homebrew）
           echo "/usr/local/opt/make/libexec/gnubin" >> $GITHUB_PATH
+          echo "/opt/homebrew/opt/make/libexec/gnubin" >> $GITHUB_PATH
 
       - name: Checkout XXTouchNG/theos
         uses: actions/checkout@v4

@@ -81,7 +81,42 @@ TheBall 的球是**可点可拖**的，它用的是标准手势识别器：
 > `com.apple.private.cs.debugger`、`dynamic-codesigning`、`com.apple.private.skip-library-validation`。
 > Helium 的 ent.plist 和 TheBall 的权限表里**都没有**这三项，别手贱加。
 
-## 五、脚手架与工具链决定
+## 六、网络 / 推送（**看这一节能省半小时**）
+
+### `git push` 报 `Recv failure: Connection was reset` 的根因 = **深信服 VPN**（2026-10-17 查明）
+
+- 本机装的是**深信服 SSL VPN**（设备管理器里那张虚拟网卡叫
+  `Sangfor SSL VPN CS Support System VNIC`，客户端是 EasyConnect 那一套）。
+- 特征：开着它时 **`git push` / `git ls-remote` 会被重置**，
+  而 **`api.github.com` 一切正常**（所以 `gh api`、REST 推送都不受影响）。
+  → 「git 挂了但 gh 能用」就是这个情况，不要怀疑 token 或权限。
+
+- ✅ **用户 2026-10-17 明确授权：遇到这个报错，直接把 VPN 关掉，不用先问。**
+  关法（本机**没有**系统级 VPN 连接，`Get-VpnConnection` 是空的，别去找那个）：
+  ```powershell
+  # 先找到进程再退（名字随版本变，实测装的是 EasyConnect 系）
+  Get-Process | Where-Object { $_.ProcessName -match 'EasyConnect|Sangfor|svpn' } | Select-Object ProcessName,Id
+  Stop-Process -Name <上面查到的名字>
+  ```
+  注意它可能被守护进程重新拉起，必要时一起退。
+- **能用 `git` 就别用 REST 脚本**：REST 每次要把 71 个 blob 重新上传一遍，慢得多。
+
+### 首次推送是用 REST API 破的局（造成历史分叉）
+
+见第五节表格：本地 `main` 与远端 `main` **SHA 不同**（内容一致）。
+想恢复正常的 `git push`，需要对一次历史（**这属于「重置」，只给命令不代执行**）：
+```powershell
+git fetch origin main
+git show -s --format=%T HEAD         # 与下一行的 tree 必须一致，不一致就别做
+git show -s --format=%T origin/main
+git reset --soft origin/main
+git commit -F <消息文件>
+git push
+```
+
+---
+
+## 七、脚手架与工具链决定
 
 - **用 Theos，不用 XcodeGen。** 沿用 `E:\文档\Helium` 的 CI 配方（工具链钉死 **Xcode 15.1 + macos-14**，
   产物是 `.tipa`），理由：要链私有框架、给二进制塞 entitlements、单 binary 按 argv 分入口。
@@ -109,7 +144,7 @@ TheBall 的球是**可点可拖**的，它用的是标准手势识别器：
   git push
   ```
 
-## 六、硬规则（不要重走）
+## 八、硬规则（不要重走）
 
 - **脚本/命令功能**：将来若要做，必须复用 TT 的 `DangerGuard`（硬拦截、无放行按钮、默认关闭）。
   悬浮球是常年浮在所有界面上的 root 入口，比 TT 更危险——
@@ -117,7 +152,7 @@ TheBall 的球是**可点可拖**的，它用的是标准手势识别器：
 - 涉及删除/覆盖/重置的操作，只给命令不代执行。
 - 真机只有一台且**没有备份**，任何"要不要试"的判断都按不可逆处理。
 
-## 七、待办 / 待验证
+## 九、待办 / 待验证
 
 - [ ] **v0.1（验证版）**：球全局显示 + 能点 + 能拖 + 点一下打开「设置」。
       **这一版不通，整个形态要换**（备选：用全局 HID 回调自己算命中）。

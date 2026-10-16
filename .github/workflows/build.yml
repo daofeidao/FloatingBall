@@ -1,0 +1,134 @@
+name: Build FloatingBall
+
+on:
+  push:
+    branches:
+      - "**"
+    tags:
+      - "v*"
+  pull_request:
+  workflow_dispatch:
+
+env:
+  THEOS: ''
+  XCODE_VERSION: '15.1'
+  logT: ''
+
+jobs:
+  build:
+    runs-on: macos-13
+
+    steps:
+      - name: Setup Xcode version
+        uses: maxim-lobanov/setup-xcode@v1
+        with:
+          xcode-version: ${{ env.XCODE_VERSION }}
+
+      - name: Install Homebrew dependencies
+        run: |
+          HOMEBREW_NO_AUTO_UPDATE=1 brew install dpkg ldid make libplist openssl@3
+          echo "/usr/local/opt/make/libexec/gnubin" >> $GITHUB_PATH
+
+      - name: Checkout XXTouchNG/theos
+        uses: actions/checkout@v4
+        with:
+          repository: XXTouchNG/theos
+          ref: 78ee784d8d3238982c9abdc58cd39919263648b1
+          path: theos
+          submodules: recursive
+
+      - name: Add THEOS environment variables
+        run: |
+          rm -rf $GITHUB_WORKSPACE/theos/sdks
+          echo "THEOS=$GITHUB_WORKSPACE/theos" >> $GITHUB_ENV
+
+      - name: Restore additional SDKs
+        id: cached-sdks-restore
+        uses: actions/cache/restore@v4
+        with:
+          path: ${{ env.THEOS }}/sdks
+          key: ${{ runner.os }}-sdks-${{ env.XCODE_VERSION }}
+
+      - if: ${{ steps.cached-sdks-restore.outputs.cache-hit != 'true' }}
+        name: Checkout theos/sdks
+        uses: actions/checkout@v4
+        with:
+          repository: theos/sdks
+          ref: master
+          path: ${{ env.THEOS }}/sdks
+
+      - if: ${{ steps.cached-sdks-restore.outputs.cache-hit != 'true' }}
+        name: Save SDKs
+        id: cached-sdks-save
+        uses: actions/cache/save@v4
+        with:
+          path: ${{ env.THEOS }}/sdks
+          key: ${{ steps.cached-sdks-restore.outputs.cache-primary-key }}
+
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          path: FloatingBall
+          submodules: recursive
+
+      - name: Setup build environment
+        run: |
+          echo "Available SDKs: $(find $THEOS/sdks -name "*.sdk" -maxdepth 1 -print)"
+          sT=$(TZ=UTC-8 date +'%S')
+          echo "logT=$(TZ=UTC-8 date +'%Y-%m-%d %H:%M'):${sT}" >> $GITHUB_ENV
+
+      # 版本号单一源头：Info.plist 是唯一真源，打 tag 时必须和 tag 一致
+      - name: Verify version
+        run: |
+          cd $GITHUB_WORKSPACE/FloatingBall
+          V=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' layout/Applications/FloatingBall.app/Info.plist)
+          echo "Info.plist 版本号: $V"
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+            T="${GITHUB_REF#refs/tags/v}"
+            if [ "$V" != "$T" ]; then
+              echo "版本号不一致：tag=$T  plist=$V"; exit 1
+            fi
+            echo "版本号与 tag 一致"
+          fi
+
+      - name: Make IPA
+        run: |
+          cd $GITHUB_WORKSPACE/FloatingBall
+          ./ipabuild.sh
+
+      # 硬闸：确认特权 entitlements 真的进了包。少了这个，装到手机上就是个普通 App。
+      - name: Verify entitlements
+        run: |
+          cd $GITHUB_WORKSPACE/FloatingBall
+          rm -rf /tmp/verify && mkdir -p /tmp/verify && cd /tmp/verify
+          unzip -q "$GITHUB_WORKSPACE/FloatingBall/build/FloatingBall.tipa"
+          E=$(ldid -e Payload/FloatingBall.app/FloatingBall)
+          for k in "assistivetouch.daemon" "accessibility-window-hosting" "platform-application" "no-sandbox" "persona-mgmt"; do
+            echo "$E" | grep -q "$k" || { echo "缺 entitlement: $k"; exit 1; }
+          done
+          # PPL 禁项，加了在 iOS 15 + A12 以上必崩
+          for k in "cs.debugger" "dynamic-codesigning" "skip-library-validation"; do
+            if echo "$E" | grep -q "$k"; then echo "混进了 PPL 禁项: $k"; exit 1; fi
+          done
+          echo "entitlements 自检通过"
+
+      - name: Collect symbols
+        run: |
+          cd $GITHUB_WORKSPACE/FloatingBall
+          find .theos/obj -name "*.dSYM" -print | zip -r build/FloatingBall_symbols.zip -@ || true
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: FloatingBall.tipa
+          path: ${{ github.workspace }}/FloatingBall/build/FloatingBall.tipa
+
+      - name: Upload release
+        uses: softprops/action-gh-release@v1
+        if: startsWith(github.ref, 'refs/tags/v')
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          body: build time ${{ env.logT }}
+          generate_release_notes: true
+          files: |
+            ${{ github.workspace }}/FloatingBall/build/FloatingBall.tipa

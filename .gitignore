@@ -1,0 +1,10 @@
+# 构建产物
+.theos/
+build/
+packages/
+obj/
+*.o
+*.d
+
+# 参考材料（TheBall 的 IPA 与分析报告，不提交）
+ref/

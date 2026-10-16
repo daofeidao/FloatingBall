@@ -1,0 +1,30 @@
+#if __has_include(<AvailabilityVersions.h>)
+    #import <AvailabilityVersions.h>
+#endif
+
+#ifdef __OBJC__
+    #if __has_include(<TargetConditionals.h>)
+        #import <TargetConditionals.h>
+    #endif
+
+    #import <Foundation/Foundation.h>
+    #import "src/helpers/private_headers/NSUserDefaults+Private.h"
+    #import <UIKit/UIKit.h>
+    #import <os/log.h>
+#endif
+
+// App(uid 501) 和 HUD(root) 共享的同一份偏好文件。
+// 两边都直接读写这个文件，靠 Darwin 通知做「改了就刷新」。
+#define USER_DEFAULTS_PATH @"/var/mobile/Library/Preferences/com.daofeidao.floatingball.plist"
+
+// HUD -> APP: 悬浮球进程已经起来了
+#define NOTIFY_LAUNCHED_HUD "com.daofeidao.notification.hud.launched"
+
+// APP -> HUD: 让悬浮球进程退出
+#define NOTIFY_DISMISSAL_HUD "com.daofeidao.notification.hud.dismissal"
+
+// APP -> HUD: 设置变了，重新读一遍
+#define NOTIFY_RELOAD_HUD "com.daofeidao.notification.hud.reload"
+
+// HUD 内部用：请求重建球的视图（尺寸/外观变化）
+#define NOTIFY_REBUILD_BALL "com.daofeidao.notification.ball.rebuild"

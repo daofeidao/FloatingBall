@@ -94,6 +94,7 @@ jobs:
       - name: Make IPA
         run: |
           cd $GITHUB_WORKSPACE/FloatingBall
+          chmod +x ipabuild.sh
           ./ipabuild.sh
 
       # 硬闸：确认特权 entitlements 真的进了包。少了这个，装到手机上就是个普通 App。

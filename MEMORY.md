@@ -90,7 +90,24 @@ TheBall 的球是**可点可拖**的，它用的是标准手势识别器：
     `ent.plist`、`src/helpers/private_headers/*`（含 `LSApplicationWorkspace.h`、`SBSAccessibilityWindowHostingController.h`、
     `AXEventRepresentation.h`）、`src/helpers/ts/TSEventFetcher.*`、`.github/workflows/*`
 - **IPA 文件名必须纯 ASCII**；版本号单一源头 + 打包时断言（照 TT 的规矩）。
-- 新仓库位置/名字：**E:\文档\悬浮球**（已建），远端待定。
+- 新仓库：**`E:\文档\悬浮球`**，远端 **`https://github.com/daofeidao/FloatingBall`**（public，GPL-3.0）。
+- ⚠️ **首次推送走了 REST API**（`git push` 报 `Recv failure: Connection was reset`，就是 MEMORY 里那条 VPN 老毛病）。
+  结果是**远端 main 与本地 main 分叉了**：
+  | | SHA |
+  |---|---|
+  | 本地 `main`（原始提交） | `1191e49` |
+  | 远端 `main`（API 建的同内容提交） | `21276b6` |
+  远端还多一个 `init` 父提交（空仓库不能建 blob，先用 Contents API 放了个占位）。
+  脚本：`ref/push_rest.py`（不走 git 传输，直接 Git Data API；含「blob sha 必须一致」和「force=false」两道闸门）。
+  **想恢复 `git push`**（github.com 通了之后做）：
+  ```powershell
+  git fetch origin main
+  git show -s --format=%T origin/main    # 与本地 HEAD 的 tree 对比，必须一致
+  git show -s --format=%T HEAD
+  git reset --soft origin/main
+  git commit -F <消息文件>                # 内容不变，只是把父提交接上
+  git push
+  ```
 
 ## 六、硬规则（不要重走）
 

@@ -29,8 +29,8 @@ fi
 if [ ! -d "build" ]; then
     mkdir build
 fi
-if [ -d "build/FloatingBall.tipa" ]; then
-    rm -rf "build/FloatingBall.tipa"
+if [ -e "build/FloatingBall.tipa" ]; then
+    rm -f "build/FloatingBall.tipa"
 fi
 
 if ! type "gmake" >/dev/null; then
@@ -54,11 +54,17 @@ if [ -d "$BUILD_LOCATION" ]; then
     echo "Adding application files"
     cp -r "$APP_BUILD_FILES/Info.plist" "$BUILD_LOCATION/Info.plist"
     # 图标：有才拷（缺了不致命，只是桌面上是默认图标）
-    for f in "$APP_BUILD_FILES"/AppIcon60x60@2x.png "$APP_BUILD_FILES"/AppIcon60x60@3x.png "$APP_BUILD_FILES"/icon.png; do
-        [ -f "$f" ] && cp "$f" "$BUILD_LOCATION/"
+    # ⚠️ 这里必须用 if，不能用 `[ -f x ] && cp`：
+    #    后者在文件不存在时给 `for` 留一个退出码 1，配上 `set -e` 会直接把脚本干掉。
+    for f in "$APP_BUILD_FILES/AppIcon60x60@2x.png" "$APP_BUILD_FILES/AppIcon60x60@3x.png" "$APP_BUILD_FILES/icon.png"; do
+        if [ -f "$f" ]; then
+            cp "$f" "$BUILD_LOCATION/"
+        fi
     done
     for d in en.lproj zh-Hans.lproj; do
-        [ -d "$APP_BUILD_FILES/$d" ] && cp -r "$APP_BUILD_FILES/$d" "$BUILD_LOCATION/"
+        if [ -d "$APP_BUILD_FILES/$d" ]; then
+            cp -r "$APP_BUILD_FILES/$d" "$BUILD_LOCATION/"
+        fi
     done
 
     echo "Creating payload"

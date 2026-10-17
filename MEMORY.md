@@ -1,6 +1,6 @@
 # MEMORY.md — 悬浮球（FloatingBall）
 
-最后更新：2026-10-16
+最后更新：2026-10-17
 
 > 硬规则看 `C:\Users\lion\.config\opencode\AGENTS.md` 与 `E:\文档\默认项目\AGENTS.md`。
 > 这里只记「下次不知道就会做错」的事。
@@ -23,6 +23,8 @@ iPhone 上的**全局悬浮球**（类似系统「辅助触控」小白点，但
 | 打开指定 App、URL scheme 直达（微信扫一扫、淘宝购物车、邮件收件箱…） | 脚本 / 命令执行（**第一版不做**，见第五节） |
 | 三栏 UI：启动 / 自定义快捷应用列表 / 关于 | 桌宠、GIF 背景、多语言、在线更新检查 |
 | 球的外观可调：形状（内置 3 个 + 自定义图片）/ 颜色 / 大小 / 不透明度（2026-10-17 用户新增） | 完整「图标库」（只做内置那几个，见第七节） |
+| 快捷列表（打开 App + 内置动作）、单击/双击/长按各绑一个动作、一键刷新信号（2026-10-17 追加） | 系统开关类里的飞行模式开关（`RadiosPreferences` 那套，单独一轮再说） |
+| | 「系统级返回」「截图」：要靠 HID 注入，见第十节 |
 
 ## 三、参考实现 TheBall 的分析结论（2026-10-16）
 
@@ -220,6 +222,64 @@ App 侧（uid 501）                          HUD 侧（root）
 - ⚠️ 贴图 PNG 放在 `Preferences/` 目录下**是有意的**：cfprefsd 只管 `.plist`，不管 `.png`，
   放这儿不会被它搅和。
 
+### 快捷列表 / 手势绑定 / 一键刷新信号（2026-10-17 追加，0.1.2）
+
+用户原话：快捷程序里要一个「一键刷新信号」；单击/双击/拖动这些手势的备选里
+要有【系统级返回】【截图】【打开主程序界面】【移动悬浮图标】【打开快捷应用列表】等。
+
+**数据模型（App 和 HUD 读同一份 plist）**：
+
+| 键 | 内容 |
+|---|---|
+| `Shortcuts` | 数组 `[{kind: "app"\|"action", id, title}]` |
+| `GestureTap` / `GestureDoubleTap` / `GestureLongPress` | 一条字符串：`app:<bundleID>` 或 `action:<动作名>` |
+| `ShowLabel` | 球上的数字显不显示（原来是内存态，现在持久化） |
+| `PendingTab` | HUD 写、App 读一次就清：`"apps"` / `"launch"` |
+
+- ⚠️ **手势绑定存 key，不存下标**（`app:xxx` / `action:xxx`）。
+  存下标的话，快捷列表一排序/删除，绑定就全错位了。
+- ⚠️ **Swift 里别用元组数组 + `ForEach(id: \.key)`**：keyPath 不能指向元组成员，编译不过。
+  用 `ShortcutStore.GestureSlot` 结构体。
+- ⚠️ **Picker 里不能出现重复 tag**：`ShortcutItem.make(action:)` 的 key 是 `action:refreshSignal`，
+  和内置动作那一组的 tag 一模一样 → 同一份菜单里两个相同 tag，Picker 分不清选中谁。
+  所以手势菜单里**只列 `kind == .app` 的快捷项**。
+- 「打开悬浮球 / 打开快捷列表」走 **写 `PendingTab` + 拉起 App**，**不用 URL scheme**：
+  不用动 Info.plist，而且 App 没在跑时也生效（启动时读一次；
+  在后台跑着时靠 `didBecomeActive` 再读一次，两条路都覆盖）。App 读完立刻清空，免得下次白跳。
+
+**内置动作**（`ShortcutAction`）与实现位置：
+
+| 动作 | 实现 |
+|---|---|
+| `refreshSignal` | `FBRefreshCellularSignal()`（私有 API，见下） |
+| `openMainApp` / `openAppList` | `PendingTab` + `FBOpenApplication(OWN_BUNDLE_ID)` |
+| `moveBall` | HUD 侧移动模式：球加蓝圈高亮、隐藏数字、点一下退出、拖完自动退出（防误触） |
+| `toggleLabel` | 写 `ShowLabel` + `savePrefs`，HUD 和 App 都能改（`reloadSettings` 会重读） |
+| `none` | 不做事 |
+
+- 新文件 `src/hud/FBSystemActions.{h,mm}`：`FBRefreshCellularSignal` / `FBOpenApplication`
+  两个 C 函数，**HUD 和 App 共用一份实现**（同一个二进制、同一份 entitlements，只是 uid 不同）。
+  `BallRootViewController` 的 `openApplication:` 现在只是转调。
+- 三个手势改成执行绑定动作；**轻点仍然照旧计数 +1**（球浮在别人上面时，这是唯一看得见的「点到了」回执）。
+
+**刷新信号（卡贴机）的机制**：
+
+```
+_CTServerConnectionCreate(kCFAllocatorDefault, NULL, NULL)
+_CTServerConnectionResetModem(conn, CFSTR("UserTriggeredReload"))
+```
+
+- 做法来源 `DevelopCubeLab/TrollSIMSwitcher`（**Apache-2.0**，可照做，署名即可）。
+  关键文件 `Controller/CoreTelephonyController.swift`、`Controller/CellularController.swift`、
+  `Controller/AppCapability.swift`。
+- ⚠️ **必须加 entitlement `com.apple.CommCenter.fine-grained = [ "spi" ]`**（已加进 `ent.plist`）：
+  没有它，CommCenter **直接把请求丢掉**，连报错都没有。
+- ⚠️ **这个 API 没有结果**：请求发出去函数就返回了，成没成只能看状态栏信号格。
+  所以日志里只写「已请求重置基带」，**不写成功/失败** —— 这是 API 本身决定的，不是我们没写。
+- ⚠️ 它只是让基带重载重新搜网，**不碰卡贴、不碰 IPCC、不改锁频**。
+  卡贴机真掉信号时通常还要配合：拨 `*` 取激活信号 / 重刷 IPCC / 切卡槽。
+- dlsym 取符号，`Makefile` 只是把公开的 `CoreTelephony` 链上（拿句柄用），私有符号仍然不链接。
+
 ## 八、硬规则（不要重走）
 
 - **脚本/命令功能**：将来若要做，必须复用 TT 的 `DangerGuard`（硬拦截、无放行按钮、默认关闭）。
@@ -236,3 +296,25 @@ App 侧（uid 501）                          HUD 侧（root）
 - [ ] 顺带把 `E:\文档\默认项目\MEMORY.md` 里两条过时信息更正：
       ① 「persona root spawn 是线索未证实」→ Helium/TheBall 都在生产用；
       ② 它指向的 `E:\文档\Helium\MEMORY.md` **并不存在**。
+
+## 十、还没做的两个动作：系统级返回 / 截图（2026-10-17 决定押后）
+
+用户列的手势候选里有这两个，**这一版故意没做**，原因写在这里免得下次当成漏做：
+
+这两个都要**往系统里注入 HID 事件**（`IOHIDEventCreateDigitizerEvent` +
+`IOHIDEventSystemClientDispatchEvent`，全部 dlsym）。风险不在「点了没反应」，而在：
+
+- **返回**要合成一次「从屏幕左缘往右划」的触摸序列（down → 几个 move → up）。
+  序列没配对上的话，屏幕上会**卡住一次触摸**（那个位置的 App 一直当有手指按着），
+  得再点一下或者重启才好。
+- **截图**更麻烦：我们进程里没有 SpringBoard 的类，正常路子（`SBScreenShotter` 那一类）
+  要么得把 SpringBoard 的二进制 dlopen 进来调它的单例（后果不可控），要么得模拟
+  电源+音量键的组合 HID 事件。网上现成配方没有一条是「iOS 15.6.1 上确定可用」的。
+
+本机是 Windows（编译只能靠 CI，一轮 3~4 分钟）、真机只有一台且**没有备份** ——
+拿唯一一台机器去赌一个「配方对不对」的事不划算。
+所以留到单独一轮：先做最小验证（只发一次事件、看日志、看有没有卡触摸），
+验完再决定要不要进菜单。
+
+**已经有的、够用的替代**：球本身不吃球以外区域的触摸（`FBPassThroughView`），
+所以「在球以外的地方左缘右划」本来就是 App 自己的返回手势，能用。

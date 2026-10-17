@@ -39,9 +39,9 @@ struct AboutTab: View {
                 }
 
                 Section(header: Text("触摸自检（点球没反应时看这里）"),
-                        footer: Text("这行字是悬浮球进程写的。链子顺序：① 回调（有没有收到 HID 事件）"
-                                     + "→ ② AX 转换 → ③ 手指路径 / 身份号 → ④ 在不在球上 → ⑤ 接管并喂给球。"
-                                     + "哪一段不涨，断点就在哪。")) {
+                        footer: Text("这行字是悬浮球进程写的。链子顺序：① 回调（有没有收到 HID 事件，两条路分开计："
+                                     + "路A = 老的 BKS 回调，路B = 新的监视客户端）→ ② AX 转换 → ③ 手指路径 / 身份号 "
+                                     + "→ ④ 在不在球上 → ⑤ 接管并喂给球。哪一段不涨，断点就在哪。")) {
                     Text(probeText)
                         .font(.system(.caption, design: .monospaced))
                     Button("刷新") { probeTick += 1 }

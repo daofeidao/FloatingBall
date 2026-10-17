@@ -34,6 +34,19 @@ iPhone 上的**全局悬浮球**：浮在所有 App 之上，轻点/双击/滑�
    （`src/helpers/ts/TSEventFetcher.mm`，来源 Lessica/TrollSpeed）——
    之后 `UITapGestureRecognizer` / `UIPanGestureRecognizer` 这些就正常工作了。
 
+> ⚠️ **第 1 步那个 API 在真机上一条事件都收不到**（0.1.6 的「触摸自检」实测：
+> `回调=0`，按音量键也不涨）。TrollSpeed / Helium / TheBall 全是同一份代码，
+> 而它们的 HUD 只负责「显示」，所以那条路其实**从来没被验证过**。
+>
+> 0.1.7 起改用**两条路一起听**，谁先送来第一条触摸事件谁生效（另一条只计数，防重复喂）：
+>
+> | 路 | 做法 | 依据 |
+> |---|---|---|
+> | A（老） | `BKSHIDEventRegisterEventCallback` | Helium/TheBall 同款；实测收不到 |
+> | B（新） | `IOHIDEventSystemClient` **监视**客户端：`CreateWithType(alloc, 1, NULL)` → `SetMatching(13/4)` → `RegisterEventCallback` → `ScheduleWithRunLoop(主 runloop)` | macPad 的 `misc/ios_hid_touch_probe.m`（按 iOS 16.3.1 反汇编写的）、ZXTouch 的 `pccontrol/Touch.xm` |
+>
+> 「监视」类型（type=1）是**只看不吃**，不会把系统事件截下来。
+
 两个副作用，都是有意的：
 
 - 窗口的 `_ignoresHitTest` 因此改回 `YES`（和 Helium 一样）：**它绝不参与命中测试**，
@@ -243,11 +256,14 @@ _CTServerConnectionResetModem(conn, CFSTR("UserTriggeredReload"))
 | 字段 | 链子上的哪一段 |
 |---|---|
 | `回调=` | ① HID 回调被调了几次（有没有收到事件；一直是 0 = 一条事件都没进来） |
+| `路A=` `路B=` | ① 这些事件分别来自哪条路：A = 老的 `BKSHIDEventRegisterEventCallback`，B = 新的 `IOHIDEventSystemClient` 监视客户端（0.1.7 加） |
+| `匹配服务=` | ① 监视客户端按「digitizer/touchscreen」匹配到几个触摸屏服务（-1 = 没问；0 = 一个都没匹配上，那肯定收不到） |
 | `无rep=` | ② `AXEventRepresentation` 转不出来 |
 | `无路径=` | ③ 没有手指路径（按键 / 只有父事件都走这里） |
 | `id<=0=` | ③ `pathIdentity <= 0`（现在**当 1 用**，不再整条丢掉） |
 | `不在球=` | ④ 按下的位置不在球的矩形里（这行是本来的设计，不是 bug） |
 | `非本触点=` | ④ 不是我们接管的那一下（`isTouchDown` 一直是 0 就会一直掉这里） |
+| `另一条路=` | 两条路都活着时，非活跃那条又送来的触摸（只计数，不喂，防重复） |
 | `接管=` `喂球=` | ⑤ 接管了、喂给球视图了 |
 
 `最后：` 那行写着**最后停在哪一段**，还带上当时的坐标和球的矩形 —— 直接念出来就能定位。
@@ -292,6 +308,28 @@ HUD 侧判断 `NSNumber` 在不在）—— 否则老版本升上来会突然变
 ⚠️ 手机上「设置 → 声音与触感 → 系统触感反馈」关掉的话，我们全部没感觉。
 那是系统总开关，绕不过去，所以 App 界面和交付邮件里都提示了这一条。
 
+### 跟手性：按下去就得立刻震（0.1.7）
+
+0.1.4~0.1.6 的写法有两个地方注定「慢半拍」，用户一按就感觉出来了：
+
+1. **每次都新建一个生成器，然后 `prepare()` + 立刻震。**
+   `prepare()` 是**异步**预热振动引擎的，跟 `impactOccurred()` 挤在同一个 tick 里，
+   那一下引擎还是凉的 —— 表现就是延迟、跟手性差。
+   → 改成**生成器常驻**（Swift 侧 `lightGen`/`mediumGen`/`noticeGen`；HUD 侧
+   `sHapticLight`/`sHapticMedium`/`sHapticNotice`），界面一出现就 `warmUp()`，
+   震完 0.8 秒再补一次 `prepare()` 保温；HUD 侧额外每 2 秒保温一次（球可能挂很久不被碰）。
+2. **SwiftUI 的 `Button` 是「松开」才执行 action。**
+   按键的反馈必须落在**按下去**那一刻，所以加了 `View.hapticOnPress(_:)`：
+   用 `simultaneousGesture(DragGesture(minimumDistance: 0))` 抢到按下瞬间震一下，
+   同时不影响按钮自己的点击（`simultaneousGesture` 两边都收）。
+   已经用在：「试一下震动」「复位位置」「刷新」「换一张图片」。
+
+另外 App 侧原来每震一次都要读盘（`BallSettings.bool` 会读 plist），现在开关值**缓存**在
+`Haptics.cachedEnabled` 里，拨开关时同步更新，界面出现时重读一次。
+
+> 球本身的震动仍然落在「手势被识别」那一刻（单击=松手时）。要让球也「按下去就震」，
+> 得在接管触点那一步震 —— 那是下一版可以改的（会和「单击」的震动叠成两下，需要去重）。
+
 ## 版本
 
 | 版本 | 内容 |
@@ -303,3 +341,4 @@ HUD 侧判断 `NSNumber` 在不在）—— 否则老版本升上来会突然变
 | 0.1.4 | **震动反馈**：点球 / 落位 / 执行动作各给一次震感（三档：轻 / 中 / 通知），「启动」页加开关（默认开）；App 里执行快捷项也有反馈 |
 | 0.1.5 | **全局返回**：往系统注入一次「左缘往右划」（唯一一个能伤到系统的动作，见上面那节）；手势和「内置动作」里都能选 |
 | 0.1.6 | **触摸自检**（「关于」页直接看①~⑤哪一段断了，见上）；修两个可能让球「被点穿」的点：`id<=0` 不再整条丢掉、HID 预热移出回调线程（回调里 dlopen 有卡死回调的风险） |
+| 0.1.7 | **触摸来源换路**：真机自检证明老的 `BKSHIDEventRegisterEventCallback` 一条事件都收不到（`回调=0`），改用 `IOHIDEventSystemClient` 监视客户端（CreateWithType(1) + SetMatching(触摸屏) + RegisterEventCallback + ScheduleWithRunLoop）；两条路分开计数（`路A=` / `路B=`），谁先来谁生效。**同时修震动跟手性**：生成器常驻 + 提前预热，按钮改成「按下去就震」（见「震动反馈」一节） |

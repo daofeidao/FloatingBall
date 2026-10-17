@@ -41,23 +41,42 @@ typedef NS_ENUM(NSInteger, FBHapticKind) {
     FBHapticNotice,    // 「交代出去一件事」（刷新信号）      —— 通知那种两下
 };
 
+static UIImpactFeedbackGenerator *sHapticLight  = nil;
+static UIImpactFeedbackGenerator *sHapticMedium = nil;
+static UINotificationFeedbackGenerator *sHapticNotice = nil;
+
+/// 建好常驻生成器并提前预热（异步的，越早越好）。见 FBHapticPlay 的注释。
+static void FBHapticWarmUp(void)
+{
+    if (!sHapticLight) {
+        sHapticLight  = [[UIImpactFeedbackGenerator alloc] initWithStyle:UIImpactFeedbackStyleLight];
+        sHapticMedium = [[UIImpactFeedbackGenerator alloc] initWithStyle:UIImpactFeedbackStyleMedium];
+        sHapticNotice = [[UINotificationFeedbackGenerator alloc] init];
+    }
+    [sHapticLight prepare];
+    [sHapticMedium prepare];
+    [sHapticNotice prepare];
+}
+
 static void FBHapticPlay(FBHapticKind kind)
 {
-    // ⚠️ 不用单例生成器：两次手势之间可能隔很久，生成器会凉掉。
-    //    每次新建 + prepare 的响应最稳。
+    // ⚠️ 以前是「每次新建生成器 + prepare + 立刻震」—— 临时抱佛脚没用：
+    //    prepare() 是**异步**预热振动引擎的，跟 impactOccurred 挤在同一个 tick 里，
+    //    那一下照样是凉的。用户感觉就是「延迟几百毫秒、跟手性不够」。
+    //    正解：生成器常驻、提前 prepare 好，震完再补一次保温（见 FBHapticWarmUp）。
+    FBHapticWarmUp();
+
     if (kind == FBHapticNotice) {
-        UINotificationFeedbackGenerator *g = [[UINotificationFeedbackGenerator alloc] init];
-        [g prepare];
-        [g notificationOccurred:UINotificationFeedbackTypeSuccess];
-        return;
+        [sHapticNotice notificationOccurred:UINotificationFeedbackTypeSuccess];
+    } else if (kind == FBHapticAction) {
+        [sHapticMedium impactOccurred];
+    } else {
+        [sHapticLight impactOccurred];
     }
 
-    UIImpactFeedbackStyle style = (kind == FBHapticAction)
-        ? UIImpactFeedbackStyleMedium
-        : UIImpactFeedbackStyleLight;
-    UIImpactFeedbackGenerator *g = [[UIImpactFeedbackGenerator alloc] initWithStyle:style];
-    [g prepare];
-    [g impactOccurred];
+    // 震完立刻再预热一次，让引擎保持热的 —— 下一次按下去还是立刻有
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.8 * NSEC_PER_SEC)),
+                   dispatch_get_main_queue(), ^{ FBHapticWarmUp(); });
 }
 
 /// 只有球本身吃触摸，窗口里那圈余量（阴影/宽容区）的触摸对象返回 NO，
@@ -103,6 +122,15 @@ static void FBHapticPlay(FBHapticKind kind)
     NSNumber *on = _prefs[@"HapticsEnabled"];
     if ([on isKindOfClass:[NSNumber class]] && ![on boolValue]) return;
     FBHapticPlay(kind);
+}
+
+/// 定时保温（每 2 秒一次）：球会一直挂在屏幕上、可能隔很久才被点一下，
+/// 引擎一凉就变成「按下去半天才震」。走同一个开关：关掉震动就不保温。
+- (void)warmHaptics
+{
+    NSNumber *on = _prefs[@"HapticsEnabled"];
+    if ([on isKindOfClass:[NSNumber class]] && ![on boolValue]) return;
+    FBHapticWarmUp();
 }
 
 #pragma mark - 设置（和 App 共享 /var/mobile/Library/Preferences 下同一个 plist）
@@ -178,6 +206,16 @@ static void FBHapticPlay(FBHapticKind kind)
 {
     [super viewDidLoad];
     [self loadPrefs];
+
+    // 振动：生成器常驻 + 每 2 秒保温一次，保证「按下去立刻有反馈」。
+    // ⚠️ 以前是每次震的时候才新建生成器 + prepare —— 那一下引擎是凉的，
+    //    用户感觉就是延迟几百毫秒、跟手性不够。
+    FBHapticWarmUp();
+    [NSTimer scheduledTimerWithTimeInterval:2.0
+                                     target:self
+                                   selector:@selector(warmHaptics)
+                                   userInfo:nil
+                                    repeats:YES];
 
     // 数字显示不显示，存在共享设置里（App 那边的「显示/隐藏数字」动作也改这个键）
     NSNumber *showLabel = _prefs[@"ShowLabel"];

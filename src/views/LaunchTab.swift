@@ -57,9 +57,13 @@ struct LaunchTab: View {
                     ))
 
                     // 这按钮走的是同一个开关：关着就不震（不然用户会以为开关坏了）
-                    Button("试一下震动") { Haptics.fire(.action) }
+                    //
+                    // ⚠️ 用 hapticOnPress 而不是在 action 里震：Button 的 action 是**松开**
+                    //    才执行的，按下去那一瞬间没反应，用户就觉得「延迟、跟手性不够」。
+                    //    改成按下去就震 —— 这才是按键该有的手感。
+                    Button("试一下震动") {}.hapticOnPress(.action)
 
-                    Button("刷新") { refresh() }
+                    Button("刷新") { refresh() }.hapticOnPress(.tap)
                 }
 
                 Section(header: Text("图标"),
@@ -89,6 +93,7 @@ struct LaunchTab: View {
                             Button(customImage == nil ? "从相册选一张图片…" : "换一张图片") {
                                 showPicker = true
                             }
+                            .hapticOnPress(.tap)
                         }
                     }
 
@@ -152,8 +157,8 @@ struct LaunchTab: View {
                     Button("复位位置") {
                         BallSettings.resetPosition()
                         BallSettings.notifyReload()
-                        Haptics.fire(.action)
                     }
+                    .hapticOnPress(.action)
                 }
 
                 Section(header: Text("手势"),
@@ -179,7 +184,7 @@ struct LaunchTab: View {
                     }
                 }
 
-                Section(footer: Text("0.1.6：球浮在任何界面之上；轻点 / 双击 / 长按各自绑一个动作（见上面「手势」一栏），拖动一直是移动球。\n点球没反应时，去「关于」页看「触摸自检」那一行。")) {
+                Section(footer: Text("0.1.7：球浮在任何界面之上；轻点 / 双击 / 长按各自绑一个动作（见上面「手势」一栏），拖动一直是移动球。\n点球没反应时，去「关于」页看「触摸自检」那一行。")) {
                     EmptyView()
                 }
             }
@@ -351,10 +356,11 @@ struct LaunchTab: View {
     private func setHaptics(_ want: Bool) {
         hapticsOn = want
         BallSettings.set(want, "HapticsEnabled")
+        Haptics.setEnabled(want)            // 缓存跟着走，别再读盘
         BallSettings.notifyReload()
         // 打开的那一下硬震一次：用户需要立刻感觉到「开了」
         // （关的时候不震 —— 刚关掉还震会显得没生效）
-        if want { Haptics.fire(.action, force: true) }
+        if want { Haptics.warmUp(); Haptics.fire(.action, force: true) }
     }
 
     // MARK: - 读写设置
@@ -364,6 +370,10 @@ struct LaunchTab: View {
         status = enabled ? "运行中" : "未运行"
         tapCount = BallSettings.integer("TapCount", default: 0)
         hapticsOn = BallSettings.bool("HapticsEnabled", default: true)
+
+        // 震动：重读开关缓存 + 提前预热引擎（这样按下去才是立刻有反馈）
+        Haptics.refresh()
+        Haptics.warmUp()
 
         shape = BallRenderer.loadShape()
         color = BallRenderer.loadColor()

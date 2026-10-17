@@ -14,6 +14,7 @@
 #import <mach-o/dyld.h>
 #import <objc/runtime.h>
 #import <unistd.h>
+#import <dlfcn.h>
 
 #import "HUDHelper.h"
 #import "FBLog.h"
@@ -71,19 +72,32 @@ void FBHUDSetBallView(UIView *ballView)
 // 所以这里把每段的计数和「最后停在哪」写一份到 /tmp/FloatingBall.probe，
 // App 的「关于」页会把它读出来显示 —— 用户在手机上不开终端也能把这一行念给我。
 // ⚠️ 只写这一个文件（限速 1 秒 1 次），**绝不碰设置那份 plist**，免得把用户的设置写坏。
+//
+// 0.1.6 真机结果：**回调=0，按音量键也不涨** —— 说明 BKSHIDEventRegisterEventCallback
+// 这条路在 iOS 15.6.1 上一条事件都收不到（同门的 TrollSpeed / Helium / TheBall
+// 都是同一份代码，而它们的 HUD 只用来「显示」，所以这条路从来没被验证过）。
+// 0.1.7 起多了一条有据可查的路（IOHIDEventSystemClient 监视客户端，见下面
+// `_HUDMonitorRouteCallback` 的注释），两条路分别计数，谁生效看 路A= / 路B=。
 // ============================================================================
 #define FB_PROBE_PATH   @"/tmp/FloatingBall.probe"
 
-static int    sProbeCallbacks = 0;   // ① 回调进来了几次
+static int    sProbeCallbacks = 0;   // ① 回调进来了几次（两条路合计）
+static int    sProbeRouteA    = 0;   // ① 其中来自「BKS 回调」那条路的
+static int    sProbeRouteB    = 0;   // ① 其中来自「监视客户端」那条路的
+static int    sProbeMatched   = -1;  // 监视客户端按 13/4 匹配到几个触摸屏服务（-1 = 没问）
 static int    sProbeNoRep     = 0;   // ② rep 转不出来
 static int    sProbeNoPath    = 0;   // ③ 没有手指路径（按键 / 父事件都走这里）
 static int    sProbeZeroID    = 0;   // ③ pathIdentity<=0（当 1 用了）
 static int    sProbeNotOurs   = 0;   // ④ 不是我们接管的那个触点
 static int    sProbeOffBall   = 0;   // ④ 按下不在球上
+static int    sProbeOtherRoute = 0;  // 另一条路又送来的触摸（只记数，不喂，防重复）
 static int    sProbeTakeover  = 0;   // ⑤ 接管了
 static int    sProbeFed       = 0;   // ⑤ 喂给球视图了
 static NSString *sProbeLast   = @"（还没收到过任何 HID 事件）";
 static NSTimeInterval sProbeLastWrite = 0;
+
+/// 活跃的触摸来源：0 = 还没定，1 = 路A（BKS 回调），2 = 路B（监视客户端）
+static int gHIDActiveRoute = 0;
 
 static void FBProbeWrite(BOOL force)
 {
@@ -91,9 +105,11 @@ static void FBProbeWrite(BOOL force)
     if (!force && now - sProbeLastWrite < 1.0) return;
     sProbeLastWrite = now;
     NSString *text = [NSString stringWithFormat:
-        @"回调=%d 无rep=%d 无路径=%d id<=0=%d 不在球=%d 非本触点=%d 接管=%d 喂球=%d\n最后：%@\n",
-        sProbeCallbacks, sProbeNoRep, sProbeNoPath, sProbeZeroID,
-        sProbeOffBall, sProbeNotOurs, sProbeTakeover, sProbeFed, sProbeLast];
+        @"回调=%d（路A=%d 路B=%d 匹配服务=%d） 无rep=%d 无路径=%d id<=0=%d "
+        @"不在球=%d 非本触点=%d 另一条路=%d 接管=%d 喂球=%d\n最后：%@\n",
+        sProbeCallbacks, sProbeRouteA, sProbeRouteB, sProbeMatched,
+        sProbeNoRep, sProbeNoPath, sProbeZeroID,
+        sProbeOffBall, sProbeNotOurs, sProbeOtherRoute, sProbeTakeover, sProbeFed, sProbeLast];
     [text writeToFile:FB_PROBE_PATH atomically:YES encoding:NSUTF8StringEncoding error:NULL];
 }
 
@@ -103,13 +119,16 @@ static void FBProbeNote(NSString *reason)
     FBProbeWrite(NO);
 }
 
-static __used
-void _HUDEventCallback(void *target, void *refcon, IOHIDServiceRef service, IOHIDEventRef event)
+/// 两条路（BKS 回调 / 监视客户端）**共用**的处理函数。
+/// route：1 = BKSHIDEventRegisterEventCallback 那条（0.1.3~0.1.6 用的）；
+///        2 = IOHIDEventSystemClient 监视客户端那条（0.1.7 新加）。
+static void FBHandleHIDEvent(int route, void *target, void *refcon, IOHIDServiceRef service, IOHIDEventRef event)
 {
     static UIApplication *app = [UIApplication sharedApplication];
     sProbeCallbacks++;
+    if (route == 1) sProbeRouteA++; else sProbeRouteB++;
 #if DEBUG
-    os_log_debug(OS_LOG_DEFAULT, "_HUDEventCallback => %{public}@", event);
+    os_log_debug(OS_LOG_DEFAULT, "_HUDEventCallback(route=%d) => %{public}@", route, event);
 #endif
 
     // 顺手把真机的 sender ID 学下来：注入触摸（全局返回）必须用它。
@@ -171,6 +190,18 @@ void _HUDEventCallback(void *target, void *refcon, IOHIDServiceRef service, IOHI
         pointerId = 1;
     }
     pointerId = MIN(MAX(pointerId, 1), 98);   // TSEventFetcher 一共 100 个槽位
+
+    // 两条路可能都活着 —— 同一根手指绝不能被喂两遍（那样手势会错乱）。
+    // 规则：第一条「触摸」事件来自哪条路，哪条就是活跃路；另一条之后只计数。
+    if (gHIDActiveRoute == 0) {
+        gHIDActiveRoute = route;
+        FBProbeNote([NSString stringWithFormat:@"第一条触摸事件来自%@（之后按这条走）",
+                     route == 1 ? @"路A：BKS 回调" : @"路B：监视客户端"]);
+    } else if (gHIDActiveRoute != route) {
+        sProbeOtherRoute++;
+        FBProbeWrite(NO);
+        return;
+    }
 
     BOOL isDown = [rep isTouchDown];
     CGPoint onScreen = [rep location];        // 全局（屏幕）坐标
@@ -251,6 +282,150 @@ void _HUDEventCallback(void *target, void *refcon, IOHIDServiceRef service, IOHI
     });
 }
 
+// ============================================================================
+// 观察触摸的两条路（0.1.7）
+//
+// 路 A：`BKSHIDEventRegisterEventCallback` —— 0.1.3~0.1.6 用的就是它。
+//   真机实测（0.1.6 自检）：**回调=0，按音量键也不涨**，一条事件都收不到。
+//   同门的 TrollSpeed / Helium / TheBall 都是同一份代码，而它们的 HUD 只负责「显示」，
+//   所以这条路其实从来没被验证过 —— 我们照抄了一个没跑通的用法。
+//
+// 路 B：`IOHIDEventSystemClient`「监视」客户端 —— 0.1.7 新加，有据可查：
+//   · macPad 的 misc/ios_hid_touch_probe.m（按 iOS 16.3.1 反汇编写的观察/注入程序）
+//   · ZXTouch 的 pccontrol/Touch.xm（真机在用的触摸自动化）
+//   做法：CreateWithType(alloc, 1 = 监视, NULL) → SetMatching(触摸屏 13/4)
+//        → RegisterEventCallback → ScheduleWithRunLoop(主 runloop)
+//   「监视」类型是只看不吃：它不会拦掉系统事件（这点很重要，见文件开头那段说明）。
+//
+// 两条路的回调签名一模一样（target, refcon, service, event），共用 FBHandleHIDEvent；
+// 谁先送来第一条触摸事件谁就是活跃路，另一条之后只计数不喂（防同一根手指喂两遍）。
+// ============================================================================
+
+static __used
+void _HUDEventCallback(void *target, void *refcon, IOHIDServiceRef service, IOHIDEventRef event)
+{
+    FBHandleHIDEvent(1, target, refcon, service, event);
+}
+
+static __used
+void _HUDMonitorRouteCallback(void *target, void *refcon, IOHIDServiceRef service, IOHIDEventRef event)
+{
+    FBHandleHIDEvent(2, target, refcon, service, event);
+}
+
+typedef CFTypeRef (*FBHIDCreateWithTypeFn)(CFAllocatorRef, uint32_t, CFDictionaryRef);
+typedef CFTypeRef (*FBHIDCreateFn)(CFAllocatorRef);
+typedef void (*FBHIDSetMatchingFn)(CFTypeRef, CFDictionaryRef);
+typedef void (*FBHIDRegisterCallbackFn)(CFTypeRef, void (*)(void *, void *, CFTypeRef, CFTypeRef), void *, void *);
+typedef void (*FBHIDScheduleFn)(CFTypeRef, CFRunLoopRef, CFStringRef);
+typedef CFArrayRef (*FBHIDCopyServicesFn)(CFTypeRef);
+
+static CFTypeRef (*fbCreateClientWithType)(CFAllocatorRef, uint32_t, CFDictionaryRef) = NULL;
+static CFTypeRef (*fbCreateClient)(CFAllocatorRef) = NULL;
+static void (*fbSetMatching)(CFTypeRef, CFDictionaryRef) = NULL;
+static void (*fbRegisterEventCallback)(CFTypeRef, void (*)(void *, void *, CFTypeRef, CFTypeRef), void *, void *) = NULL;
+static void (*fbScheduleWithRunLoop)(CFTypeRef, CFRunLoopRef, CFStringRef) = NULL;
+static CFArrayRef (*fbCopyServices)(CFTypeRef) = NULL;
+
+/// 取符号：先看进程里有没有，再退回单独 dlopen 的 IOKit。
+/// ⚠️ 只在启动时调（回调里绝不做加载）。
+static void *FBHIDSym(const char *name)
+{
+    void *p = dlsym(RTLD_DEFAULT, name);
+    if (p) return p;
+    static void *handle = NULL;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        handle = dlopen("/System/Library/Frameworks/IOKit.framework/IOKit", RTLD_NOW | RTLD_LOCAL);
+    });
+    return handle ? dlsym(handle, name) : NULL;
+}
+
+static void FBLoadObserverSymbols(void)
+{
+    if (fbRegisterEventCallback) return;
+    fbCreateClientWithType  = (FBHIDCreateWithTypeFn)FBHIDSym("IOHIDEventSystemClientCreateWithType");
+    fbCreateClient          = (FBHIDCreateFn)FBHIDSym("IOHIDEventSystemClientCreate");
+    fbSetMatching           = (FBHIDSetMatchingFn)FBHIDSym("IOHIDEventSystemClientSetMatching");
+    fbRegisterEventCallback = (FBHIDRegisterCallbackFn)FBHIDSym("IOHIDEventSystemClientRegisterEventCallback");
+    fbScheduleWithRunLoop   = (FBHIDScheduleFn)FBHIDSym("IOHIDEventSystemClientScheduleWithRunLoop");
+    fbCopyServices          = (FBHIDCopyServicesFn)FBHIDSym("IOHIDEventSystemClientCopyServices");
+}
+
+/// 触摸屏的匹配字典：PrimaryUsagePage 13（digitizer）+ PrimaryUsage 4（touchscreen）。
+/// 只写这两个键，不写 Transport/Built-In —— 那两个键在别的机型上不一定成立，
+/// 少写一点匹配面更大（匹配到几个服务会打进日志和自检里）。
+static NSDictionary *FBTouchMatching(void)
+{
+    return @{ @"PrimaryUsagePage": @13, @"PrimaryUsage": @4 };
+}
+
+/// 路 B：建监视客户端并按触摸屏匹配，挂到主 runloop 上。
+/// 返回客户端（调用方负责留着不释放，故意活到进程结束）。
+static CFTypeRef FBStartHIDMonitor(void)
+{
+    FBLoadObserverSymbols();
+    if (!fbRegisterEventCallback || !fbScheduleWithRunLoop ||
+        (!fbCreateClientWithType && !fbCreateClient)) {
+        FBLog(@"⚠️ 路B（监视客户端）不可用：IOHIDEventSystemClient 那几个符号取不全");
+        return NULL;
+    }
+
+    CFTypeRef client = fbCreateClientWithType ? fbCreateClientWithType(kCFAllocatorDefault, 1, NULL)
+                                              : fbCreateClient(kCFAllocatorDefault);
+    if (!client) {
+        FBLog(@"⚠️ 路B：建监视客户端失败（Create 回了 NULL）");
+        return NULL;
+    }
+
+    if (fbSetMatching) fbSetMatching(client, (__bridge CFDictionaryRef)FBTouchMatching());
+    fbRegisterEventCallback(client, (void (*)(void *, void *, CFTypeRef, CFTypeRef))_HUDMonitorRouteCallback, NULL, NULL);
+    fbScheduleWithRunLoop(client, CFRunLoopGetMain(), kCFRunLoopDefaultMode);
+
+    NSInteger matched = -1;
+    if (fbCopyServices) {
+        CFArrayRef services = fbCopyServices(client);
+        if (services) {
+            matched = (NSInteger)CFArrayGetCount(services);
+            CFRelease(services);
+        }
+    }
+    sProbeMatched = (int)matched;
+
+    FBLog(@"路B（监视客户端）已建：%@ 匹配到 %ld 个触摸屏服务，已挂主 runloop",
+          fbCreateClientWithType ? @"CreateWithType(type=1 监视)" : @"Create（没有 WithType，退回）",
+          (long)matched);
+    return client;
+}
+
+/// 万一 `BKSHIDEventRegisterEventCallback` 返回的真是个「事件系统客户端」，
+/// 那它八成也要「匹配 + 挂 runloop」才会送事件 —— 就顺手替它做掉。
+/// ⚠️ 只在类型确实对得上时才动它：对不上就什么都不做（免得拿野指针去喂 IOKit）。
+static void FBMaybeScheduleBKSRoute(void *client)
+{
+    if (!client || !fbScheduleWithRunLoop || !fbCreateClient) return;
+
+    uintptr_t value = (uintptr_t)client;
+    if (value < 0x100000000ULL) {          // iOS 上正常指针绝不会这么小
+        FBLog(@"路A：BKS 回调返回 %p，看着不像对象，先不碰它", client);
+        return;
+    }
+
+    CFTypeRef probe = fbCreateClient(kCFAllocatorDefault);
+    if (!probe) return;
+    CFTypeID want = CFGetTypeID(probe);
+    CFRelease(probe);
+
+    if (CFGetTypeID((CFTypeRef)client) != want) {
+        FBLog(@"路A：BKS 回调返回 %p，不是事件系统客户端（类型对不上），先不碰它", client);
+        return;
+    }
+
+    if (fbSetMatching) fbSetMatching((CFTypeRef)client, (__bridge CFDictionaryRef)FBTouchMatching());
+    fbScheduleWithRunLoop((CFTypeRef)client, CFRunLoopGetMain(), kCFRunLoopDefaultMode);
+    FBLog(@"路A：BKS 回调返回的**确实是个事件系统客户端**，已替它匹配 + 挂 runloop（说不定就通了）");
+}
+
 #pragma mark -
 
 static NSString *_hudPIDFilePath = nil;
@@ -305,7 +480,18 @@ int main(int argc, char *argv[])
             //    dlopen 绝不能出现在回调里 —— 那是 backboardd 的事件线程，
             //    在那儿做加载有把回调卡死的风险（0.1.5 的教训：球直接穿透、不响应）。
             FBPrepareHID();
-            BKSHIDEventRegisterEventCallback(_HUDEventCallback);
+
+            // 路A：BKS 回调。0.1.3~0.1.6 只有它，真机实测一条事件都收不到
+            //     （0.1.6 自检：回调=0，按音量键也不涨）；先留着继续计数。
+            void *bksClient = BKSHIDEventRegisterEventCallback(_HUDEventCallback);
+            FBLog(@"路A：BKS 回调已注册，返回=%p", bksClient);
+
+            // 路B：IOHIDEventSystemClient 监视客户端（0.1.7 新加，有据可查的那条路）
+            FBStartHIDMonitor();
+
+            // 万一路A 返回的真是个事件系统客户端，就替它匹配 + 挂 runloop
+            FBMaybeScheduleBKSRoute(bksClient);
+
             FBProbeWrite(YES);   // 先落一份「全是 0」的，好区分「回调没来过」和「球进程没起来」
             FBLog(@"触摸自检文件：%@（App 的「关于」页会读它）", FB_PROBE_PATH);
 #endif

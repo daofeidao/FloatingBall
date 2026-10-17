@@ -332,10 +332,13 @@ static BOOL FBLoadHID(void)
     return loaded;
 }
 
+void FBHIDPrepareChildReaders(void);   // 定义在文件后半段（子事件读取器）
+
 void FBPrepareHID(void)
 {
     if (gFBHIDReady) return;
     gFBHIDReady = FBLoadHID();
+    if (gFBHIDReady) FBHIDPrepareChildReaders();
     FBLog(@"HID 预热：%@（学 sender ID、注入触摸都要它，必须在 HID 回调之外做）",
           gFBHIDReady ? @"好" : @"失败 —— 注入那条路不可用");
 }
@@ -379,6 +382,112 @@ int FBHIDDigitizerRangeOf(void *hidEvent)
 int FBHIDDigitizerMaskOf(void *hidEvent)
 {
     return FBHIDIntField(hidEvent, FBHIDFieldDigitizerEventMask);
+}
+
+// ============================================================================
+// 0.1.14：**翻子事件**读手指状态
+//
+// ⚠️ 0.1.11~0.1.13 一直没反应，根子就在这儿：
+//    监听到的 `event` 是**父事件（collection）**，Touch / Range / X / Y 这些字段
+//    全在它的**子事件（每根手指一个）**上。直接对父事件 GetIntegerValue 读出来
+//    永远是 0 —— 于是「有手指=0」→ contactSignal 永不成立 → 一次都不接管。
+//    这跟 0.1.8 那组读数（3 万条事件、接管=0）是同一个病的两个版本。
+//
+// ZXTouch 造触摸时也是「父事件 + 手指子事件」两层（见上面 FBHIDDisplay 那段注释，
+// 以及 FBMakeTouchEvent）：坐标在子事件、归一化 0~1。真机事件过来是同一套结构，
+// 所以这里顺着 IOHIDEventGetChildren 往下找 type=11 的子事件来读。
+// ============================================================================
+
+typedef CFArrayRef (*FBGetChildrenFn)(IOHIDEventRef);
+typedef double (*FBGetFloatValueFn)(IOHIDEventRef, uint32_t);
+
+// 归一化坐标字段（与注入时用的 X/Y 同一对，见 IOHIDEvent.h 里 Digitizer 那组）
+#define FBHIDFieldDigitizerX   0x0b0000
+#define FBHIDFieldDigitizerY   0x0b0001
+
+static FBGetChildrenFn   fbGetChildren   = NULL;
+static FBGetFloatValueFn fbGetFloatValue = NULL;
+
+void FBHIDPrepareChildReaders(void)
+{
+    // 只在启动时调（见 FBPrepareHID 的注释：回调里不许加载）
+    if (fbGetChildren) return;
+    void *handle = dlopen("/System/Library/Frameworks/IOKit.framework/IOKit", RTLD_NOW);
+    fbGetChildren   = (FBGetChildrenFn)FBSymIn(handle, "IOHIDEventGetChildren");
+    fbGetFloatValue = (FBGetFloatValueFn)FBSymIn(handle, "IOHIDEventGetFloatValue");
+    FBLog(@"HID：子事件读取器 %@（children=%d float=%d）",
+          (fbGetChildren && fbGetFloatValue) ? @"可用" : @"不可用",
+          (int)(fbGetChildren != NULL), (int)(fbGetFloatValue != NULL));
+}
+
+/// 从「一个事件」上读手指状态。返回：1 = 读到了（*touch/*range 有效），0 = 这个事件上读不到。
+static int FBHIDReadOne(void *e, int *touch, int *range, double *nx, double *ny)
+{
+    if (!e || !fbGetEventType || fbGetEventType((IOHIDEventRef)e) != FBHIDEventTypeDigitizer) return 0;
+    int t = FBHIDIntField(e, FBHIDFieldDigitizerTouch);
+    int r = FBHIDIntField(e, FBHIDFieldDigitizerRange);
+    if (t < 0 && r < 0) return 0;
+    if (touch) *touch = (t < 0) ? -1 : (t & 1);
+    if (range) *range = (r < 0) ? -1 : (r & 1);
+    if (nx || ny) {
+        double x = fbGetFloatValue ? fbGetFloatValue((IOHIDEventRef)e, FBHIDFieldDigitizerX) : 0;
+        double y = fbGetFloatValue ? fbGetFloatValue((IOHIDEventRef)e, FBHIDFieldDigitizerY) : 0;
+        if (nx) *nx = x;
+        if (ny) *ny = y;
+    }
+    return 1;
+}
+
+int FBHIDReadTouchDeep(void *hidEvent, int *touch, int *range, double *nx, double *ny)
+{
+    if (touch) *touch = -1;
+    if (range) *range = -1;
+    if (nx) *nx = 0;
+    if (ny) *ny = 0;
+    if (!gFBHIDReady || !hidEvent) return 0;
+
+    // ① 事件自己身上能读到「有手指」就直接用它
+    int t = -1, r = -1;
+    double x = 0, y = 0;
+    if (FBHIDReadOne(hidEvent, &t, &r, &x, &y)) {
+        BOOL hasFinger = (t == 1) || (r == 1);
+        if (hasFinger || !fbGetChildren) {
+            if (touch) *touch = t;
+            if (range) *range = r;
+            if (nx) *nx = x;
+            if (ny) *ny = y;
+            return 1;
+        }
+    }
+
+    // ② 翻子事件：父事件（collection）本身没有手指字段，每根手指是一个 type=11 子事件
+    if (!fbGetChildren) return (t >= 0 || r >= 0);
+    CFArrayRef kids = fbGetChildren((IOHIDEventRef)hidEvent);
+    if (!kids) return (t >= 0 || r >= 0);
+
+    int bestT = -1, bestR = -1;
+    double bestX = 0, bestY = 0;
+    BOOL found = NO, foundFinger = NO;
+    CFIndex n = CFArrayGetCount(kids);
+    for (CFIndex i = 0; i < n; i++) {
+        void *kid = (void *)CFArrayGetValueAtIndex(kids, i);
+        int kt = -1, kr = -1;
+        double kx = 0, ky = 0;
+        if (!FBHIDReadOne(kid, &kt, &kr, &kx, &ky)) continue;
+        found = YES;
+        if (kt == 1 || kr == 1) {          // 优先取「有手指」的那一个
+            bestT = kt; bestR = kr; bestX = kx; bestY = ky;
+            foundFinger = YES;
+            break;
+        }
+        if (bestT < 0) { bestT = kt; bestR = kr; bestX = kx; bestY = ky; }
+    }
+
+    if (touch) *touch = bestT;
+    if (range) *range = bestR;
+    if (nx) *nx = bestX;
+    if (ny) *ny = bestY;
+    return found ? 1 : (foundFinger ? 1 : 0);
 }
 
 void FBHIDNoteRealEvent(void *hidEvent)

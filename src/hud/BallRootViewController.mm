@@ -338,6 +338,13 @@ void FBBallHapticTouchDown(void)
         [self reloadSettings];
     });
 
+    // 0.1.14：「关于」页的「自喂测试」按钮 —— 绕过 HID 检测层，直接往球心喂一次点击。
+    int tapToken;
+    notify_register_dispatch(NOTIFY_SELFTEST_TAP, &tapToken, dispatch_get_main_queue(), ^(int t) {
+        FBLog(@"[自喂测试] 收到 App 那边的请求");
+        FBSelfTestFeedTap();
+    });
+
     FBLog(@"球建好了：直径=%.0f 窗口边长=%.0f view=%@ 自带手势=%lu 个",
           ball, side, NSStringFromCGRect(self.view.bounds),
           (unsigned long)[_ball.gestureRecognizers count]);
@@ -364,6 +371,14 @@ void FBBallHapticTouchDown(void)
     [self savePrefs];
     [self refreshLabel];
     [self haptic:FBHapticTap];
+
+    // 「关于」页的自喂测试（0.1.14）：计数、震一下、标签变 —— 都照做（这就是「有反应」的可见证据），
+    // 但**不执行**绑定动作（否则点一下「测试」会顺手打开设置 App，容易吓人）。
+    if (gFBSelfTestTapPending) {
+        gFBSelfTestTapPending = NO;
+        FBLog(@"[自喂测试] 成功：球的手势认出来了（计数=%ld，未执行绑定动作）", (long)count);
+        return;
+    }
 
     if (_moveMode) {
         // 移动模式下轻点 = 退出移动模式，**不**执行绑定动作

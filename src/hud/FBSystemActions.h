@@ -99,6 +99,14 @@ int FBHIDDigitizerTouchOf(void *hidEvent);
 int FBHIDDigitizerRangeOf(void *hidEvent);
 int FBHIDDigitizerMaskOf(void *hidEvent);
 
+/// 0.1.14：**会翻子事件**的读法（上面三个只在「事件自己」身上读，父事件上永远是 0）。
+/// 真机事件的 X/Y/Touch/Range 都在 digitizer 的子事件上，见 FBSystemActions.mm 里的长注释。
+/// - touch: 1 = 在屏，0 = 离屏，-1 = 取不到
+/// - range: 1 = 刚进入感应，0 = 离开，-1 = 取不到
+/// - nx / ny: 归一化 0~1 的手指坐标（乘屏幕尺寸就是点；没有就是 0）
+/// - Returns: 1 = 读到了（touch/range 有意义），0 = 这条事件上没有手指信息
+int FBHIDReadTouchDeep(void *hidEvent, int *touch, int *range, double *nx, double *ny);
+
 
 #ifdef __cplusplus
 }

@@ -34,6 +34,15 @@ OBJC_EXTERN void FBProbeTouchHit(BOOL onBall);
 /// 球自己的单击手势真的触发了（由 BallRootViewController 调）。
 OBJC_EXTERN void FBProbeRealTapDidFire(void);
 
+// ---- 自喂测试（0.1.14）----
+// 目的：把「检测层」和「喂球层」分开。绕过 HID，直接往球心喂一次按下+抬起：
+//   · 球有反应 / 自检「真点击」+1 → 喂球这条路是通的，毛病在检测层
+//   · 完全没反应                 → 喂球这条路本身不通
+// 测试期间球只记账、不执行绑定动作（gFBSelfTestTapPending）。
+OBJC_EXTERN void FBSelfTestFeedTap(void);
+OBJC_EXTERN int  FBProbeRealTapCount(void);
+OBJC_EXTERN BOOL gFBSelfTestTapPending;
+
 /// 真触摸这条路通了没有（通了就不再喂合成的假触摸，免得一次点击走两遍）。
 ///
 /// ⚠️ 0.1.11 收紧判据：只有**球自己的手势真的触发过**（真点击 > 0）才算通。

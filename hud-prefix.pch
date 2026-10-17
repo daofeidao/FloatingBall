@@ -36,3 +36,8 @@
 
 // HUD 内部用：请求重建球的视图（尺寸/外观变化）
 #define NOTIFY_REBUILD_BALL "com.daofeidao.notification.ball.rebuild"
+
+// APP -> HUD: 自喂测试（0.1.14）
+// 「关于」页那个按钮：绕过 HID 检测层，直接往球心喂一次「按下+抬起」，
+// 用来分清「检测层没认出」还是「喂进 UIKit 了但没交到球」。
+#define NOTIFY_SELFTEST_TAP "com.daofeidao.notification.hud.selftest.tap"

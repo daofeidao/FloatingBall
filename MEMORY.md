@@ -543,6 +543,16 @@ _CTServerConnectionResetModem(conn, CFSTR("UserTriggeredReload"))
       ③ 添加页：搜索框是不是在**最顶上一行**（放大镜+输入框），滑进「已安装的 App」
          往上翻时它**始终钉在顶上**？ 输入字后有一个一键清空的小 ✕ 吗？ 搜得到吗？
       ④ 0.1.12 那批照旧要验：删 App 球自尽（5~11 秒）、球按下即震、4 行自检读数。
+- [ ] **0.1.14 待验（2026-10-18：触摸链根因修复 = 读子事件 + 自喂测试）**：
+      ① **先点「关于」页的「让球自己点一下」**（关键！它把两个层面分开）：
+         · 球震一下 / 标签数字 +1 / `真点击` +1 → **喂球层是通的**，毛病只在检测层；
+           这时把自检第三行「最后」整句念给我（点 / 窗口点 / 球(窗口) / 深读 / AX）。
+         · 一点反应都没有 → **喂球层不通**（不是检测层），直接告诉我这个结论即可，
+           下一版改喂球（`TSEventFetcher` / `sendEvent:` 那条）。
+      ② 正常点球：球震吗？标签 +1 吗？单击绑定的动作执行吗？
+      ③ 拖球能拖动吗？长按能触发吗？双击呢？
+      ④ 自检第三行「深读」：有手指 / 没手指 / 读不到 三个数里哪个在涨？
+         （有手指在涨 = 子事件读法成功；读不到在涨 = `IOHIDEventGetChildren` 也不行，换方案）
 - [ ] 顺带把 `E:\文档\默认项目\MEMORY.md` 里两条过时信息更正：
       ① 「persona root spawn 是线索未证实」→ Helium/TheBall 都在生产用；
       ② 它指向的 `E:\文档\Helium\MEMORY.md` **并不存在**。
@@ -919,6 +929,35 @@ _CTServerConnectionResetModem(conn, CFSTR("UserTriggeredReload"))
 走 `IOHIDEventGetIntegerValue`，字段 `0xb0009` / `0xb0008` / `0xb0007`）：
 `1/0/-1`（-1 = 不是触摸事件或符号没拿到）。约定来自真机在用的注入工具 ZXTouch
 （`pccontrol/Touch.xm`）：按下 `Range=1 Touch=1`、移动 `Range=1 Touch=1`、抬起 `Range=0 Touch=0`。
+
+### 2026-10-18（0.1.14）真正的根因：**读错了事件层级（父事件 vs 子事件）**
+
+0.1.11 的「自己判按下 + `Touch != 0`」让球**照样一次都没接管**（用户 0.1.12/0.1.13 实测：
+「不论怎么点，悬浮球都没有任何触发的迹象」）。复盘 0.1.11 的读法，错在**层级**：
+
+- 监听到的 `event` 是 **父事件（digitizer collection）**；`Touch` / `Range` / `X` / `Y`
+  这些字段全在它的**子事件**（每根手指一个，type 也是 11）上。
+- 对父事件直接 `IOHIDEventGetIntegerValue(event, 0xb0009)` 永远读出 **0** ——
+  于是 `contactSignal = (hidTouch != 0)` 恒为假 → 一次都不 `Began`。
+- 同时「抬起」判据 `(Touch==0 && Range==0)` 恒为真 → 每条事件都被记成「无关的抬起」
+  → 自检里 `非本触点` 巨大、`接管=0`。**和 0.1.8 那组读数一模一样的病**。
+
+0.1.14 的改法（别改回去）：
+
+| 环节 | 0.1.11~0.1.13 | 0.1.14 |
+|---|---|---|
+| 读手指状态 | 只读事件自己（父事件 → 恒 0） | **`FBHIDReadTouchDeep()`**：先读自己，读不到就翻 `IOHIDEventGetChildren` 的 type=11 子事件 |
+| 「抬起」判据 | `Touch==0 && Range==0` 恒真 → 立刻当成抬起 | 只在**本次运行真见过 `Touch=1`**（`sHIDSawTouch`）之后才信 `Touch=0`；否则靠 AX lift / 超时（无抬起信号时 0.6s，有则 1.2s） |
+| 「按下」判据 | `AX按下 || 深读有手指`，但深读恒 0 | `AX按下 || 深读有手指 || 新一轮第一下（距上条事件 >150ms）`，且不再要求 `Touch != 0` |
+| 「在不在球上」 | 手算矩形（两种坐标系都试） | 三种坐标来源都试（AX 点 / 深读归一化 × 屏幕 / 当窗口坐标）+ **`[window hitTest:]`** 回答归属（TheBall 同款） |
+| 诊断 | 只能看 4 行读数 | 「关于」页 **自喂测试**：绕过 HID 直接往球心喂一次点击 → 分清「检测层」还是「喂球层」 |
+
+另外两个已核对的事实（别再怀疑它们）：
+- **`HUDMainApplication init` 里那套事件机器我们本来就有**（`eventDispatcher` / `_installEventRunLoopSources:` /
+  `UIEventFetcher` / `eventFetcherSink`，和 TheBall 同一份模板，KVC 键名从 TheBall 二进制里解出来核对过：
+  `eventDispatcher` / `eventFetcher` / `eventFetcherSink`）。所以「UIKit 事件机器没装」不是原因。
+- TheBall 走的是 **BKS 路 A**（`BKSHIDEventRegisterEventCallback`，回调里就喂 `receiveAXEventID`），
+  它的 entitlements 我们也有（`private.hid.client.event-dispatch` 等）；差别不在权限，在**读事件的层级**。
 
 ### 备用路：全局 HID 事件 → 自己喂给球视图（0.1.3~0.1.7 用过，现在只留作备份）
 

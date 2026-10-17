@@ -115,13 +115,17 @@ static int    sProbeOffBall   = 0;   // ④ 起手不在球上（留给下面的
 static int    sProbeOtherRoute = 0;  // 另一条路又送来的触摸（只记数，不喂，防重复）
 static int    sProbeTakeover  = 0;   // ⑤ 接管了（起手落在球上）
 static int    sProbeFed       = 0;   // ⑤ 喂给球视图了
-// ---- 底层字段（0.1.11 加）：AX 那几个标志真机实测不响，得直接看 IOHID 的字段 ----
+// ---- 底层字段（0.1.11 加，0.1.14 改「翻子事件」）----
 static int    sProbeAXDown    = 0;   // AX 的 isTouchDown 说过几次「按下」
-static int    sProbeHidTouch  = 0;   // IOHID 字段说「手指在屏上」几次（Touch=1）
-static int    sProbeHidUp     = 0;   // IOHID 字段说「手指离屏」几次（Touch=0）
+// 0.1.14：深读（会翻子事件）的三个计数 —— 这是判断「字段到底读得到读不到」的关键
+static int    sProbeDeepFinger = 0;  // 深读说「有手指」（touch 或 range = 1）
+static int    sProbeDeepUp     = 0;  // 深读说「没手指」（touch=0 且 range=0）
+static int    sProbeDeepNone   = 0;  // 深读什么都没读到（这条事件上没有手指信息）
 static NSTimeInterval sLastFedAt = 0; // 最近一次喂球的时间（「抬起没送到」的兜底用）
 static CGPoint sLastFedPoint = CGPointZero;  // 最近一次喂球的窗口坐标（兜底补「抬起」要用同一个点）
-static int sUpStreak = 0;             // 底层连续几条事件说「没手指」（只在主线程上动）
+static BOOL   sHIDSawTouch    = NO;  // 本次运行里深读真见过「有手指」——之后才信它的「没手指」
+static BOOL   sSawLiftSignal  = NO;  // 收到过任何一种「抬起」信号（决定超时兜底用 1.2s 还是 0.6s）
+static NSTimeInterval sLastEventAt = 0;  // 上一条触摸事件的时间（判「新一轮第一下」）
 static NSString *sProbeLast   = @"（还没收到过任何 HID 事件）";
 static NSTimeInterval sProbeLastWrite = 0;
 
@@ -133,6 +137,11 @@ static NSTimeInterval sProbeLastWrite = 0;
 static int sProbeHitAsk  = 0;   // 根视图被问到「这个点是不是你的」的次数
 static int sProbeHitBall = 0;   // 其中落在球（含 6pt 宽容区）上的
 static int sProbeRealTap = 0;   // 球自己的单击手势真的触发了
+static int sProbeSelfTest = 0;  // 「自喂一次点击」做了几次（0.1.14）
+
+/// 自喂测试进行中：球的手势认出来之后**只记账、不执行绑定动作**
+/// （否则「测试一下」会顺手打开设置/跑一个手势动作，太吓人）
+BOOL gFBSelfTestTapPending = NO;
 
 /// 活跃的触摸来源：0 = 还没定，1 = 路A（BKS 回调），2 = 路B（监视客户端）
 static int gHIDActiveRoute = 0;
@@ -145,13 +154,13 @@ static void FBProbeWrite(BOOL force)
     NSString *text = [NSString stringWithFormat:
         @"回调=%d（路A=%d 路B=%d 匹配服务=%d） 无rep=%d 无路径=%d id<=0=%d "
         @"不在球=%d 非本触点=%d 另一条路=%d 接管=%d 喂球=%d\n"
-        @"真触摸：窗口问=%d 落在球=%d 真点击=%d\n"
-        @"底层：AX按下=%d 在屏=%d 离屏=%d\n最后：%@\n",
+        @"真触摸：窗口问=%d 落在球=%d 真点击=%d 自喂测试=%d\n"
+        @"底层：AX按下=%d 深读(有手指=%d 没手指=%d 读不到=%d)\n最后：%@\n",
         sProbeCallbacks, sProbeRouteA, sProbeRouteB, sProbeMatched,
         sProbeNoRep, sProbeNoPath, sProbeZeroID,
         sProbeOffBall, sProbeNotOurs, sProbeOtherRoute, sProbeTakeover, sProbeFed,
-        sProbeHitAsk, sProbeHitBall, sProbeRealTap,
-        sProbeAXDown, sProbeHidTouch, sProbeHidUp, sProbeLast];
+        sProbeHitAsk, sProbeHitBall, sProbeRealTap, sProbeSelfTest,
+        sProbeAXDown, sProbeDeepFinger, sProbeDeepUp, sProbeDeepNone, sProbeLast];
     [text writeToFile:FB_PROBE_PATH atomically:YES encoding:NSUTF8StringEncoding error:NULL];
 }
 
@@ -176,6 +185,72 @@ void FBProbeRealTapDidFire(void)
     sProbeRealTap++;
     if (sProbeRealTap == 1) FBLog(@"真触摸：球自己的单击手势触发了");
     FBProbeWrite(NO);
+}
+
+int FBProbeRealTapCount(void)
+{
+    return sProbeRealTap;
+}
+
+// ============================================================================
+// 0.1.14：自喂一次点击（「关于」页那个测试按钮）
+//
+// 为什么要它：这条链断在哪一段，从外面完全看不出来 ——
+//   (a) 检测层没认出「这一下在球上」→ 自定义触摸根本没发出来；
+//   (b) 发出来了，但 UIKit 没把触摸交给球 → 手势不触发。
+// 这个测试**绕过检测层**，直接用球心的窗口坐标喂一次「按下 + 抬起」：
+//   · 球动了 / 自检里「真点击」+1  → 检测层是唯一的毛病（那就去看「最后」一行）
+//   · 一点反应都没有               → 喂球这条路本身没通（下一版就改这条路）
+// 测试期间只记账、**不执行**绑定动作（见 gFBSelfTestTapPending）。
+// ============================================================================
+void FBSelfTestFeedTap(void)
+{
+    dispatch_async(dispatch_get_main_queue(), ^(void) {
+        UIView *ball = gFBBallView;
+        UIWindow *window = ball.window;
+        if (!ball || !window) {
+            FBProbeNote(@"[自喂测试] 球 / 窗口还没就绪（ball 或 window 是空的）");
+            return;
+        }
+
+        CGPoint center = CGPointMake(CGRectGetMidX(ball.bounds), CGRectGetMidY(ball.bounds));
+        CGPoint winPt = [ball convertPoint:center toView:window];
+        UIView *hit = [window hitTest:winPt withEvent:nil];
+        UIView *feedView = (hit && hit != window) ? hit : ball;
+
+        sProbeSelfTest++;
+        gFBSelfTestTapPending = YES;
+
+        NSInteger pid = 99;   // TSEventFetcher 一共 100 个槽位，最后一个专门留给自测
+        FBLog(@"[自喂测试] 往球心喂一次点击：窗口点=(%.1f,%.1f) hit=%@ -> onView=%@",
+              winPt.x, winPt.y, hit ? NSStringFromClass([hit class]) : @"(nil)",
+              NSStringFromClass([feedView class]));
+
+        [TSEventFetcher receiveAXEventID:pid
+                      atGlobalCoordinate:winPt
+                          withTouchPhase:UITouchPhaseBegan
+                                inWindow:window
+                                  onView:feedView];
+
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.06 * NSEC_PER_SEC)),
+                       dispatch_get_main_queue(), ^{
+            [TSEventFetcher receiveAXEventID:pid
+                          atGlobalCoordinate:winPt
+                              withTouchPhase:UITouchPhaseEnded
+                                    inWindow:window
+                                      onView:feedView];
+            FBProbeNote([NSString stringWithFormat:
+                @"[自喂测试] 已喂完（真点击累计=%d）—— 球上有没有反应？", sProbeRealTap]);
+            // 兜底：万一手势没认出来，别让这个标记一直挂着
+            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.0 * NSEC_PER_SEC)),
+                           dispatch_get_main_queue(), ^{
+                if (gFBSelfTestTapPending) {
+                    gFBSelfTestTapPending = NO;
+                    FBLog(@"[自喂测试] 1 秒内手势没被认出来（这次测试=失败）");
+                }
+            });
+        });
+    });
 }
 
 /// 真触摸这条路是不是已经通了？通了就别再喂合成触摸（否则一次点击走两遍）。
@@ -278,34 +353,45 @@ static void FBHandleHIDEvent(int route, void *target, void *refcon, IOHIDService
         return;
     }
 
-    // ---- 底层字段（0.1.11 新加）----
-    // ⚠️ 为什么不能只看 AX 的 isTouchDown：真机自检（0.1.10 及以前）30225 条事件里
-    //    它**一次都没为真** —— 而「按下」正是老逻辑接管的唯一入口，
-    //    所以球永远等不到那一下，表现就是「点球没反应」。
-    //    这一版改成：phase 由我们自己定 —— **起手落在球上就算 Began**（TheBall 也是这套）。
-    //    AX 的标志只当补充信号，底层 IOHID 字段（在屏 / 离屏）用来判「抬起」。
-    int hidTouch = FBHIDDigitizerTouchOf(event);   // 1 = 在屏，0 = 离屏，-1 = 取不到
-    int hidRange = FBHIDDigitizerRangeOf(event);   // 1 = 刚进入感应（按下那一下带），-1 = 取不到
-    int hidMask  = FBHIDDigitizerMaskOf(event);    // 原始 EventMask（只往自检里写）
+    // ---- 手指状态（0.1.14 重写）----
+    // ⚠️⚠️ 0.1.11~0.1.13「怎么点都完全没反应」的根子就在这儿：
+    //    监听到的 `event` 是**父事件（collection）**，Touch / Range / X / Y 这些字段
+    //    都在**子事件**（每根手指一个，type 也是 11）身上。直接对父事件 GetIntegerValue
+    //    读出来永远是 0 —— 于是「有手指」永不成立 → 一次都不接管 → 球彻底死。
+    //    这跟 0.1.8 那组读数（3 万条事件、接管=0）是同一个病的两个版本。
+    //    0.1.14 改用 FBHIDReadTouchDeep()：先读自己，读不到就翻 children。
+    int hidTouch = -1, hidRange = -1;
+    double hidNX = 0, hidNY = 0;
+    BOOL hidOK = FBHIDReadTouchDeep(event, &hidTouch, &hidRange, &hidNX, &hidNY) != 0;
+    int hidMask = FBHIDDigitizerMaskOf(event);     // 原始 EventMask（只往自检里写）
+
     BOOL axDown        = [rep isTouchDown];
     BOOL axMove        = [rep isMove];
     BOOL axLift        = [rep isLift];
     BOOL axInRangeLift = [rep isInRangeLift];
     BOOL axCancel      = [rep isCancel];
-    CGPoint location   = [rep location];           // 屏幕坐标？窗口坐标？两种都试，见下面
+    CGPoint location   = [rep location];           // 屏幕坐标？（下面三种来源都试）
 
     if (axDown) sProbeAXDown++;
-    if (hidTouch == 1) sProbeHidTouch++;
-    else if (hidTouch == 0) sProbeHidUp++;
+    if (hidOK && (hidTouch == 1 || hidRange == 1)) sProbeDeepFinger++;
+    else if (hidOK && hidTouch == 0 && hidRange == 0) sProbeDeepUp++;
+    else sProbeDeepNone++;
 
     // 头 3 条事件原样记一笔：能看出「到底有没有触摸事件进来、长什么样」
     if (sProbeCallbacks <= 3) {
         FBLog(@"HID#%d etype=%d paths=%lu id=%ld ax(down=%d move=%d lift=%d) "
-              @"hid(touch=%d range=%d mask=0x%x) 点=(%.0f,%.0f)",
+              @"深读(ok=%d touch=%d range=%d n=(%.3f,%.3f) mask=0x%x) 点=(%.0f,%.0f)",
               sProbeCallbacks, FBHIDEventTypeOf(event), (unsigned long)paths.count, (long)pointerId,
-              (int)axDown, (int)axMove, (int)axLift, hidTouch, hidRange, hidMask,
-              location.x, location.y);
+              (int)axDown, (int)axMove, (int)axLift,
+              (int)hidOK, hidTouch, hidRange, hidNX, hidNY, hidMask, location.x, location.y);
     }
+
+    // 「新的一下」判定：距离上一条触摸事件超过 150ms，就当新一根手指落下。
+    // （只在 AX / 底层都不给「按下」信号时才用到 —— 最后一道保险。）
+    NSTimeInterval now = [NSDate timeIntervalSinceReferenceDate];
+    NSTimeInterval sinceLast = (sLastEventAt > 0) ? (now - sLastEventAt) : 999.0;
+    sLastEventAt = now;
+    BOOL firstInBurst = (sinceLast > 0.15);
 
     dispatch_async(dispatch_get_main_queue(), ^(void) {
         UIView *ball = gFBBallView;
@@ -315,123 +401,124 @@ static void FBHandleHIDEvent(int route, void *target, void *refcon, IOHIDService
             return;
         }
 
-        // 球在屏幕上的矩形（含 6pt 宽容区）。
-        // ⚠️ 这里刻意**不用 hitTest**：我们窗口只有球那么大，hitTest 要的是窗口坐标，
-        //    而 location 的坐标系本身就没定论（见下）。直接量矩形最不容易出错。
-        CGRect inWindowRect = [ball convertRect:ball.bounds toView:window];
-        CGRect windowFrame  = window.frame;
-        CGRect onScreenRect = CGRectOffset(inWindowRect, windowFrame.origin.x, windowFrame.origin.y);
-        CGRect touchRect    = CGRectInset(onScreenRect, -6.0, -6.0);
+        // ---- 坐标：三个来源都试 ----
+        //   ① AX 的 [rep location]（TheBall 用的就是它，按屏幕点算）
+        //   ② 底层归一化坐标 × 屏幕尺寸（子事件上读到的，最可信）
+        //   ③ 上面两种都被当成「窗口坐标」再试一次（老自检留下的可能性）
+        // 球在窗口里的矩形（含 6pt 宽容区）
+        CGRect ballWin  = [ball convertRect:ball.bounds toView:window];
+        CGRect touchWin = CGRectInset(ballWin, -6.0, -6.0);
+        CGRect screenRect = [UIScreen mainScreen].bounds;
 
-        // ⚠️ `[rep location]` 到底是「屏幕坐标」还是「窗口坐标」？
-        //    Helium 分不出来 —— 它的窗口是全屏，两种解释结果一样。
-        //    我们的窗口只有球那么大，两种解释差一个窗口原点，赌错就是「永远不在球上」。
-        //    所以**两种都试**：命中任意一种就算在球上（最坏把邻球一个球宽度的点也算进来，
-        //    而它只影响「起手算不算在球上」，可以接受）。自检里的「最后」一行会同时打出
-        //    原始点、窗口、球矩形 —— 下次一看就知道该信哪种了。
-        BOOL asScreen = CGRectContainsPoint(touchRect, location);
-        CGPoint asWindowScreen = CGPointMake(location.x + windowFrame.origin.x,
-                                             location.y + windowFrame.origin.y);
-        BOOL asWindow = CGRectContainsPoint(touchRect, asWindowScreen);
-        BOOL onBall = asScreen || asWindow;
-        CGPoint onScreen = asScreen ? location : asWindowScreen;
-        CGPoint inWindow = CGPointMake(onScreen.x - windowFrame.origin.x,
-                                       onScreen.y - windowFrame.origin.y);
-
-        // 「抬起」的判据（0.1.11）：
-        //   · AX 自己明说 lift / cancel → 立刻认；
-        //   · 底层字段（Touch=0 且 Range=0，正是注入工具 ZXTouch 造「抬起」时填的值）要
-        //     **连续两条**都为「没手指」才认 —— 有的机型会在一条触摸中间夹着「没手指」的事件，
-        //     只认一条就会把一次点击拆成好几下（点一下算两下，比晚 16ms 判出来糟得多）。
-        BOOL upRaw = (hidTouch == 0 && hidRange == 0);
-        sUpStreak = upRaw ? (sUpStreak + 1) : 0;
-        BOOL upSignal = axLift || axCancel || axInRangeLift || (sUpStreak >= 2);
-
-        NSTimeInterval now = [NSDate timeIntervalSinceReferenceDate];
-
-        // 兜底：万一「抬起」那条事件根本没送到（hID 字段也失灵），
-        // 我们手里就会一直攥着上一轮触摸，下一次点击就永远被当「移动」。
-        // 超过 1.2 秒没有新事件 → 认定这一轮早就结束了，补一个 Ended 交还。
-        // ⚠️ 长按不受影响：长按在 0.5 秒就自己触发了，比这个兜底早。
-        if (gFBActivePointer != 0 && sLastFedAt > 0 && now - sLastFedAt > 1.2) {
-            FBLog(@"触摸：触点 %ld 超过 1.2 秒没消息，补一个「抬起」交还", (long)gFBActivePointer);
-            // ⚠️ 这个补的「抬起」必须用**上一次喂过的那个点**：
-            //    UITapGestureRecognizer 会因为「抬起时位置离按下时太远」而判失败，
-            //    而这里手上这条事件的坐标很可能已经是别处了。
-            [TSEventFetcher receiveAXEventID:gFBActivePointer
-                          atGlobalCoordinate:sLastFedPoint
-                              withTouchPhase:UITouchPhaseEnded
-                                    inWindow:window
-                                      onView:ball];
-            gFBActivePointer = 0;
+        CGPoint cands[4];
+        int candCount = 0;
+        cands[candCount++] = location;                       // ①
+        if (hidOK && (hidNX > 0.0 || hidNY > 0.0)) {         // ②
+            cands[candCount++] = CGPointMake(hidNX * screenRect.size.width,
+                                             hidNY * screenRect.size.height);
         }
 
-        // ⚠️ 起手接管还要一条「有手指」的证据：底层字段明说 Touch=0（没手指）时不接管。
-        //    （Touch = -1 表示这个字段取不到 → 不挡，否则字段一失灵球就彻底不动了。）
-        //    顺手把 (0,0) 这个点也挡掉：没有手指的事件常常带 (0,0)，
-        //    而按「窗口坐标」那种解释，(0,0) 换算出来正好落在球的左上角 —— 会误触发。
-        BOOL contactSignal = (hidTouch != 0) && !(location.x == 0 && location.y == 0);
+        CGPoint winPt = [window convertPoint:location fromWindow:nil];
+        BOOL onBall = NO;
+        for (int i = 0; i < candCount && !onBall; i++) {
+            if (cands[i].x == 0.0 && cands[i].y == 0.0) continue;   // 没手指的事件常带 (0,0)
+            CGPoint asScreen = [window convertPoint:cands[i] fromWindow:nil];
+            if (CGRectContainsPoint(touchWin, asScreen)) { winPt = asScreen; onBall = YES; break; }
+            if (CGRectContainsPoint(touchWin, cands[i])) { winPt = cands[i]; onBall = YES; break; }
+        }
+
+        // 让 UIKit 自己回答「这一点属于谁」—— 和 TheBall 一样的做法。
+        // 顺带喂出「窗口问」那个自检（pointInside 里记的），比手算矩形更可信。
+        UIView *hit = nil;
+        if (onBall) hit = [window hitTest:winPt withEvent:nil];
+        UIView *feedView = (hit && hit != window) ? hit : ball;
+
+        // ---- 「抬起」判据 ----
+        //   · AX 明说 lift / cancel / inRangeLift → 认
+        //   · 底层说 Touch=0 且 Range=0 → **只有本次运行里真见过 Touch=1** 才认
+        //     （字段读不到时一直是 0，不能让「读不到」被当成「没手指」——0.1.11 的死法）
+        BOOL hidUp = hidOK && (hidTouch == 0 && hidRange == 0);
+        if (hidOK && (hidTouch == 1 || hidRange == 1)) sHIDSawTouch = YES;
+        BOOL lifted = axLift || axCancel || axInRangeLift || (sHIDSawTouch && hidUp);
+        if (lifted) sSawLiftSignal = YES;
 
         UITouchPhase phase;
-        if (gFBActivePointer != 0 && upSignal) {
-            // 这一轮结束了：交还
-            phase = axCancel ? UITouchPhaseCancelled : UITouchPhaseEnded;
-        } else if (gFBActivePointer != 0) {
-            // 还在这一轮里：继续喂（手指划出球的范围也不能丢，否则拖动会断在半路）
-            phase = UITouchPhaseMoved;
-        } else if (onBall && contactSignal) {
-            // ⭐ 起手落在球上 —— 我们自己当「按下」，不再看 isTouchDown
+        BOOL isNewTouch = NO;
+
+        if (gFBActivePointer != 0) {
+            // 还攥着上一次的触点：抬起 / 超时 → 交还；否则继续当「移动」
+            NSTimeInterval limit = sSawLiftSignal ? 1.2 : 0.6;   // 没有抬起信号时短一点，点一下别等太久
+            BOOL timeout = (sLastFedAt > 0 && now - sLastFedAt > limit);
+            if (lifted || timeout) {
+                phase = axCancel ? UITouchPhaseCancelled : UITouchPhaseEnded;
+            } else {
+                phase = UITouchPhaseMoved;
+            }
+        } else {
+            // 没有在手上的触点：这一下必须「落在球上」
+            BOOL beganSignal = axDown || (hidOK && (hidTouch == 1 || hidRange == 1));
+            if (!onBall || lifted || !(beganSignal || firstInBurst)) {
+                if (lifted) {
+                    sProbeNotOurs++;
+                    FBProbeNote([NSString stringWithFormat:@"④ 无关的抬起（id=%ld 在球上=%d）",
+                                 (long)pointerId, (int)onBall]);
+                } else {
+                    sProbeOffBall++;
+                    FBProbeNote([NSString stringWithFormat:
+                        @"④ 没接管（id=%ld 点=(%.0f,%.0f) 窗口点=(%.0f,%.0f) 球(窗口)=%@ "
+                        @"在球上=%d 深读(ok=%d t=%d r=%d) ax(d=%d m=%d l=%d)）",
+                        (long)pointerId, location.x, location.y, winPt.x, winPt.y,
+                        NSStringFromCGRect(ballWin), (int)onBall,
+                        (int)hidOK, hidTouch, hidRange, (int)axDown, (int)axMove, (int)axLift]);
+                }
+                return;
+            }
             phase = UITouchPhaseBegan;
-            sUpStreak = 0;
+            isNewTouch = YES;
             sProbeTakeover++;
             FBProbeNote([NSString stringWithFormat:
-                @"⑤ 起手在球上→接管（id=%ld 点=(%.0f,%.0f) 球=%@ 窗口=%@ hid(t=%d r=%d x=0x%x)）",
-                (long)pointerId, location.x, location.y, NSStringFromCGRect(onScreenRect),
-                NSStringFromCGRect(windowFrame), hidTouch, hidRange, hidMask]);
-        } else {
-            // 没接管：点不在球上，或者系统明说没有手指。两种情况都**完全留给下面的 App**。
-            if (upSignal) {
-                sProbeNotOurs++;
-                FBProbeNote([NSString stringWithFormat:@"④ 无关的抬起（没拿着，id=%ld）", (long)pointerId]);
-            } else {
-                sProbeOffBall++;
-                FBProbeNote([NSString stringWithFormat:
-                    @"④ 没接管（id=%ld 点=(%.0f,%.0f) 球=%@ 窗口=%@ 在球上=%d 有手指=%d "
-                    @"ax(m=%d l=%d) hid(t=%d r=%d x=0x%x)）",
-                    (long)pointerId, location.x, location.y, NSStringFromCGRect(onScreenRect),
-                    NSStringFromCGRect(windowFrame), (int)onBall, (int)contactSignal,
-                    (int)axMove, (int)axLift, hidTouch, hidRange, hidMask]);
-            }
-            return;
+                @"⑤ 起手在球上→接管（id=%ld 点=(%.0f,%.0f) 窗口点=(%.0f,%.0f) 球(窗口)=%@ "
+                @"信号=%@ 深读(t=%d r=%d)）",
+                (long)pointerId, location.x, location.y, winPt.x, winPt.y,
+                NSStringFromCGRect(ballWin),
+                axDown ? @"AX按下" : (firstInBurst ? @"新一轮第一下" : @"底层"),
+                hidTouch, hidRange]);
         }
 
         // ⚠️ atGlobalCoordinate 这个参数名是骗人的：TSEventFetcher 内部直接
         //    `setLocationInWindow:`，所以必须传**窗口坐标**，不能传屏幕坐标。
-        //    （Helium 的窗口是全屏的，两种坐标正好一样，照抄会踩坑。）
+        //
+        // ⚠️ 超时补的那个「抬起」要用**上一次喂过的点**：UITapGestureRecognizer 会因为
+        //    「抬起位置离按下位置太远」判失败，而超时时手上这条事件的坐标很可能在别处。
+        CGPoint feedPt = winPt;
+        if (gFBActivePointer != 0 && !lifted && sLastFedPoint.x != 0 && sLastFedPoint.y != 0
+            && (sLastFedAt > 0 && now - sLastFedAt > (sSawLiftSignal ? 1.2 : 0.6))) {
+            feedPt = sLastFedPoint;
+        }
+
         [TSEventFetcher receiveAXEventID:pointerId
-                      atGlobalCoordinate:inWindow
+                      atGlobalCoordinate:feedPt
                           withTouchPhase:phase
                                 inWindow:window
-                                  onView:ball];
+                                  onView:feedView];
 
-        // ⭐ 0.1.12：按下去就震。
-        //    「起手在球上」是这条链里最早、最不依赖别人的时刻 —— 在这里给一下轻震，
-        //    手势认不认得出来都不影响按压反馈（手势那边认出来还会有它自己的那一下）。
-        if (phase == UITouchPhaseBegan) {
+        // ⭐ 按下去就震（0.1.12）：最早、最不依赖手势的那一刻给一下「迎客」
+        if (isNewTouch) {
             FBBallHapticTouchDown();
         }
 
         sProbeFed++;
         sLastFedAt = now;
-        sLastFedPoint = inWindow;
+        sLastFedPoint = winPt;
 
         if (phase == UITouchPhaseEnded || phase == UITouchPhaseCancelled) {
-            FBLog(@"触摸：触点 %ld 抬起/取消，交还", (long)pointerId);
+            if (sProbeFed == 1 || isNewTouch) {
+                FBLog(@"触摸：触点 %ld 交还（phase=%ld）", (long)pointerId, (long)phase);
+            }
             gFBActivePointer = 0;
         } else {
-            if (sProbeFed == 1) {
-                FBLog(@"触摸：第一次把触摸喂给球了（phase=%ld 球在屏幕 %@）",
-                      (long)phase, NSStringFromCGRect(onScreenRect));
+            if (isNewTouch) {
+                FBLog(@"触摸：接管触点 %ld（窗口点 %.0f,%.0f）", (long)pointerId, winPt.x, winPt.y);
             }
             gFBActivePointer = pointerId;
         }

@@ -542,6 +542,30 @@ _CTServerConnectionResetModem(conn, CFSTR("UserTriggeredReload"))
 | 0.1.9 | 2026-10-17 | `E:\下载\FloatingBall_0.1.9.tipa` | 342,536 | `c74e9165` |
 | 0.1.10 | 2026-10-17 | `E:\下载\FloatingBall_0.1.10.tipa` | 373,892 | `c056d248` |
 | 0.1.11 | 2026-10-17 | `E:\下载\FloatingBall_0.1.11.tipa` | 376,147 | `1f8bb00f` |
+| 0.1.12 | 2026-10-18 | `E:\下载\FloatingBall_0.1.12.tipa` | 377,236 | `1138c183` |
+
+- 0.1.12：tag `v0.1.12` → CI run `39047829617` **success**（远端 main = `04f1ea807fbe9ca9fc2810c96acbf0f4af054cfd`）
+  → 交付邮件 **0:09 发出**（收件箱核验：附件 `FloatingBall_0.1.12.tipa` 368.4 KB = 377,236 字节，
+  整封 511.6 KB，带抄送）；包内 0.1.12 / build 13，二进制 **1,035,232 B**（比 0.1.11 大 1,184 B）。
+  内容**四件事**：
+  ① **删 App 看门狗**（用户新报的「删了 App 球还在」）：HUD 每 3 秒 stat 一遍
+     `NSBundle.main.bundlePath`，**连续 3 次摸不到** → `exit(0)` + pid 文件由 `atexit` 带走，
+     约 5~11 秒球消失。判据故意用「目录在不在」而不是「App 进程在不在」——
+     球本来就是 App 关了也活着的，进程死了分不出「关了」和「删了」。
+     三连摸防 TrollStore 覆盖安装时目录短暂消失的误杀。
+  ② **球按下即震**：挂点 = HUDApp.mm「起手落在球上」喂 `Began` 的那一刻
+     → `FBBallHapticTouchDown()`（声明在 HUDHelper.h；BallRootViewController.mm 里
+     `sBallVC` 在 viewDidLoad 登记）。手势那条路的单击/长按/落位反馈保留（撞两层是有意的）。
+     ⚠️ `FBRealTouchWorks()==YES` 时合成触摸路早退，那时单击手势自带反馈，不双份。
+  ③ **时长滑块删除**（用户定案：就用系统默认 ≈40ms）：`HapticDurationMs` 两边都不再读；
+     键不用清。`notice` 仍两下（是信号不是时长）。
+  ④ **关于页「原理来自」项目名蓝色可点**（SwiftUI `Link`；四个 GitHub 链接先用
+     GitHub API 逐个核成 200 再写死：TrollSpeed/UIDaemon/Helium/TheBall）。
+  构建核对 **`ref/verify_0.1.12.py`** 全绿（看门狗 5 条 UTF-16 日志 + 页脚/关于页 4 条 UTF-8；
+  ⚠️ `FBBallHapticTouchDown` 符号被 strip，文字验不了 —— 但调用点编在 HUDApp.mm，
+  CI 编译通过 = 函数必然链接住了；注释文案「按下去就震」本来就不进二进制，第一次核出
+  2 个假失败就是它）。正文落盘 `ref/mail_0.1.12_body.txt`。
+  本地提交 `5c291a5`（时长删除+可点链接，上一半天）→ `3c5c4ff`（看门狗+按下即震）。
 
 - 0.1.11：tag `v0.1.11` → CI run `39044510189` **success** → 交付邮件 **23:25 发出**
   （带抄送 `lion.2026.10@proton.me`；附件已在 126 收件箱核验：

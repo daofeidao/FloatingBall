@@ -244,7 +244,6 @@ void FBBallHapticTouchDown(void)
 /// App 的「关于」页读出来显示（0.1.16 外观诊断）。
 - (void)writeStyleDiag:(NSString *)source
 {
-    UIWindow *window = self.view.window;
     NSFileManager *fm = [NSFileManager defaultManager];
     NSDictionary *cfgAttrs = [fm attributesOfItemAtPath:USER_DEFAULTS_PATH error:NULL];
     NSDictionary *imgAttrs = [fm attributesOfItemAtPath:BALL_IMAGE_PATH error:NULL];
@@ -258,7 +257,7 @@ void FBBallHapticTouchDown(void)
         @"球直径=%.1f\n"
         @"窗口边长=%.1f\n"
         @"球_alpha=%.2f\n"
-        @"窗口=%d,%d,%.1f,%.1f\n"
+        @"球=%.0f,%.0f,%.0f,%.0f\n"
         @"plist时间=%.0f\n"
         @"贴图时间=%.0f\n"
         @"贴图字节=%llu\n",
@@ -266,8 +265,8 @@ void FBBallHapticTouchDown(void)
         _prefs[@"BallShape"] ?: @"(没设)",
         _prefs[@"BallColor"] ?: @"(没设)",
         [self ballSize], [self windowSide], _ball.alpha,
-        (int)window.frame.origin.x, (int)window.frame.origin.y,
-        window.frame.size.width, window.frame.size.height,
+        _ball.frame.origin.x, _ball.frame.origin.y,
+        _ball.frame.size.width, _ball.frame.size.height,
         cfg, img,
         (unsigned long long)[imgAttrs[NSFileSize] unsignedLongLongValue]];
     [text writeToFile:@"/tmp/FloatingBall.style"
@@ -342,6 +341,8 @@ void FBBallHapticTouchDown(void)
 
 - (CGFloat)windowSide
 {
+    // ⚠️ 0.1.18：窗口已经是**全屏**的了（照抄 TheBall），这个值不再代表窗口，
+    //    只留着给「宽度相关的余量/诊断」用。
     return [self ballSize] + kWindowPadding * 2.0;
 }
 
@@ -359,7 +360,8 @@ void FBBallHapticTouchDown(void)
 - (CGPoint)clampedCenter:(CGPoint)c
 {
     CGRect sb = [self screenBounds];
-    CGFloat half = [self windowSide] / 2.0;
+    // 0.1.18：球在**全屏窗口内**移动，边界按球半径算（以前是按「小窗口」算的）
+    CGFloat half = [self ballSize] / 2.0;
     CGFloat x = MAX(half, MIN(c.x, CGRectGetMaxX(sb) - half));
     CGFloat y = MAX(half, MIN(c.y, CGRectGetMaxY(sb) - half));
     return CGPointMake(x, y);
@@ -408,12 +410,14 @@ void FBBallHapticTouchDown(void)
 
     self.view.backgroundColor = [UIColor clearColor];
 
-    CGFloat side = [self windowSide];
     CGFloat ball = [self ballSize];
 
     // 球本体用贴图（样式可以在 App 里换），贴图由 scripts/make_icon.py 生成。
-    // 用贴图而不是纯色 + 描边，是为了「桌面图标」「屏幕上的球」长得一模一样。
-    _ball = [[UIImageView alloc] initWithFrame:CGRectMake((side - ball) / 2.0, (side - ball) / 2.0, ball, ball)];
+    // ⚠️ 0.1.18：根视图是**全屏**的，所以球的 frame 直接用**屏幕坐标**（球心 ± 半径）。
+    CGPoint startCenter = [self initialCenter];
+    _ball = [[UIImageView alloc] initWithFrame:CGRectMake(startCenter.x - ball / 2.0,
+                                                          startCenter.y - ball / 2.0,
+                                                          ball, ball)];
     _ball.contentMode = UIViewContentModeScaleAspectFit;
     _ball.userInteractionEnabled = YES;
     // 阴影得自己画：贴图是透明底的，没有背景色可以借
@@ -712,35 +716,24 @@ void FBBallHapticTouchDown(void)
 
 - (void)onPan:(UIPanGestureRecognizer *)g
 {
-    UIWindow *window = self.view.window;
-    if (!window) return;
+    if (!_ball) return;
 
-    // 窗口内坐标 -> 屏幕坐标（窗口跟着手指走，所以必须每帧换算，见文件头注释）
-    CGPoint inWindow = [g locationInView:nil];
-
-    // ⚠️ 0.1.16：空坐标事件不能当「移动」——那会让球瞬间跳到左上角（用户报的 bug）。
-    if (g.state == UIGestureRecognizerStateChanged && inWindow.x == 0.0 && inWindow.y == 0.0) {
-        return;
-    }
-    CGPoint onScreen = CGPointMake(window.frame.origin.x + inWindow.x,
-                                   window.frame.origin.y + inWindow.y);
-
-    // ⚠️ 0.1.17：再加两道闸，彻底堵住「球突然跳到左上角」
-    //   ① 空点 (0,0) 直接忽略；② 换算后跑到屏幕外（留 40pt 余量）也忽略。
-    CGRect scr = [self screenBounds];
-    if (onScreen.x <= 1.0 && onScreen.y <= 1.0) return;
-    if (!CGRectContainsPoint(CGRectInset(scr, -40.0, -40.0), onScreen)) return;
+    // ⚠️ 0.1.18：窗口是全屏的、不跟着手指走 —— 直接按**根视图坐标（= 屏幕坐标）**移动球。
+    //    （以前是移动窗口，还得每帧把窗口坐标换算回屏幕坐标，那个反馈环的坑现在不存在了。）
+    CGPoint p = [g locationInView:self.view];
 
     if (g.state == UIGestureRecognizerStateBegan) {
-        _grabOffset = CGPointMake(onScreen.x - window.frame.origin.x,
-                                  onScreen.y - window.frame.origin.y);
+        _grabOffset = CGPointMake(p.x - _ball.center.x, p.y - _ball.center.y);
     } else if (g.state == UIGestureRecognizerStateChanged) {
-        CGRect f = window.frame;
-        f.origin = CGPointMake(onScreen.x - _grabOffset.x, onScreen.y - _grabOffset.y);
-        window.frame = f;
+        // 空点 / 跑到屏幕外的坐标一律忽略（0.1.17 那两道闸保留）
+        CGRect sb = [self screenBounds];
+        if (p.x <= 1.0 && p.y <= 1.0) return;
+        if (!CGRectContainsPoint(CGRectInset(sb, -40.0, -40.0), p)) return;
+
+        CGPoint c = CGPointMake(p.x - _grabOffset.x, p.y - _grabOffset.y);
+        _ball.center = [self clampedCenter:c];
     } else if (g.state == UIGestureRecognizerStateEnded || g.state == UIGestureRecognizerStateCancelled) {
-        // 只在收尾时记一行：拖动过程中每个事件都记会把日志刷爆
-        FBLog(@"拖动结束，落点 frame=%@", NSStringFromCGRect(window.frame));
+        FBLog(@"拖动结束，球心=(%.0f,%.0f)", _ball.center.x, _ball.center.y);
         [self haptic:FBHapticTap];   // 松手那一下轻震：告诉用户「落这儿了」
         [self snapToEdge];
         // 移动模式：拖完就自动退出，不用再点一下
@@ -750,18 +743,16 @@ void FBBallHapticTouchDown(void)
 
 - (void)snapToEdge
 {
-    UIWindow *window = self.view.window;
-    if (!window) return;
+    if (!_ball) return;
 
     CGRect sb = [self screenBounds];
-    CGRect f = window.frame;
-    CGFloat targetX = (CGRectGetMidX(f) < CGRectGetMidX(sb))
-        ? 0.0
-        : CGRectGetMaxX(sb) - f.size.width;
-    CGFloat targetY = MAX(0.0, MIN(f.origin.y, CGRectGetMaxY(sb) - f.size.height));
+    CGFloat half = [self ballSize] / 2.0;
+    CGPoint c = _ball.center;
+    CGFloat targetX = (c.x < CGRectGetMidX(sb)) ? half : CGRectGetMaxX(sb) - half;
+    CGFloat targetY = MAX(half, MIN(c.y, CGRectGetMaxY(sb) - half));
 
     [UIView animateWithDuration:0.2 delay:0.0 options:UIViewAnimationOptionCurveEaseOut animations:^{
-        window.frame = CGRectMake(targetX, targetY, f.size.width, f.size.height);
+        self->_ball.center = CGPointMake(targetX, targetY);
     } completion:^(BOOL finished) {
         [self persistPosition];
     }];
@@ -769,12 +760,11 @@ void FBBallHapticTouchDown(void)
 
 - (void)persistPosition
 {
-    UIWindow *window = self.view.window;
-    if (!window) return;
-    _prefs[@"BallX"] = @(CGRectGetMidX(window.frame));
-    _prefs[@"BallY"] = @(CGRectGetMidY(window.frame));
+    if (!_ball) return;
+    _prefs[@"BallX"] = @(_ball.center.x);
+    _prefs[@"BallY"] = @(_ball.center.y);
     [self savePrefs];
-    FBLog(@"位置已存：球心=(%.0f, %.0f)", CGRectGetMidX(window.frame), CGRectGetMidY(window.frame));
+    FBLog(@"位置已存：球心=(%.0f, %.0f)", _ball.center.x, _ball.center.y);
 }
 
 #pragma mark - 视图刷新
@@ -840,17 +830,16 @@ void FBBallHapticTouchDown(void)
 
 - (void)applyLayout
 {
-    UIWindow *window = self.view.window;
-    if (!window) return;
-
-    CGFloat side = [self windowSide];
+    // ⚠️ 0.1.18：窗口是全屏的，**球在窗口里移动**（以前是移动窗口）。
     CGFloat ball = [self ballSize];
 
-    CGPoint center = CGPointMake(CGRectGetMidX(window.frame), CGRectGetMidY(window.frame));
+    CGPoint center = _ball.center;
+    if (center.x <= 0.0 && center.y <= 0.0) {
+        center = [self initialCenter];
+    }
     center = [self clampedCenter:center];
 
-    window.frame = CGRectMake(center.x - side / 2.0, center.y - side / 2.0, side, side);
-    _ball.frame = CGRectMake((side - ball) / 2.0, (side - ball) / 2.0, ball, ball);
+    _ball.frame = CGRectMake(center.x - ball / 2.0, center.y - ball / 2.0, ball, ball);
     _ball.layer.cornerRadius = ball / 2.0;
     _label.frame = _ball.bounds;
     _label.font = [UIFont systemFontOfSize:MAX(11.0, ball * 0.32) weight:UIFontWeightSemibold];
@@ -870,12 +859,10 @@ void FBBallHapticTouchDown(void)
         ? CGPointMake([x doubleValue], [y doubleValue])
         : [self defaultCenter];
 
-    UIWindow *window = self.view.window;
-    if (window) {
-        center = [self clampedCenter:center];
-        CGRect f = window.frame;
-        f.origin = CGPointMake(center.x - f.size.width / 2.0, center.y - f.size.height / 2.0);
-        window.frame = f;
+    // 0.1.18：窗口是全屏的，位置只作用于**球**
+    center = [self clampedCenter:center];
+    if (_ball) {
+        _ball.center = center;
     }
 
     // 数字显不显示也可能被改了（App 那边的「显示/隐藏数字」动作）

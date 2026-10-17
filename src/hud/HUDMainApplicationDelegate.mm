@@ -17,24 +17,23 @@
 {
     _rootViewController = [[BallRootViewController alloc] init];
 
-    // ⚠️ 顺序有讲究：initialCenter 会先把共享设置读进来，
-    //    必须排在 windowSide 前面，否则球尺寸会一直是默认值。
-    CGPoint center = [_rootViewController initialCenter];
-    CGFloat side = [_rootViewController windowSide];
-    FBLog(@"准备建窗口：球尺寸=%.0f 窗口边长=%.0f 初始球心=(%.0f, %.0f)",
-          [_rootViewController ballSize], side, center.x, center.y);
-
-    self.window = [[HUDMainWindow alloc] initWithFrame:CGRectMake(center.x - side / 2.0,
-                                                                  center.y - side / 2.0,
-                                                                  side, side)];
-    // 球周围留了一圈余量（给阴影和手指宽容区），那圈必须是透明的，
-    // 否则窗口不透明会把余量画成黑块。
+    // ⚠️⚠️ 0.1.18：窗口改成**全屏**（照抄 TheBall 2.7：它用 [UIScreen mainScreen].bounds）。
+    //   以前我们把窗口做成「只有球那么大」，球靠移动窗口来动 —— 那样系统根本不会把
+    //   触摸送进来（真机「窗口问=0」）。现在球是**全屏窗口里的一个子视图**，
+    //   窗口的 hitTest 只认子视图、球以外返回 nil，触摸照样漏给下面的 App。
+    CGRect screen = [UIScreen mainScreen].bounds;
+    self.window = [[HUDMainWindow alloc] initWithFrame:screen];
+    // 球以外那圈必须是透明的，否则全屏窗口会盖成一块黑。
     [self.window setBackgroundColor:[UIColor clearColor]];
     [self.window setOpaque:NO];
     [self.window setRootViewController:_rootViewController];
     [self.window setWindowLevel:10000010.0];
     [self.window setHidden:NO];
     [self.window makeKeyAndVisible];
+
+    FBLog(@"准备建窗口：全屏 %@，球直径=%.0f 初始球心=(%.0f, %.0f)",
+          NSStringFromCGRect(screen), [_rootViewController ballSize],
+          [_rootViewController initialCenter].x, [_rootViewController initialCenter].y);
 
     // 把窗口注册到 SpringBoard（这一步才是「浮在所有 App 之上」的真身）
     _windowHostingController = [[objc_getClass("SBSAccessibilityWindowHostingController") alloc] init];

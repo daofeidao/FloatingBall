@@ -22,6 +22,8 @@
 	<string>????</string>
 	<key>CFBundleDevelopmentRegion</key>
 	<string>zh_CN</string>
+	<key>NSPhotoLibraryUsageDescription</key>
+	<string>选一张图片当悬浮球的样子。</string>
 	<key>NSPrincipalClass</key>
 	<string>HUDMainApplication</string>
 	<key>MinimumOSVersion</key>

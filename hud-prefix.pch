@@ -17,6 +17,11 @@
 // 两边都直接读写这个文件，靠 Darwin 通知做「改了就刷新」。
 #define USER_DEFAULTS_PATH @"/var/mobile/Library/Preferences/com.daofeidao.floatingball.plist"
 
+// App 按「形状 + 颜色 + 自定义图」把球贴图画好写到这个路径，HUD 只负责读文件显示。
+// ⚠️ 为什么不把画图代码放 HUD 这边：画图只在一处（Swift 的 BallRenderer），
+//    App 的预览和屏幕上的球用同一份代码，不存在「预览和实际不一样」。
+#define BALL_IMAGE_PATH @"/var/mobile/Library/Preferences/com.daofeidao.floatingball.ball.png"
+
 // HUD -> APP: 悬浮球进程已经起来了
 #define NOTIFY_LAUNCHED_HUD "com.daofeidao.notification.hud.launched"
 

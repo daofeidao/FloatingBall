@@ -22,7 +22,7 @@ iPhone 上的**全局悬浮球**（类似系统「辅助触控」小白点，但
 | 全局悬浮球、点击/双击/滑动/长按分别绑定、长按拖动吸边 | 系统开关类：WiFi / 蜂窝 / 飞行 / 蓝牙 / VPN / 降低白点值 |
 | 打开指定 App、URL scheme 直达（微信扫一扫、淘宝购物车、邮件收件箱…） | 脚本 / 命令执行（**第一版不做**，见第五节） |
 | 三栏 UI：启动 / 自定义快捷应用列表 / 关于 | 桌宠、GIF 背景、多语言、在线更新检查 |
-| 球的样子可选（内置 3 个）+ 大小可调（2026-10-17 用户新增） | 完整「图标库」（只做内置那几个，见第七节） |
+| 球的外观可调：形状（内置 3 个 + 自定义图片）/ 颜色 / 大小 / 不透明度（2026-10-17 用户新增） | 完整「图标库」（只做内置那几个，见第七节） |
 
 ## 三、参考实现 TheBall 的分析结论（2026-10-16）
 
@@ -176,24 +176,49 @@ git push
   git push
   ```
 
-### 球的样子 = 贴图（2026-10-17 用户新增要求）
+### 球的样子 = App 画好一张贴图（2026-10-17，已改版）
 
 用户原话的大意：「桌面图标做成跟手机自带的小白点一样；启动页里能自己设计球的大小，要能缩放；
 已经画好的图就保留着让客户自己选，默认出两三张放软件里当备选。」
+后来又补：那一栏准确说是「**设置这个图标的界面**」，并且要能调**透明度 / 颜色 / 自定义图片**。
 
-- **一套脚本画全部**：`scripts/make_icon.py` 出
-  `AppIcon60x60@2x/@3x.png`（桌面图标，固定用默认样式）+ `BallDot/BallPlain/BallWhite.png`（球本体贴图）。
-  想看效果：`python scripts/preview_styles.py` → `ref/style_preview.png`（浅底/深底各一行，ref/ 已 gitignore）。
-- **设置里存的是贴图名本身**（`BallStyle` = `BallDot` / `BallPlain` / `BallWhite`）。
-  这样 App（Swift 的 `BallStyle` enum）和 HUD（ObjC 直接 `imageNamed:`）两边**都不需要第二份映射**，
-  加样式只改画图脚本 + 那个 enum。
-- **球本体用 `UIImageView` + 贴图**，不是纯色 + `borderWidth`。理由是「桌面图标」和「屏幕上的球」要长得一模一样。
-  ⚠️ 贴图是透明底的，所以阴影必须自己给，而且要用**圆形 `shadowPath`**，否则会露出四个方角的影子。
+**现在的架构（v0.1.0 之后的这一版）**：
+
+```
+App 侧（uid 501）                          HUD 侧（root）
+┌──────────────────────────────┐          ┌────────────────────────────┐
+│ BallRenderer.swift           │  写文件  │ BallRootViewController.mm  │
+│  按 形状+颜色+自定义图 画 PNG  │ ───────> │  imageWithContentsOfFile:  │
+│  -> Preferences/....ball.png │          │  + alpha = BallOpacity     │
+└──────────────────────────────┘          └────────────────────────────┘
+        ↑ 预览用的也是这个函数                    ↑ 找不到文件就退回包里的 BallDot.png
+```
+
+- ⚠️ **为什么不在 HUD 里画**：画图只留**一份代码**（Swift），
+  App 里的预览和屏幕上的球走同一个函数，杜绝「预览和实际不一样」。
+- ⚠️ **代价**：`BallRenderer.swift` 的比例参数（0.57 / 0.075 / 0.035 …）必须和
+  `scripts/make_icon.py` 的 `STYLES` 保持一致，改比例要**两边一起改**。
+  桌面图标固定 = 「小圆点」那一套。
+- **设置键**：`BallShape`（`dot`/`plain`/`white`/`custom`）、`BallColor`（`#RRGGBB`）、
+  `BallSize`（32~100）、`BallOpacity`（0.3~1.0）。**不再有 `BallStyle` 这个贴图名键**。
+- **环 / 十字用对比色**（body 亮度 > 0.6 → 画黑，否则画白），所以颜色随便选都看得见。
+  `white` 是预设（不透明白身 + 深色环），`custom` 用相册的图裁成圆。
+- **重画时机**：只有「形状 / 颜色 / 自定义图」重画；
+  「大小 / 不透明度」不重画（贴图比例是相对直径的，HUD 拉伸 + 设 alpha 即可），
+  否则拖滑块每动一下都要编码一次 PNG，界面会卡。
+- 打包进 App 的 3 张 PNG 现在是**设置界面的缩略图** + `BallDot.png` 兼兜底贴图。
 - ⚠️ **`ipabuild.sh` 原来只拷 `Info.plist` + AppIcon**（从 `.theos/obj/.../FloatingBall.app` 打包，
   不是从 `layout/`）→ 新增的贴图**不会自动进包**。
   已改成拷 `layout/.../*.png` 全部，并加了一道硬闸：「三张球贴图必须在 Payload 里」。
   少一张不会编译报错，只会在手机上表现为「换样式没反应」。
+- ⚠️ **相册选图用 `PHPickerViewController`**（`src/views/CustomImagePicker.swift`）：
+  iOS 15 上没有 SwiftUI 的 `PhotosPicker`（要 16+）；PHPicker 的好处是**不需要相册权限**
+  （系统在另一个进程里把图拷给我们），不弹权限框。Info.plist 里那条 `NSPhotoLibraryUsageDescription`
+  只是保险。
 - 大小：滑块 32~100pt；HUD 侧 `ballSize` 里硬限 24~160（防手改 plist 搞出个巨型球）。
+  透明度 HUD 侧硬限 0.3~1.0 同理。
+- ⚠️ 贴图 PNG 放在 `Preferences/` 目录下**是有意的**：cfprefsd 只管 `.plist`，不管 `.png`，
+  放这儿不会被它搅和。
 
 ## 八、硬规则（不要重走）
 

@@ -346,25 +346,38 @@ static void LightHaptic(void)
 
 - (void)applyBallStyle
 {
-    NSString *name = _prefs[@"BallStyle"];
-    if (![name isKindOfClass:[NSString class]] || name.length == 0) {
-        name = kDefaultBallStyle;
+    // 贴图由 App 那边按「形状 + 颜色 + 自定义图」画好写到公共路径（见 BallRenderer.swift），
+    // 这里只负责读文件显示 —— 画图代码只有一处，预览和实际不会不一致。
+    UIImage *image = [UIImage imageWithContentsOfFile:BALL_IMAGE_PATH];
+    NSString *source = @"App 画的贴图";
+    if (!image) {
+        // 兜底：App 还没打开过时这个文件还不存在，用包里那张默认小圆点
+        image = [UIImage imageNamed:kDefaultBallStyle];
+        source = @"包里的默认小圆点";
     }
 
-    UIImage *image = [UIImage imageNamed:name];
     if (image) {
         _ball.image = image;
         _ball.backgroundColor = [UIColor clearColor];
         _ball.layer.borderWidth = 0.0;
-        FBLog(@"球样式=%@", name);
+        FBLog(@"球贴图=%@（%.0fx%.0f）", source, image.size.width, image.size.height);
     } else {
-        // 贴图没打进去也得有个球，否则「球没出来」和「贴图丢了」分不清
+        // 两条路都拿不到图也得有个球，否则「球没出来」和「贴图丢了」分不清
         _ball.image = nil;
         _ball.backgroundColor = [UIColor colorWithWhite:0.0 alpha:0.55];
         _ball.layer.borderWidth = 1.0;
         _ball.layer.borderColor = [UIColor colorWithWhite:1.0 alpha:0.35].CGColor;
-        FBLog(@"⚠️ 找不到贴图 %@，退化成纯色球", name);
+        FBLog(@"⚠️ 没有任何贴图（%@ 和包里的默认图都不在），退化成纯色球", BALL_IMAGE_PATH);
     }
+
+    // 不透明度：夹在 0.3~1.0，手改 plist 也不至于把球调成看不见
+    CGFloat opacity = 1.0;
+    NSNumber *stored = _prefs[@"BallOpacity"];
+    if ([stored isKindOfClass:[NSNumber class]]) {
+        opacity = MAX(0.3, MIN(1.0, [stored doubleValue]));
+    }
+    _ball.alpha = opacity;
+
     [self updateShadowPath];
 }
 

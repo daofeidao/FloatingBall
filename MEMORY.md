@@ -299,8 +299,9 @@ _CTServerConnectionResetModem(conn, CFSTR("UserTriggeredReload"))
 
 ### 交付记录
 
-> **固定规矩见全局 `AGENTS.md` 第八节：有产物就必须发邮件。**
-> 「做完了」的定义 = 用户邮箱里收到邮件了；只在聊天里说一声不算交付。
+> **固定规矩见全局 `AGENTS.md` 第八节：出包后 IPA 本体必须以附件发进用户邮箱。**
+> 用户只能在手机上下载附件 → 交给巨魔安装；只在聊天里说一声、只给本地路径、
+> 只给 GitHub 链接，都等于没交付。主题固定带版本号 +「含 IPA」。
 > 正文必须带：文件名 + 字节数 + **sha256** + 怎么装/怎么用/怎么验 + 已知问题。
 > 邮件发失败要当场在聊天里说清楚原因，不能默默吞掉。
 > 核验用 `C:\Users\lion\.workbuddy\skills\mail-126\scripts\read_mail.py`（126 的 IMAP 必须先发 `ID` 命令）。

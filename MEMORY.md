@@ -325,6 +325,14 @@ _CTServerConnectionResetModem(conn, CFSTR("UserTriggeredReload"))
 |---|---|---|---|---|
 | 0.1.0 | 2026-10-16 | `E:\下载\FloatingBall_0.1.0.tipa` | 151,343 | `fffe2cb6` |
 | 0.1.2 | 2026-10-17 | `E:\下载\FloatingBall_0.1.2.tipa` | 293,376 | `73ad077f` |
+| 0.1.3 | 2026-10-17 | `E:\下载\FloatingBall_0.1.3.tipa` | 299,643 | `f0e1e092` |
+
+- 0.1.3：tag `v0.1.3` → CI run `39013572424` **success** → Release 自动创建 → 交付邮件 15:29 发出
+  （附件已在 126 收件箱核验：`FloatingBall_0.1.3.tipa` 292.6 KB ≈ 299,643 字节）。
+  内容是**触摸换路线**（见第十一节）+ 手势栏显示当前绑定。真机结果待用户反馈。
+- 远端 main 与本地 main 仍然 SHA 不同（REST 推送构造提交），打 tag 前**必须**先问远端：
+  `ref/remote_head.py`（打印远端 main 的 sha）→ 再 `ref/tag_rest.py v0.1.3 <远端 sha>`。
+  0.1.3 时的远端 main = `d0f0d5c`。
 
 - 0.1.1（外观可调）**只到 tag、没单独发**：它的 tag 轮挂在「发 Release 403」上，
   而同一个 sha 的 main 轮是成功的（main 不走发 Release 那一步），所以当时容易看漏。

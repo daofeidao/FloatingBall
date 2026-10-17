@@ -384,6 +384,32 @@ _CTServerConnectionResetModem(conn, CFSTR("UserTriggeredReload"))
 | 0.1.5 | 2026-10-17 | `E:\下载\FloatingBall_0.1.5.tipa` | 309,304 | `6711a8d2` |
 | 0.1.6 | 2026-10-17 | `E:\下载\FloatingBall_0.1.6.tipa` | 316,121 | `feb59a51` |
 | 0.1.7 | 2026-10-17 | `E:\下载\FloatingBall_0.1.7.tipa` | 326,684 | `4d8303bf` |
+| 0.1.8 | 2026-10-17 | `E:\下载\FloatingBall_0.1.8.tipa` | 327,798 | `44de69f7` |
+
+- 0.1.8：tag `v0.1.8` → CI **success** → 交付邮件 **21:49 发出**
+  （附件已在 126 收件箱核验：`FloatingBall_0.1.8.tipa` 320.1 KB = 327,798 字节，
+  整封 446.8 KB；sha256 `44de69f7d52846b4e702d5aced0ef9724bf5c048fd1472aea014b1b89da66fa4`，
+  包内 0.1.8 / build 9，二进制 **929,168 B** —— 比 0.1.7 大 80 B）。
+  内容是**触摸改走「真触摸」：`HUDMainWindow._ignoresHitTest` YES → NO**
+  （依据 = 反汇编 TheBall 2.7，见 §三/§十一）+ 自检加「真触摸」那行 + 真触摸通了不再喂假触摸。
+  正文落盘 `ref/mail_0.1.8_body.txt`；提交 `ec8d061`（代码）+ `c95a5f2`（修 CI 的 Swift 类型检查超时），
+  远端 main 推到 `7d627ffe9c78c9bd4b33a4ac36350d58da8b7d8b`。
+
+  ⚠️ **两件要记住的**：
+  ① **tag 打了也能重打**：第一轮 tag 编译挂（`Unable to type-check this expression in reasonable time`，
+  是 `Section(footer:)` 里现拼长字符串，挪成 `private static let` 就好了）→
+  `gh api -X DELETE /repos/daofeidao/FloatingBall/git/refs/tags/v0.1.8` 删掉再重打同一版本号即可
+  （挂的那轮没生成 Release，不会冲突）。
+  ② **提交信息别用 PowerShell 多行双引号**：`git commit -m "…"` 多行会被吞，
+  且 `push_rest.py` 会拿**旧树**推上去（这次白推了一个 tree 相同的提交 `40fbfc7`）。
+  正确姿势：写文件 + `git commit -F <file>`。
+  ③ **怎么证明「窗口那道闸真的改了」**（包被 strip，没有符号表，定位不到方法）：
+  按字节搜小方法的机器码 —— Release 下 `return NO/YES` 编出来就是
+  `mov w0,#0/#1; ret`（`00 00 80 52 C0 03 5F D6` / `20 00 80 52 C0 03 5F D6`）。
+  `HUDMainWindow.mm` 那三个小方法在同一个 `.o` 里、编译出来相邻，源码顺序是
+  `_isSystemWindow`(YES) / `_isWindowServerHostingManaged`(NO) / `_ignoresHitTest`(?)：
+  0.1.6/0.1.7 命中 `(YES,NO,**YES**)`，0.1.8 命中 `(YES,NO,**NO**)`，两种返回值的总数
+  也正好各差 2 → 翻的就是这一条。脚本 `ref/verify_0.1.8.py`。
 
 - 0.1.7：tag `v0.1.7` → CI run `39034218323` **success** → 交付邮件 **20:56 发出**
   （附件已在 126 收件箱核验：`FloatingBall_0.1.7.tipa` 319.0 KB = 326,684 字节，

@@ -32,6 +32,30 @@ static void LightHaptic(void)
     [g impactOccurred];
 }
 
+/// 只有球本身吃触摸，窗口里那圈余量（阴影/宽容区）的触摸对象返回 NO，
+/// 让它有机会「漏」给下面的 App。
+///
+/// ⚠️ 这是个**安全阀**，不是装饰：万一 SpringBoard 把这个远程窗口当成整屏的，
+///    吞掉的就是整块屏幕（手机会变得点不动）。有这一层，至少还有机会漏下去。
+///    真出事了还有最后的兜底：**重启手机**（悬浮球不是守护进程，不开机自启。
+@interface FBPassThroughView : UIView
+@property (nonatomic, weak) UIView *interactiveSubview;
+@end
+
+@implementation FBPassThroughView
+
+- (BOOL)pointInside:(CGPoint)point withEvent:(UIEvent *)event
+{
+    if (!self.interactiveSubview) {
+        return [super pointInside:point withEvent:event];
+    }
+    // 球本身再往外放 6pt，手指没那么准
+    CGRect touchable = CGRectInset(self.interactiveSubview.frame, -6.0, -6.0);
+    return CGRectContainsPoint(touchable, point);
+}
+
+@end
+
 @implementation BallRootViewController {
     UIView *_ball;
     UILabel *_label;
@@ -101,6 +125,14 @@ static void LightHaptic(void)
 
 #pragma mark - 生命周期
 
+- (void)loadView
+{
+    // 用自定义的根视图：只有球那块区域吃触摸（见 FBPassThroughView）
+    FBPassThroughView *root = [[FBPassThroughView alloc] initWithFrame:[UIScreen mainScreen].bounds];
+    root.backgroundColor = [UIColor clearColor];
+    self.view = root;
+}
+
 - (void)viewDidLoad
 {
     [super viewDidLoad];
@@ -123,6 +155,10 @@ static void LightHaptic(void)
     _ball.layer.shadowOffset = CGSizeMake(0.0, 2.0);
     _ball.userInteractionEnabled = YES;
     [self.view addSubview:_ball];
+
+    if ([self.view isKindOfClass:[FBPassThroughView class]]) {
+        [(FBPassThroughView *)self.view setInteractiveSubview:_ball];
+    }
 
     _label = [[UILabel alloc] initWithFrame:_ball.bounds];
     _label.textAlignment = NSTextAlignmentCenter;

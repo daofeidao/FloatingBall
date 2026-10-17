@@ -582,6 +582,15 @@ _CTServerConnectionResetModem(conn, CFSTR("UserTriggeredReload"))
          （0.1.17 修了 savePrefs 覆盖；如果还不变，把「外观诊断」的直径/透明度发我）
       ④ 快速来回拖还跳左上角吗？
       ⑤ 长按 0.5 秒（按住不动）—— 0.18s 定时器可能把它结束掉，这一条先观察，不急着修。
+- [ ] **0.1.18 待验（2026-10-18：照抄 TheBall = 全屏窗口 + 9 个覆写）**：
+      ① 轻点球：缩一下 / 计数 +1 吗？**连点 5 次都灵吗**？
+      ② 双击、长按 0.5 秒、快速来回拖（不跳左上角）？
+      ③ 「关于」→「真实点球诊断」的**「窗口问」是否开始涨**（以前永远 0）——
+         这是「系统真触摸进来了」的唯一硬证据。
+      ④ 改形状/颜色/大小/透明度，球 2 秒内变吗？
+      ⑤ ⚠️ 如果整屏点不动：长按「电源 + 音量减」强制重启，然后立刻告诉我。
+      ⑥ 如果窗口问还是 0：说明还差一处窗口配置，下一版继续按 TheBall 反汇编补齐
+         （下一步该查它 AppDelegate 里窗口注册/Scene 的细节）。
 - [ ] 顺带把 `E:\文档\默认项目\MEMORY.md` 里两条过时信息更正：
       ① 「persona root spawn 是线索未证实」→ Helium/TheBall 都在生产用；
       ② 它指向的 `E:\文档\Helium\MEMORY.md` **并不存在**。
@@ -614,6 +623,26 @@ _CTServerConnectionResetModem(conn, CFSTR("UserTriggeredReload"))
 | 0.1.15 | 2026-10-18 | `E:\下载\FloatingBall_0.1.15.tipa` | 401,437 | `61f4db06` |
 | 0.1.16 | 2026-10-18 | `E:\下载\FloatingBall_0.1.16.tipa` | 413,593 | `e55db40a` |
 | 0.1.17 | 2026-10-18 | `E:\下载\FloatingBall_0.1.17.tipa` | 415,036 | `7b992f3c` |
+| 0.1.18 | 2026-10-18 | `E:\下载\FloatingBall_0.1.18.tipa` | 415,845 | `4b7419af` |
+
+- 0.1.18：tag `v0.1.18` → CI run `39065498165` **success**（远端 main = `fcd772d174f745737c644669086f379c9af5cf55`）
+  → 交付邮件 **4:15 发出**（收件箱核验：附件 406.1 KB = 415,845 字节，整封 561.6 KB，带抄送）；
+  包内 0.1.18 / build 19。
+  **用户定案：「现在就照抄 TheBall」**。反汇编对比出三处根本差别（这就是 13 个版本打转的原因）：
+  ① **TheBall 的窗口是全屏的**（`[UIScreen mainScreen].bounds`），球是窗口里的子视图，
+     拖动改的是**球的位置**；我们以前把窗口做成「只有球那么大」、靠移动窗口来动球 ——
+     系统不会往小窗口送触摸（真机「窗口问=0」），于是我们绕去「从 HID 重建触摸」。
+  ② 它的 `HUDMainWindow` 覆盖 **9 个方法**，我们原来只有 3 个。补上的：
+     `-_isSecure=YES`、`-_shouldCreateContextAsSecure=YES`、`-_shouldAutorotateToInterfaceOrientation:=YES`、
+     `-supportedInterfaceOrientations=All`、`-shouldAutorotate=YES`、
+     `-hitTest:withEvent:`（遍历子视图，没命中返回 nil）。
+  ③ 它的球**不用手势**，直接实现 `touchesBegan/Moved/Ended/Cancelled` —— 拿的是**系统真触摸**。
+  本版：窗口全屏；`applyLayout` / `onPan` / `snapToEdge` / `persistPosition` / `reloadSettings` /
+  `writeStyleDiag` 全部从「移动窗口」改成「移动球」；窗口 hitTest 只认子视图（安全阀两层都在）。
+  ⚠️ 风险已在邮件里讲清：万一整屏点不动 → 长按「电源 + 音量减」强制重启（球非开机自启）。
+  核对 `ref/verify_0.1.18.py` 全绿，正文 `ref/mail_0.1.18_body.txt`。
+  ⚠️ 过程教训：这版第一次 CI 因为我漏改 `viewDidLoad` 里的旧变量 `side` 编译失败，
+  已 `cancel` + 修好 + `retag` 重跑（`ref/retag_rest.py`）；以后改结构先全局搜旧变量名。
 
 - 0.1.17：tag `v0.1.17` → CI run `39063281635` **success**（远端 main = `49213969f0443663116ccd1098ab6b79b55d2e50`）
   → 交付邮件 **3:46 发出**（收件箱核验：附件 405.3 KB = 415,036 字节，整封 561.0 KB，带抄送）；

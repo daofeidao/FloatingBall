@@ -24,6 +24,7 @@
 // 默认值
 static const CGFloat kDefaultBallSize = 56.0;
 static const CGFloat kWindowPadding = 12.0;   // 窗口比球大一圈：给阴影和手指宽容区
+static NSString *const kDefaultBallStyle = @"BallDot";   // 贴图名（见 scripts/make_icon.py）
 
 static void LightHaptic(void)
 {
@@ -57,7 +58,7 @@ static void LightHaptic(void)
 @end
 
 @implementation BallRootViewController {
-    UIView *_ball;
+    UIImageView *_ball;       // 球本体（贴图；样式可在 App 里换）
     UILabel *_label;
     NSMutableDictionary *_prefs;
     CGPoint _grabOffset;      // 手指按下时，落在窗口内的位置
@@ -144,17 +145,18 @@ static void LightHaptic(void)
     CGFloat side = [self windowSide];
     CGFloat ball = [self ballSize];
 
-    _ball = [[UIView alloc] initWithFrame:CGRectMake((side - ball) / 2.0, (side - ball) / 2.0, ball, ball)];
-    _ball.backgroundColor = [UIColor colorWithWhite:0.0 alpha:0.55];
-    _ball.layer.cornerRadius = ball / 2.0;
-    _ball.layer.borderWidth = 1.0;
-    _ball.layer.borderColor = [UIColor colorWithWhite:1.0 alpha:0.35].CGColor;
+    // 球本体用贴图（样式可以在 App 里换），贴图由 scripts/make_icon.py 生成。
+    // 用贴图而不是纯色 + 描边，是为了「桌面图标」「屏幕上的球」长得一模一样。
+    _ball = [[UIImageView alloc] initWithFrame:CGRectMake((side - ball) / 2.0, (side - ball) / 2.0, ball, ball)];
+    _ball.contentMode = UIViewContentModeScaleAspectFit;
+    _ball.userInteractionEnabled = YES;
+    // 阴影得自己画：贴图是透明底的，没有背景色可以借
     _ball.layer.shadowColor = [UIColor blackColor].CGColor;
     _ball.layer.shadowOpacity = 0.35;
     _ball.layer.shadowRadius = 6.0;
     _ball.layer.shadowOffset = CGSizeMake(0.0, 2.0);
-    _ball.userInteractionEnabled = YES;
     [self.view addSubview:_ball];
+    [self applyBallStyle];
 
     if ([self.view isKindOfClass:[FBPassThroughView class]]) {
         [(FBPassThroughView *)self.view setInteractiveSubview:_ball];
@@ -164,6 +166,11 @@ static void LightHaptic(void)
     _label.textAlignment = NSTextAlignmentCenter;
     _label.textColor = [UIColor whiteColor];
     _label.font = [UIFont systemFontOfSize:MAX(11.0, ball * 0.32) weight:UIFontWeightSemibold];
+    // 给数字加个淡淡的描边阴影：换成「白点」样式时白字压白底会看不见
+    _label.layer.shadowColor = [UIColor blackColor].CGColor;
+    _label.layer.shadowOpacity = 0.55;
+    _label.layer.shadowRadius = 2.0;
+    _label.layer.shadowOffset = CGSizeMake(0.0, 1.0);
     [_ball addSubview:_label];
     [self refreshLabel];
 
@@ -337,6 +344,36 @@ static void LightHaptic(void)
 
 #pragma mark - 视图刷新
 
+- (void)applyBallStyle
+{
+    NSString *name = _prefs[@"BallStyle"];
+    if (![name isKindOfClass:[NSString class]] || name.length == 0) {
+        name = kDefaultBallStyle;
+    }
+
+    UIImage *image = [UIImage imageNamed:name];
+    if (image) {
+        _ball.image = image;
+        _ball.backgroundColor = [UIColor clearColor];
+        _ball.layer.borderWidth = 0.0;
+        FBLog(@"球样式=%@", name);
+    } else {
+        // 贴图没打进去也得有个球，否则「球没出来」和「贴图丢了」分不清
+        _ball.image = nil;
+        _ball.backgroundColor = [UIColor colorWithWhite:0.0 alpha:0.55];
+        _ball.layer.borderWidth = 1.0;
+        _ball.layer.borderColor = [UIColor colorWithWhite:1.0 alpha:0.35].CGColor;
+        FBLog(@"⚠️ 找不到贴图 %@，退化成纯色球", name);
+    }
+    [self updateShadowPath];
+}
+
+- (void)updateShadowPath
+{
+    // 阴影要按「圆形路径」给：默认按 bounds 算会露出四个角的方影
+    _ball.layer.shadowPath = [UIBezierPath bezierPathWithOvalInRect:_ball.bounds].CGPath;
+}
+
 - (void)refreshLabel
 {
     _label.hidden = !_showText;
@@ -359,11 +396,13 @@ static void LightHaptic(void)
     _ball.layer.cornerRadius = ball / 2.0;
     _label.frame = _ball.bounds;
     _label.font = [UIFont systemFontOfSize:MAX(11.0, ball * 0.32) weight:UIFontWeightSemibold];
+    [self updateShadowPath];
 }
 
 - (void)reloadSettings
 {
     [self loadPrefs];
+    [self applyBallStyle];   // 样式可能被改了，先换图再排布局
     [self applyLayout];
 
     // App 那边点了「复位位置」：BallX/BallY 写成 -1

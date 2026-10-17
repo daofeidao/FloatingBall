@@ -53,10 +53,12 @@ fi
 if [ -d "$BUILD_LOCATION" ]; then
     echo "Adding application files"
     cp -r "$APP_BUILD_FILES/Info.plist" "$BUILD_LOCATION/Info.plist"
-    # 图标：有才拷（缺了不致命，只是桌面上是默认图标）
+    # 图标 + 球贴图：把 layout 里的 png 全拷过去。
     # ⚠️ 这里必须用 if，不能用 `[ -f x ] && cp`：
     #    后者在文件不存在时给 `for` 留一个退出码 1，配上 `set -e` 会直接把脚本干掉。
-    for f in "$APP_BUILD_FILES/AppIcon60x60@2x.png" "$APP_BUILD_FILES/AppIcon60x60@3x.png" "$APP_BUILD_FILES/icon.png"; do
+    # ⚠️ 不能只列 AppIcon 那几个名字 —— 球贴图（BallDot 等）也要进包，
+    #    少一张不会编译报错，只会「手机上换样式没反应」，极难查。
+    for f in "$APP_BUILD_FILES"/*.png; do
         if [ -f "$f" ]; then
             cp "$f" "$BUILD_LOCATION/"
         fi
@@ -88,6 +90,16 @@ if [ -d "$BUILD_LOCATION" ]; then
         fi
     fi
     echo "[*] entitlements 自检通过"
+
+    # 硬闸：三张球贴图必须都在。少了**不会**编译报错，
+    # 只会在手机上表现为「换样式没反应」，所以必须在这里拦住。
+    for n in BallDot BallPlain BallWhite; do
+        if [ ! -f "Payload/FloatingBall.app/$n.png" ]; then
+            echo "[!] 致命：Payload 里缺 $n.png（App 里换样式会没反应）"
+            exit 1
+        fi
+    done
+    echo "[*] 球贴图自检通过（BallDot / BallPlain / BallWhite）"
 
     zip -qr FloatingBall.tipa Payload
     rm -rf Payload

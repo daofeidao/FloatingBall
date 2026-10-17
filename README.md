@@ -25,24 +25,37 @@ iPhone 上的**全局悬浮球**：浮在所有 App 之上，轻点/双击/滑�
 本地（Windows）**不能编译**，只能靠 CI：
 
 ```
-写代码 -> push -> GitHub Actions (macos-13 + Xcode 15.1 + theos) -> build/FloatingBall.tipa
+写代码 -> push -> GitHub Actions (macos-14 + Xcode 15.1 + theos) -> build/FloatingBall.tipa
 ```
 
 打 tag（`v0.1.0`）会发布 Release 并附带 `FloatingBall.tipa`。
 版本号唯一真源是 `layout/Applications/FloatingBall.app/Info.plist` 的 `CFBundleShortVersionString`。
 
-改图标：`python scripts/make_icon.py`（自己画 PNG，不依赖 Pillow）。
+改图标 / 球的样子：`python scripts/make_icon.py`（自己画 PNG，不依赖 Pillow）。
+想先看效果：`python scripts/preview_styles.py` → `ref/style_preview.png`（不参与打包）。
+
+球的样子一共 3 种，设置里存的就是**贴图名**（`BallStyle` = `BallDot` / `BallPlain` / `BallWhite`），
+所以 App 和悬浮球进程两边都不需要维护第二份映射，加样式只改脚本 + `BallStyle` 这个 enum：
+
+| 贴图 | 样子 | 说明 |
+|---|---|---|
+| `BallDot` | 系统小圆点 | **默认**，照 iPhone 自带的辅助触控小圆点画的（桌面图标也是它） |
+| `BallPlain` | 纯色 | 一个干净的半透明圆 |
+| `BallWhite` | 白点 | 深色壁纸、夜里更容易看见 |
 
 ## 怎么验证 v0.1
 
 1. **装**：`FloatingBall.tipa` 传到手机 → 用巨魔（TrollStore）打开安装。
 2. **开**：打开 App → 第一栏「启动」→ 把「启动悬浮球」打开。
-   状态应变成「运行中」，屏幕上（右侧靠边、垂直居中）出现一个半透明圆球。
+   状态应变成「运行中」，屏幕上（右侧靠边、垂直居中）出现一个圆球
+   （默认就是和系统小白点一样的那个）。
 3. **验**：
    - **浮在最上层**：切到别的 App（微信、设置随便），球还在 → 这一条过了，整个形态就成立。
    - **点得到**：轻点球 → 计数 +1 并且打开「设置」；回 App 里看「轻点次数」。
    - **拖得动**：按住球拖到别的位置，松手会吸到左/右边缘；杀进程重开，位置还在。
    - 双击 = 计数清零；长按 = 显示/隐藏数字。
+   - **换样子**：「样子」一栏点另外两个缩略图，球应立刻变（不用重开）。
+   - **改大小**：拖「大小」滑块（32~100pt），球应立刻跟着变；方块里的预览就是实际大小。
 4. **关了**：把开关关掉，球消失。
 
 ### ⚠️ 万一手机变得点不动了

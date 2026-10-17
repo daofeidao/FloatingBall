@@ -30,6 +30,11 @@ enum BallSettings {
         return v
     }
 
+    static func string(_ key: String, `default` fallback: String) -> String {
+        let dict = UserDefaults().loadUserDefaults(forPath: path)
+        return (dict[key] as? String) ?? fallback
+    }
+
     // MARK: - 写
 
     static func set(_ value: Any?, _ key: String) {

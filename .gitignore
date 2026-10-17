@@ -8,3 +8,7 @@ obj/
 
 # 参考材料（TheBall 的 IPA 与分析报告，不提交）
 ref/
+
+# Python 缓存
+__pycache__/
+*.pyc

@@ -505,6 +505,28 @@ static void FBHandleHIDEvent(int route, void *target, void *refcon, IOHIDService
         // 「盲喂」= 不看坐标，任何一下都当点球（只在用户手动打开的测试模式下）
         BOOL takeOverArea = onBall || gFBBlindFeed;
 
+        // ---- 0.1.17：手指不会瞬移 ----
+        // 触点还活着时，新事件的点离上一次喂过的点太远（>90pt 且隔了 30ms 以上），
+        // 那一定是**新的一下**，不是这一根的移动 —— 先把旧的结束，再按新触点处理。
+        // （修「只有第一下有用」：后面的点击全被并成第一根的「移动」，于是再也没有新触摸）
+        if (gFBActivePointer != 0 && sLastFedAt > 0) {
+            CGFloat dx = winPt.x - sLastFedPoint.x;
+            CGFloat dy = winPt.y - sLastFedPoint.y;
+            if (dx * dx + dy * dy > 90.0 * 90.0 && (now - sLastFedAt) > 0.03) {
+                [TSEventFetcher receiveAXEventID:gFBActivePointer
+                              atGlobalCoordinate:sLastFedPoint
+                                  withTouchPhase:UITouchPhaseEnded
+                                        inWindow:window
+                                          onView:ball];
+                FBLog(@"触摸：点跳了 %.0fpt（%.0f,%.0f → %.0f,%.0f），先把触点 %ld 结束掉",
+                      sqrt(dx * dx + dy * dy),
+                      sLastFedPoint.x, sLastFedPoint.y, winPt.x, winPt.y,
+                      (long)gFBActivePointer);
+                sLastEndReason = @"跳点补抬起";
+                gFBActivePointer = 0;
+            }
+        }
+
         // ---- 0.1.16：先处理「上一轮还没结束，但事件流已经断档」----
         // 真机上「点一下之后球就卡死」的成因：抬起事件没送到 → 我们一直攥着假触点 →
         // 后面的点击全被当成这一根的「移动」→ 不会再产生新的触摸 → 手势再也不触发。
@@ -544,9 +566,13 @@ static void FBHandleHIDEvent(int route, void *target, void *refcon, IOHIDService
                    || (sHIDSawTouch && hidUp);
         if (lifted) sSawLiftSignal = YES;
 
-        // 没有任何手指数据的「空事件」：坐标是 (0,0) 且没落在球上。
+        // 没有任何手指数据的「空事件」：坐标是 (0,0)，或者换算后跑到屏幕外面去了。
         // ⚠️ 这种事件如果当成「移动」喂进去，球会瞬间跳到左上角（用户报的那个 bug）。
-        BOOL bogusPoint = (location.x == 0.0 && location.y == 0.0) && !onBall;
+        BOOL bogusPoint = !onBall && (
+              (location.x == 0.0 && location.y == 0.0)
+            || winPt.x < -30.0 || winPt.y < -30.0
+            || winPt.x > screenRect.size.width + 30.0
+            || winPt.y > screenRect.size.height + 30.0);
 
         UITouchPhase phase;
         BOOL isNewTouch = NO;
@@ -623,23 +649,22 @@ static void FBHandleHIDEvent(int route, void *target, void *refcon, IOHIDService
         sLastFedAt = now;
         sLastFedPoint = winPt;
 
-        // 0.1.16：**定时兜底**。抬起事件可能压根送不到（真机上表现就是「点一下之后卡死」）：
-        // 光靠「等下一条事件」永远等不到结束，于是一直攥着假触点、后面的点击全被吃掉。
-        // 0.42 秒（比长按的 0.5 秒短）没有新事件就自己交还 —— 单击不会变成长按，
-        // 双击也不会被第一下吞掉。手指一直按着时事件流不断，这个兜底不会误伤长按。
+        // 0.1.17：**定时兜底**（0.42 → 0.18 秒）。真机上抬起事件送不到，光靠「等下一条事件」
+        // 永远等不到结束：一直攥着假触点，后面的点击全被吃掉 —— 就是「只有第一下有用」。
+        // 0.18 秒没有新事件就自己交还：单击立即生效、双击不会被第一下吞掉。
+        // 手指动的时候事件流不断（每来一条就换一代），所以拖动不会被误杀；
+        // 只有「按住不动」时才会 0.18 秒交还 —— 长按要 0.5 秒，真机上能不能活看事件流是否持续。
         NSUInteger gen = ++sFeedGeneration;
-        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.42 * NSEC_PER_SEC)),
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.18 * NSEC_PER_SEC)),
                        dispatch_get_main_queue(), ^{
             if (gen != sFeedGeneration) return;       // 期间又来事件了 → 交给最新那一代
             if (gFBActivePointer == 0) return;
-            NSTimeInterval t = [NSDate timeIntervalSinceReferenceDate];
-            if (sLastFedAt > 0 && t - sLastFedAt < 0.40) return;
             [TSEventFetcher receiveAXEventID:gFBActivePointer
                           atGlobalCoordinate:sLastFedPoint
                               withTouchPhase:UITouchPhaseEnded
                                     inWindow:window
                                       onView:ball];
-            FBLog(@"触摸：0.42 秒没新事件，自己交还触点 %ld（抬起事件没送到）",
+            FBLog(@"触摸：0.18 秒没新事件，自己交还触点 %ld（抬起事件没送到）",
                   (long)gFBActivePointer);
             sLastEndReason = @"定时器";
             gFBActivePointer = 0;

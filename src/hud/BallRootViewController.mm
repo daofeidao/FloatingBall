@@ -310,8 +310,27 @@ void FBBallHapticTouchDown(void)
 
 - (void)savePrefs
 {
-    NSDictionary *snapshot = [_prefs copy];
-    [snapshot writeToFile:USER_DEFAULTS_PATH atomically:YES];
+    // ⚠️⚠️ 0.1.17 修（用户 0.1.16 反馈「改形状/颜色/大小/透明度都没反应」）：
+    //   以前这里是 `[_prefs copy] writeToFile:` —— 把 HUD **启动时读进来的旧快照整份写回**。
+    //   App 改了外观 → HUD 只要点一下球/拖一下（都会 savePrefs），就把旧值盖回去，
+    //   于是外观永远是旧的（诊断里「直径 52 / 透明度 0.95」就是被盖回去的旧值）。
+    //   现在：**只回写 HUD 自己负责的键**，其余键以磁盘上的为准；写完全内存也跟磁盘对齐。
+    NSDictionary *onDisk = [NSDictionary dictionaryWithContentsOfFile:USER_DEFAULTS_PATH];
+    NSMutableDictionary *disk = onDisk ? [onDisk mutableCopy] : [NSMutableDictionary dictionary];
+
+    static NSArray<NSString *> *ownedKeys = nil;
+    if (!ownedKeys) {
+        ownedKeys = @[@"TapCount", @"BallX", @"BallY", @"ShowLabel", @"PendingTab"];
+    }
+    for (NSString *k in ownedKeys) {
+        id v = _prefs[k];
+        if (v) disk[k] = v;
+        else [disk removeObjectForKey:k];
+    }
+
+    if ([disk writeToFile:USER_DEFAULTS_PATH atomically:YES]) {
+        _prefs = disk;      // 外观那些键也顺手更新成磁盘上的最新值
+    }
 }
 
 - (CGFloat)ballSize
@@ -705,6 +724,12 @@ void FBBallHapticTouchDown(void)
     }
     CGPoint onScreen = CGPointMake(window.frame.origin.x + inWindow.x,
                                    window.frame.origin.y + inWindow.y);
+
+    // ⚠️ 0.1.17：再加两道闸，彻底堵住「球突然跳到左上角」
+    //   ① 空点 (0,0) 直接忽略；② 换算后跑到屏幕外（留 40pt 余量）也忽略。
+    CGRect scr = [self screenBounds];
+    if (onScreen.x <= 1.0 && onScreen.y <= 1.0) return;
+    if (!CGRectContainsPoint(CGRectInset(scr, -40.0, -40.0), onScreen)) return;
 
     if (g.state == UIGestureRecognizerStateBegan) {
         _grabOffset = CGPointMake(onScreen.x - window.frame.origin.x,

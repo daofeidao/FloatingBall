@@ -172,7 +172,7 @@ struct AboutTab: View {
                         .font(.footnote)
 
                     if !diag.isEmpty {
-                        Text("深读=\(diag["深读"] ?? "?")   结束=\(diag["结束"] ?? "?")   AX: \(diag["AX"] ?? "?")")
+                        Text("深读=\(diag["深读"] ?? "?")   结束=\(diag["结束"] ?? "?")   接管/喂球=\(diag["累计接管"] ?? "?")/\(diag["累计喂球"] ?? "?")")
                             .font(.system(.caption2, design: .monospaced))
                             .foregroundColor(.secondary)
                     }

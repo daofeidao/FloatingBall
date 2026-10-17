@@ -150,7 +150,7 @@ iPhone 上的**全局悬浮球**：浮在所有 App 之上，轻点/双击/滑�
    - **改大小**：拖「大小」滑块（32~100pt），球应立刻跟着变；方块里的预览就是实际大小。
    - **调不透明度**：拖「不透明度」滑块（30%~100%），球应立刻变淡/变实。
    - **手势绑定**：「启动」页「手势」一栏，单击/双击/长按各点开选一个动作，回桌面点球看效果。
-   - **快捷列表**：「快捷应用」页点「添加」，加个 App 或内置动作；点那一行就执行。
+   - **快捷菜单**：第二栏（0.1.9 起从「快捷应用」改名）点「添加」，加个 App 或内置动作；点那一行就执行。
    - **震动**：点球、球落位、执行动作时应各震一下；「启动」页的「震动反馈」开关能关掉它（关了就不震），
      开关旁边有「试一下震动」按钮可以当场试。
    - **全局返回**：把某个手势绑成「全局返回」→ 去「设置」里点进一个二级页面 → 回桌面点球，
@@ -176,7 +176,8 @@ iPhone 上的**全局悬浮球**：浮在所有 App 之上，轻点/双击/滑�
 | 动作 | 干什么 |
 |---|---|
 | 刷新信号 | 让基带重新注册、重新搜网（卡贴机没信号/假信号时用，见下） |
-| 打开悬浮球 / 打开快捷列表 | 拉起 App 并落在对应那一栏 |
+| 打开悬浮球 / 打开快捷菜单 | 拉起 App 并落在对应那一栏 |
+| 截屏（0.1.9） | 先走系统的截图服务，取不到才注入「音量加 + 电源」组合键（见上面「截屏」一节） |
 | 移动悬浮图标 | 球高亮进入「移动模式」，拖一下落位；点一下退出（防误触） |
 | 显示/隐藏数字 | 球上那个数字 |
 | 什么都不做 | —— |
@@ -235,11 +236,33 @@ _CTServerConnectionResetModem(conn, CFSTR("UserTriggeredReload"))
 **万一界面卡住点不动**：长按「电源 + 音量减」强制重启即可恢复
 （球不是开机自启的守护进程，重启就没了，不留残留）。
 
-### 还没做的：截图
+### 截屏（0.1.9 做了）
 
-截图要么得把 SpringBoard 的二进制 dlopen 进来调它的单例（后果不可控），
-要么得模拟「电源 + 音量加」的组合 HID 事件 —— 现成配方没有一条是「iOS 15.6.1 上确定可用」的，
-所以继续押着（和全局返回当初押后的原因一样）。
+用户 2026-10-17 追加：「内置动作库+【截图】功能」。
+
+两条路，**先走安全的那条，取不到才兜底**（实现在 `src/hud/FBSystemActions.mm`
+的 `FBTakeScreenshot()`，日志前缀「截屏：」）：
+
+| 路 | 做法 | 风险 |
+|---|---|---|
+| ① `ScreenshotServices`（优先） | dlopen 这个私有 framework，用 `SSScreenCapturer` + `SSScreenCapturerPresentationOptions(setPresentationMode:NO)` 截一张、直接存相册；先用 `SSScreenCaptureAbilityCheck +isAbleToTakeScreenshots` 问系统允不允许 | **不注入任何输入** —— 没有「卡住一根手指 / 一个按键」的风险 |
+| ② 注入「音量加 + 电源」组合键（兜底） | `IOHIDEventCreateKeyboardEvent`（consumer page `0x0C`，usage `0x30`=Lock / `0xE9`=VolumeUp），和全局返回同一套注入机制 | 和全局返回同级；电源只按 60ms，**万一没被认成组合键 → 结果只是锁屏**，解锁继续用，不丢东西 |
+
+为什么 ① 优先：iOS 11 起截图这套能力从 SpringBoard 搬进了 `ScreenshotServices`，
+SpringBoard 自己的 `-takeScreenshotAndEdit:` 和**辅助触控的「截屏」**都是调它 ——
+辅助触控跟我们一样是独立进程，所以这条路是「有据可查」的。
+私有类一律 `dlopen` + `NSClassFromString`（取不到只是返回 nil，不会链接失败），
+整个过程包在 `@try` 里：真抛异常只影响我们自己这个进程（球进程崩了 = 球消失，
+去 App 把开关关一下再打开就回来，不动系统）。
+
+②的用法号来自 Apple Wiki 的 iPhone 按钮 HID 表（`12/0x30`=Lock、`12/0xe9`=Volume
+Increase），并且严格遵守全局返回那三条保命写法：**四条事件先全造出来再发**
+（造不全一个都不发）、用真机那一路 sender ID、发完 600ms 再补两条「松开」。
+2 秒冷却，防手抖连点。
+
+⚠️ 两条都没走通时（`FBTakeScreenshot()` 返回 0），日志里会列出这台系统上
+**实际存在**的私有类（`SBScreenShotter` / `SSMainScreenSnapshotter` …），
+给下一版指路 —— 相当于让用户的手机帮我们做一次侦察。
 
 ### ⚠️ 万一手机变得点不动了
 
@@ -310,9 +333,9 @@ _CTServerConnectionResetModem(conn, CFSTR("UserTriggeredReload"))
 | 有 `球露面了` 但屏幕上没球 | 窗口特权/层级问题 |
 | 球在但点不动 | 见下面「怎么判断触摸到底进没进来」两行日志 |
 
-## 震动反馈（0.1.4）
+## 震动反馈（0.1.4，0.1.9 起强度和时长可调）
 
-两个进程各有一份实现，共用**同一个设置键**：
+两个进程各有一份实现，共用**同一批设置键**：
 
 | 谁 | 文件 |
 |---|---|
@@ -325,7 +348,7 @@ _CTServerConnectionResetModem(conn, CFSTR("UserTriggeredReload"))
 |---|---|---|
 | `tap` | 轻 | 识别到点击；球的拖动落位；在设置里选中某个选项 |
 | `action` | 中 | 动作真的执行了：进/出移动模式、显示隐藏数字、开关悬浮球、复位位置 |
-| `notice` | 通知（两下） | 刷新信号 —— **只表示「交代出去了」，不表示成功**（这个 API 没有回执） |
+| `notice` | 两下 | 刷新信号 —— **只表示「交代出去了」，不表示成功**（这个 API 没有回执） |
 
 开关：`HapticsEnabled`（Bool，**默认开**），在「启动」页。
 开关旁边有个「试一下震动」按钮，走的是同一个开关（关着就不震，免得让人以为开关坏了）。
@@ -336,6 +359,24 @@ HUD 侧判断 `NSNumber` 在不在）—— 否则老版本升上来会突然变
 ⚠️ 手机上「设置 → 声音与触感 → 系统触感反馈」关掉的话，我们全部没感觉。
 那是系统总开关，绕不过去，所以 App 界面和交付邮件里都提示了这一条。
 
+### 强度和时长（0.1.9）
+
+| 键 | 范围 | 默认 | 怎么用 |
+|---|---|---|---|
+| `HapticIntensity` | 0.2~1.0 | 1.0 | `UIImpactFeedbackGenerator -impactOccurredWithIntensity:` |
+| `HapticDurationMs` | 10~300 ms | 30 | 见下 |
+
+⚠️ **「时长」是拼出来的，不是真的毫秒波形。** iOS 不给第三方指定毫秒级的振动
+（Taptic 引擎「敲一下」的长度是系统定死的），想精确到毫秒得用 `CoreHaptics`，
+而 `CoreHaptics` 要求 App 在前台 + 有音频会话 —— HUD 那个常驻 root 进程里不靠谱。
+所以：**每 40ms 敲一下，`pulses = round(ms / 40)`，1~8 下**（不到 40ms = 1 下，
+300ms ≈ 8 下）。App 界面上直接写明了这一点，不让用户以为能调出任意波形。
+
+⚠️ 两侧算法必须一模一样：`Haptics.pulseSpacingMs/maxPulses` ↔
+`FBHapticPulseSpacingMs/FBHapticMaxPulses`；`Haptics.pulses` ↔ `- hapticPulses`。
+
+「通知那种两下」也改成两下 `medium` impact（0.1.9 起），这样它同样受「强度」控制。
+
 ### 跟手性：按下去就得立刻震（0.1.7）
 
 0.1.4~0.1.6 的写法有两个地方注定「慢半拍」，用户一按就感觉出来了：
@@ -343,8 +384,8 @@ HUD 侧判断 `NSNumber` 在不在）—— 否则老版本升上来会突然变
 1. **每次都新建一个生成器，然后 `prepare()` + 立刻震。**
    `prepare()` 是**异步**预热振动引擎的，跟 `impactOccurred()` 挤在同一个 tick 里，
    那一下引擎还是凉的 —— 表现就是延迟、跟手性差。
-   → 改成**生成器常驻**（Swift 侧 `lightGen`/`mediumGen`/`noticeGen`；HUD 侧
-   `sHapticLight`/`sHapticMedium`/`sHapticNotice`），界面一出现就 `warmUp()`，
+   → 改成**生成器常驻**（Swift 侧 `lightGen`/`mediumGen`；HUD 侧
+   `sHapticLight`/`sHapticMedium`），界面一出现就 `warmUp()`，
    震完 0.8 秒再补一次 `prepare()` 保温；HUD 侧额外每 2 秒保温一次（球可能挂很久不被碰）。
 2. **SwiftUI 的 `Button` 是「松开」才执行 action。**
    按键的反馈必须落在**按下去**那一刻，所以加了 `View.hapticOnPress(_:)`：
@@ -371,3 +412,4 @@ HUD 侧判断 `NSNumber` 在不在）—— 否则老版本升上来会突然变
 | 0.1.6 | **触摸自检**（「关于」页直接看①~⑤哪一段断了，见上）；修两个可能让球「被点穿」的点：`id<=0` 不再整条丢掉、HID 预热移出回调线程（回调里 dlopen 有卡死回调的风险） |
 | 0.1.7 | **触摸来源换路**：真机自检证明老的 `BKSHIDEventRegisterEventCallback` 一条事件都收不到（`回调=0`），改用 `IOHIDEventSystemClient` 监视客户端（CreateWithType(1) + SetMatching(触摸屏) + RegisterEventCallback + ScheduleWithRunLoop）；两条路分开计数（`路A=` / `路B=`），谁先来谁生效。**同时修震动跟手性**：生成器常驻 + 提前预热，按钮改成「按下去就震」（见「震动反馈」一节） |
 | 0.1.8 | **触摸改走真触摸**：逐条反汇编 TheBall 2.7 的 `HUDMainWindow`，发现它 `_ignoresHitTest = NO`（我们原来是 `YES`）——窗口重新参与命中测试，系统才会把落在球上的触摸送进这个进程。老路的 `_ignoresHitTest = YES` 是当年误判留下的（那时球上还没有手势识别器，触摸进来也没人接）。自检加一行「真触摸：窗口问= / 落在球= / 真点击=」，用来判断这条路通没通；真触摸一通就不再喂合成触摸（否则一次点击走两遍） |
+| 0.1.9 | **内置动作库加「截屏」**（先走 `ScreenshotServices`，取不到才注入「音量加 + 电源」组合键，见上面那节）；**震动强度和时长可调**（`HapticIntensity` / `HapticDurationMs`，见「震动反馈」一节）；第二栏「快捷应用」**改名「快捷菜单」**（只动文案，`rawValue` 不变，老绑定不受影响；内置动作的名字改成现算，老列表也立刻显示新名字） |

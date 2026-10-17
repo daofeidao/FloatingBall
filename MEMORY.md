@@ -24,7 +24,7 @@ iPhone 上的**全局悬浮球**（类似系统「辅助触控」小白点，但
 | 三栏 UI：启动 / 自定义快捷应用列表 / 关于 | 桌宠、GIF 背景、多语言、在线更新检查 |
 | 球的外观可调：形状（内置 3 个 + 自定义图片）/ 颜色 / 大小 / 不透明度（2026-10-17 用户新增） | 完整「图标库」（只做内置那几个，见第七节） |
 | 快捷列表（打开 App + 内置动作）、单击/双击/长按各绑一个动作、一键刷新信号（2026-10-17 追加） | 系统开关类里的飞行模式开关（`RadiosPreferences` 那套，单独一轮再说） |
-| | 「系统级返回」「截图」：要靠 HID 注入，见第十节 |
+| | 「系统级返回」（0.1.5 做了）、「截屏」（0.1.9 做了）：靠 HID 注入，见第十节 |
 
 ## 三、参考实现 TheBall 的分析结论（2026-10-16）
 
@@ -250,6 +250,8 @@ App 侧（uid 501）                          HUD 侧（root）
 
 用户原话：快捷程序里要一个「一键刷新信号」；单击/双击/拖动这些手势的备选里
 要有【系统级返回】【截图】【打开主程序界面】【移动悬浮图标】【打开快捷应用列表】等。
+（2026-10-17 追加：第二栏「快捷应用」改名「快捷菜单」，内置动作库补上【截屏】——
+上面的清单到 0.1.9 已经全齐；改名只动文案不动 `rawValue`，见 `ShortcutAction.title` 的注释。）
 
 **数据模型（App 和 HUD 读同一份 plist）**：
 
@@ -277,10 +279,18 @@ App 侧（uid 501）                          HUD 侧（root）
 | 动作 | 实现 |
 |---|---|
 | `refreshSignal` | `FBRefreshCellularSignal()`（私有 API，见下） |
+| `goBack` | `FBGoBack(球矩形)`（HID 注入「左缘右划」，见第十节） |
+| `screenshot` | `FBTakeScreenshot()`（先走 `ScreenshotServices`，取不到才注入「音量加 + 电源」，见第十节） |
 | `openMainApp` / `openAppList` | `PendingTab` + `FBOpenApplication(OWN_BUNDLE_ID)` |
 | `moveBall` | HUD 侧移动模式：球加蓝圈高亮、隐藏数字、点一下退出、拖完自动退出（防误触） |
 | `toggleLabel` | 写 `ShowLabel` + `savePrefs`，HUD 和 App 都能改（`reloadSettings` 会重读） |
 | `none` | 不做事 |
+
+- ⚠️ **`rawValue` 是数据，不许改；`title`/`detail`/`symbol` 只是文案，随便改。**
+  用户的快捷列表（`Shortcuts`）和手势绑定里存的就是 `rawValue`，改了老绑定全失效。
+  2026-10-17 的「快捷应用 → 快捷菜单」就是这么做的。
+  配套：`ShortcutItem.displayTitle` 对内置动作**现算** `action.title`，
+  所以已经存过 `title` 的老列表也会立刻显示新文案（不用迁移、不用重新添加）。
 
 - 新文件 `src/hud/FBSystemActions.{h,mm}`：`FBRefreshCellularSignal` / `FBOpenApplication`
   两个 C 函数，**HUD 和 App 共用一份实现**（同一个二进制、同一份 entitlements，只是 uid 不同）。
@@ -323,6 +333,22 @@ _CTServerConnectionResetModem(conn, CFSTR("UserTriggeredReload"))
 - ⚠️ 手机上「设置 → 声音与触感 → 系统触感反馈」关掉的话全部没感觉。
   那是系统总开关，绕不过去 → App 界面 footer 和交付邮件里都要提示用户去查这一条。
 
+**震动强度和时长可调（0.1.9，用户 2026-10-17 追加）**：
+
+- 两个新键（与开关同住一个 plist，App 和 HUD 都读）：
+  `HapticIntensity` 0.2~1.0（默认 1.0）、`HapticDurationMs` 10~300ms（默认 30）。
+- 强度走 `UIImpactFeedbackGenerator -impactOccurredWithIntensity:`（iOS 13+）。
+- ⚠️ **「时长」是拼出来的，不是毫秒波形**：iOS 不给第三方指定毫秒级的振动
+  （Taptic 引擎「敲一下」的长度是系统定死的）；要精确得用 `CoreHaptics`，
+  而它要求 App 在前台 + 有音频会话 —— HUD 那个常驻 root 进程里不靠谱。
+  所以定义：**每 40ms 敲一下，`pulses = round(ms/40)`，夹在 1~8 下**
+  （`Haptics.pulseSpacingMs/maxPulses` ↔ `FBHapticPulseSpacingMs/FBHapticMaxPulses`，
+  两侧算法必须一致）。App 界面上写明了这点，不承诺「任意毫秒波形」。
+- `notice`（刷新信号）从 `UINotificationFeedbackGenerator` 改成**两下 medium impact**，
+  这样它也受「强度」控制。
+- 拖滑块时要**当场试震**（强度每档都震；时长只在 50 的整数倍上震一下 ——
+  10ms 一档全震会太吵、滑块也拖不动）。
+
 ## 八、硬规则（不要重走）
 
 - **脚本/命令功能**：将来若要做，必须复用 TT 的 `DangerGuard`（硬拦截、无放行按钮、默认关闭）。
@@ -362,6 +388,20 @@ _CTServerConnectionResetModem(conn, CFSTR("UserTriggeredReload"))
       · 注入完了但界面没退 = 坐标/配方不对（无危险），下一轮调。
       ⚠️ 这是**唯一一个能伤到系统的动作**：万一界面卡住点不动 → 长按电源+音量减强制重启。
       头几次用请盯着点，别在编辑到一半、有未保存内容的地方试。
+- [ ] **0.1.9 待验（2026-10-17 追加的三件小事）**：
+      ① **截屏**：把「截屏」加进快捷列表点一下 / 或绑到某个手势上。看日志 `/tmp/FloatingBall.log`
+         里「截屏：」那几行：
+         · `截屏：走系统截图服务（ScreenshotServices）` → 这条路通了（**没有任何注入**，最理想）；
+         · `截屏：开始注入按键组合…` → 走的是兜底路（音量加 + 电源），看图有没有进「相册 → 截屏」；
+         · 只出现「打不开 ScreenshotServices」+「没找到 SSScreenCapturer」→ ①不通，
+           日志里那句「这套系统里实际有：…」就是下一版的线索（会列出 `SBScreenShotter` 之类）。
+         ⚠️ 兜底路万一没被认成组合键 → 结果只是**锁屏**（解锁继续用，不丢东西）；
+         真卡住按键 → 长按电源+音量减强制重启。
+      ② **震动强度/时长**：「启动」页拖两个滑块，按「试一下震动」——
+         强度 20% 应该明显比 100% 弱；时长 10ms = 一下，300ms ≈ 连续八下（是「连敲」不是长振，
+         原因见 README 那节：iOS 不给第三方毫秒波形）。
+      ③ **改名**：第二栏 tab 文案应该是**快捷菜单**；手势菜单里那条内置动作应显示
+         「打开快捷菜单」（老列表里的旧文案也会立刻变 —— `ShortcutItem.displayTitle` 现算）。
 - [ ] 顺带把 `E:\文档\默认项目\MEMORY.md` 里两条过时信息更正：
       ① 「persona root spawn 是线索未证实」→ Helium/TheBall 都在生产用；
       ② 它指向的 `E:\文档\Helium\MEMORY.md` **并不存在**。
@@ -385,6 +425,26 @@ _CTServerConnectionResetModem(conn, CFSTR("UserTriggeredReload"))
 | 0.1.6 | 2026-10-17 | `E:\下载\FloatingBall_0.1.6.tipa` | 316,121 | `feb59a51` |
 | 0.1.7 | 2026-10-17 | `E:\下载\FloatingBall_0.1.7.tipa` | 326,684 | `4d8303bf` |
 | 0.1.8 | 2026-10-17 | `E:\下载\FloatingBall_0.1.8.tipa` | 327,798 | `44de69f7` |
+| 0.1.9 | 2026-10-17 | `E:\下载\FloatingBall_0.1.9.tipa` | 342,536 | `c74e9165` |
+
+- 0.1.9：tag `v0.1.9` → CI run `39039879844` **success** → 交付邮件 **22:24 发出**
+  （**首次按新规矩抄送 `lion.2026.10@proton.me`**；附件已在 126 收件箱核验：
+  `FloatingBall_0.1.9.tipa` 334.5 KB = 342,536 字节，整封 466.3 KB；
+  sha256 `c74e9165d5911b3ad13554dd3454a0901f3bfb078f40f7fab4d04e06ea5859c0`，
+  包内 0.1.9 / build 10，二进制 **962,560 B** —— 比 0.1.8 大 33,392 B）。
+  内容是**内置动作库加「截屏」（两条路）+ 震动强度/时长可调 + 「快捷应用 → 快捷菜单」改名**
+  （见 §七 那两节、§十 截图那节）。正文落盘 `ref/mail_0.1.9_body.txt`；
+  本地提交 `d66166a`，远端 main 推到 `9259df0af82193844e1071309f3b8d4567828eb2`
+  （REST 推送：本地 sha ≠ 远端 sha，打 tag 必须用 `ref/remote_head.py` 取完整 40 位）。
+  核对脚本落盘 **`ref/verify_0.1.9.py`**：20 项「新字符串只存在于 0.1.9」全绿
+  （ScreenshotServices 路径 / SSScreenCapturer 等类名 / `takeScreenshotWithPresentationOptions:` /
+  `IOHIDEventCreateKeyboardEvent` / `HapticIntensity` / `HapticDurationMs` /
+  `impactOccurredWithIntensity:` / 「快捷菜单」「内置动作库」「截屏」…），
+  ObjC 中文按 UTF-16-LE 找、Swift 中文按 UTF-8 找（这条 0.1.6 记过，别再搞错）。
+
+  ⚠️ **本机没有 `python`（PATH 里的只是商店占位符）**：用
+  `& "$env:USERPROFILE\.local\bin\python3.12.exe" ref\xxx.py`
+  （uv 装的那份；`py` / `python3` 都不在 PATH）。
 
 - 0.1.8：tag `v0.1.8` → CI **success** → 交付邮件 **21:49 发出**
   （附件已在 126 收件箱核验：`FloatingBall_0.1.8.tipa` 320.1 KB = 327,798 字节，
@@ -484,7 +544,7 @@ _CTServerConnectionResetModem(conn, CFSTR("UserTriggeredReload"))
   查询改用 Python 调 `gh api` 再自己解析，脚本放在 `ref/`（该目录已 gitignore，不进公开仓库）：
   `ref/ci_status.py`（看 runs + releases）、`ref/tag_rest.py`（REST 打 tag）、`ref/watch_tag.py`（盯 tag 构建）。
 
-## 十、系统级动作：全局返回（0.1.5 做了）/ 截图（还没做）
+## 十、系统级动作：全局返回（0.1.5 做了）/ 截屏（0.1.9 做了）
 
 ### 全局返回 —— 0.1.5 做了（2026-10-17 用户追加要求）
 
@@ -519,11 +579,36 @@ _CTServerConnectionResetModem(conn, CFSTR("UserTriggeredReload"))
 - **App 那边不执行这个动作**（`AppsTab.run`）：这时候 App 自己是前台，划出来没地方可返回，
   所以只弹一句说明，让用户去手势里绑。
 
-### 截图 —— 还是没做（别当成漏做）
+### 截图 —— 0.1.9 做了（2026-10-17 用户追加要求）
 
-要么把 SpringBoard 的二进制 dlopen 进来调它的单例（后果不可控），
-要么模拟「电源 + 音量加」的组合 HID 事件。网上现成配方没有一条是
-「iOS 15.6.1 上确定可用」的，所以继续押着（当初押后全局返回是同一个理由）。
+用户原话：「内置动作库+【截图】功能」。**两条路，先走安全的**（`FBTakeScreenshot()`）：
+
+1. **`ScreenshotServices`（优先，不注入任何输入）**
+   依据：iOS 11 起截图这套能力从 SpringBoard 搬进了 `ScreenshotServices.framework`；
+   SpringBoard 的 `-takeScreenshotAndEdit:` 和**辅助触控的「截屏」**都走它
+   （辅助触控跟我们一样是独立进程 —— 这是「有据可查」的关键）。
+   用到的私有类/方法：
+   - `SSScreenCaptureAbilityCheck` `+isAbleToTakeScreenshots`（开屏幕使用时间限制时为 NO）
+   - `SSScreenCapturerPresentationOptions` `-setPresentationMode:`（NO = 只保存，不弹编辑）
+   - `SSScreenCapturer` `-takeScreenshotWithPresentationOptions:`
+   ⚠️ 一律 `dlopen` + `NSClassFromString`（取不到返回 nil，不会链接失败）；整段包在
+   `@try` 里 —— 真抛异常只影响我们这个进程（球进程崩了 = 球消失，开关关一下再打开就回来）。
+2. **注入「音量加 + 电源」组合键（兜底）**
+   用法号：consumer page `0x0C`，usage `0x30`(Lock) / `0xE9`(VolumeUp)。
+   来源：Apple Wiki「iPhone 按钮」HID 表（`12/0x30` = Lock、`12/0xe9` = Volume Increase）。
+   遵守全局返回那三条保命写法（四条事件先全造出来再发 / 用真机 sender ID /
+   600ms 后补两条「松开」）；电源只按 60ms（远短于长按出关机滑块）；2 秒冷却。
+   ⚠️ **万一没被认成组合键 → 结果只是锁屏**（解锁继续用），不丢东西。
+
+为什么当初押后、现在敢做：① 当年只想到「dlopen SpringBoard 二进制」和「模拟按钮」两条，
+前者后果不可控；这次发现截图能力其实在**独立 framework** 里（加载它跟加载 SpringBoard 不是一回事）；
+② 兜底那次注入的失败模式是「锁屏 / 没反应」，不是「卡死系统」。
+③ `IOHIDEventCreateKeyboardEvent` 不进 `gFBHIDReady` 的判定 —— 它取不到只影响截屏，
+不该把「全局返回」一起拖死。
+
+`FBTakeScreenshot()` 返回 1（系统服务）/2（按键注入）/0（都没走通），
+走不通时日志里会列出这台机器上**实际存在**的私有类（`SBScreenShotter` / `SSMainScreenSnapshotter` …），
+等于让用户的手机帮我们做一次侦察 —— 下一版按那份清单再试。
 
 ### 顺带说明：0.1.4 及以前那条「替代方案」已经过时
 

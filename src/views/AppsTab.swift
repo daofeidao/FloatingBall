@@ -119,6 +119,13 @@ struct AppsTab: View {
                 Haptics.fire(.tap)
                 TabRouter.shared.tab = 1
 
+            case .goBack:
+                // ⚠️ 不在 App 里注入：这时候 App 自己就是前台，划出来也没地方可返回。
+                //    这个动作只在屏幕上的球上触发才有意义（那边走 HUD 的 performAction）。
+                Haptics.fire(.tap)
+                say("「全局返回」得在屏幕上的球上触发才有意义——在 App 自己里划「返回」没意义。\n\n"
+                    + "绑到手势上：回「启动」页 →「手势」那一栏，点单击/双击/长按的右边，选「全局返回」。")
+
             case .moveBall:
                 Haptics.fire(.tap)
                 say("「移动悬浮图标」得在屏幕上的球上触发才有意义——在 App 里挪不了球。")

@@ -347,6 +347,23 @@ static void FBHapticPlay(FBHapticKind kind)
         return;
     }
 
+    if ([action isEqualToString:@"goBack"]) {
+        // 【全局返回】= 往系统注入一次「左缘往右划」，等于用户按了「上一页」。
+        // ⚠️ 这是全项目唯一一个能伤到系统本身的动作（见 FBSystemActions.mm 顶部那三条保命写法）。
+        // 球的屏幕矩形必须传进去：落点要避开球自己，
+        // 否则球会把自己注入的划动当成「用户在拖它」（球乱跑，甚至自己触发自己）。
+        CGRect ballOnScreen = CGRectZero;
+        if (_ball && _ball.window) {
+            CGRect inWindow = [_ball convertRect:_ball.bounds toView:_ball.window];
+            ballOnScreen = CGRectOffset(inWindow, _ball.window.frame.origin.x, _ball.window.frame.origin.y);
+            ballOnScreen = CGRectInset(ballOnScreen, -10.0, -10.0);   // 多留一点余量
+        }
+        BOOL sent = FBGoBack(ballOnScreen);
+        FBLog(@"绑定动作=全局返回 -> %@",
+              sent ? @"已注入左缘右划（看界面回没回上一页）" : @"没注进去（原因看上一行日志）");
+        return;
+    }
+
     FBLog(@"⚠️ 认不出的动作：%@", action);
 }
 

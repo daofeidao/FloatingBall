@@ -17,6 +17,7 @@
 
 #import "HUDHelper.h"
 #import "FBLog.h"
+#import "FBSystemActions.h"
 
 #import "../helpers/ts/TSEventFetcher.h"
 #import "../helpers/private_headers/AXEventRepresentation.h"
@@ -67,6 +68,10 @@ void _HUDEventCallback(void *target, void *refcon, IOHIDServiceRef service, IOHI
 #if DEBUG
     os_log_debug(OS_LOG_DEFAULT, "_HUDEventCallback => %{public}@", event);
 #endif
+
+    // 顺手把真机的 sender ID 学下来：注入触摸（全局返回）必须用它。
+    // 放在最前面 —— 下面有好几条早退分支，不管走哪条都先把这条记下来。
+    FBHIDNoteRealEvent(event);
 
     // iOS 15.1+ 用 AXRuntime 那条路处理 HID 事件
     if (@available(iOS 15.1, *)) {}

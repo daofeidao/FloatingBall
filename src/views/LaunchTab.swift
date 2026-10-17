@@ -359,7 +359,8 @@ struct LaunchTab: View {
 
     // MARK: - 读写设置
 
-    private func refresh() {        enabled = IsHUDEnabledBridger()
+    private func refresh() {
+        enabled = IsHUDEnabledBridger()
         status = enabled ? "运行中" : "未运行"
         tapCount = BallSettings.integer("TapCount", default: 0)
         hapticsOn = BallSettings.bool("HapticsEnabled", default: true)

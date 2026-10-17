@@ -18,6 +18,7 @@ import Foundation
 
 enum ShortcutAction: String, CaseIterable, Identifiable {
     case refreshSignal      // 刷新蜂窝信号
+    case goBack             // 全局返回（往系统注入一次「左缘往右划」）
     case openMainApp        // 打开悬浮球主界面
     case openAppList        // 打开快捷应用列表
     case moveBall           // 移动悬浮图标
@@ -29,6 +30,7 @@ enum ShortcutAction: String, CaseIterable, Identifiable {
     var title: String {
         switch self {
         case .refreshSignal: return "刷新信号"
+        case .goBack:        return "全局返回"
         case .openMainApp:   return "打开悬浮球"
         case .openAppList:   return "打开快捷列表"
         case .moveBall:      return "移动悬浮图标"
@@ -41,6 +43,7 @@ enum ShortcutAction: String, CaseIterable, Identifiable {
     var detail: String {
         switch self {
         case .refreshSignal: return "卡贴机没信号 / 假信号时点一下，让基带重新搜网"
+        case .goBack:        return "⚠️ 等于按「上一页」：往系统注入一次左缘右划。万一界面卡住点不动 → 强制重启即可恢复"
         case .openMainApp:   return "回到悬浮球 App 的「启动」页"
         case .openAppList:   return "回到悬浮球 App 的「快捷应用」页"
         case .moveBall:      return "球变成可拖动状态，拖着放到顺手的位置"
@@ -52,6 +55,7 @@ enum ShortcutAction: String, CaseIterable, Identifiable {
     var symbol: String {
         switch self {
         case .refreshSignal: return "antenna.radiowaves.left.and.right"
+        case .goBack:        return "arrow.uturn.backward"
         case .openMainApp:   return "app.badge"
         case .openAppList:   return "square.grid.2x2"
         case .moveBall:      return "hand.draw"

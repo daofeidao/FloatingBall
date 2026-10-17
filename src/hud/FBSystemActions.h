@@ -9,6 +9,7 @@
 //
 
 #import <Foundation/Foundation.h>
+#import <CoreGraphics/CoreGraphics.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -28,6 +29,26 @@ BOOL FBRefreshCellularSignal(void);
 /// 两条路：LSApplicationWorkspace（优先）→ SBSLaunchApplicationWithIdentifierAndLaunchOptions（兜底）。
 /// 全部字符串查找，取不到只是返回 NO，不会链接失败。
 BOOL FBOpenApplication(NSString *bundleID);
+
+/// 【全局返回】往系统里**注入一次「从左缘往右划」的触摸**，效果等于用户按了「上一页」。
+///
+/// ⚠️⚠ 这是全项目**最危险**的一个动作 —— 唯一一个能伤到系统本身的：
+///   注入的是一串真实触摸事件（按下 → 移动 → 抬起）。要是「抬起」没送出去，
+///   屏幕上就会卡住一个「一直按着不放的手指」：那个位置点不动、拖不动，
+///   只能强制重启。球自己那块最坏只是「球不灵」，绝不会卡住系统触摸。
+///   所以实现里是「**先把整串事件全造出来，造不全就一个都不发**」，见 .mm 顶部。
+///
+/// - Parameter ballRectOnScreen: 球在屏幕上的矩形（最好带一点宽容区）。
+///   落点会避开它 —— 不然球会把自己注入的划动当成「用户在拖它」（球乱跑，甚至自己触发自己）。
+/// - Returns: 有没有真的注进去。
+///   取不到 HID 符号 / 还没学到真机 sender ID / 0.6 秒内刚划过一次 → 返回 NO，**什么都没做**。
+BOOL FBGoBack(CGRect ballRectOnScreen);
+
+/// 从一条真实的 HID 事件里记下 sender ID。
+/// 注入触摸时必须用**真机那一路**的 sender ID（配方来源里的工具为这个专门先监听一次真触摸，
+/// 取不到就拒绝注入）。HUD 的 `_HUDEventCallback` 每条事件调一次就够，内部自己判断类型。
+/// ⚠️ 参数写成 void * 是为了让 Swift 桥接头不用认识 IOHIDEventRef。
+void FBHIDNoteRealEvent(void *hidEvent);
 
 #ifdef __cplusplus
 }

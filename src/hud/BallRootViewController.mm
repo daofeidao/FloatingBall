@@ -480,7 +480,7 @@ void FBBallHapticTouchDown(void)
     });
 
     FBLog(@"球建好了：直径=%.0f 窗口边长=%.0f view=%@ 自带手势=%lu 个",
-          ball, side, NSStringFromCGRect(self.view.bounds),
+          ball, [self windowSide], NSStringFromCGRect(self.view.bounds),
           (unsigned long)[_ball.gestureRecognizers count]);
 }
 

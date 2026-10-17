@@ -315,6 +315,13 @@ _CTServerConnectionResetModem(conn, CFSTR("UserTriggeredReload"))
   而同一个 sha 的 main 轮是成功的（main 不走发 Release 那一步），所以当时容易看漏。
   修法是 workflow 里加 `permissions: contents: write`。外观那批功能已经并进 0.1.2 一起发了。
 - 0.1.2 的 Release 由 tag 构建自动创建（`softprops/action-gh-release`），Release 里的 IPA 和交付副本是同一个文件。
+- **交付邮件固定格式**：从历次邮件（TT v0.9.5/v0.9.6、Helium 修改版 V3.0~V3.2、悬浮球 v0.1.0）归纳成七段式，
+  模板落在 `C:\Users\lion\.workbuddy\skills\mail-126\templates\delivery_mail.md`：
+  身份块（附件 / 字节数 / sha256）→ 怎么装 → 这一版做了什么（逐条带「为什么」）→ 怎么验（按顺序）
+  → 还没做 / 已知问题 → 出问题看这里（日志 + 兜底）→ Release 备用链接。
+  主题：`【项目名 x.y.z】一句话要点（含 IPA）`。
+- 2026-10-17 13:58 **按固定格式重发了 0.1.2**（同一个包、sha256 不变；旧的那封 10:54 也在，两封都在收件箱）。
+  捞历史邮件的脚本：`ref/dump_delivery_mails.py`（把带附件的邮件正文导成 UTF-8 文本，绕开控制台中文乱码）。
 - 顺带记一条容易踩的：**`gh` 的 `--jq` / `--template` 参数会被 PowerShell 吃引号**
   （`select(.head_branch=="v0.1.1")` 会变成 `==v0.1.1`，jq 直接报错；Go 模板还会被当成参数解析）。
   查询改用 Python 调 `gh api` 再自己解析，脚本放在 `ref/`（该目录已 gitignore，不进公开仓库）：

@@ -42,14 +42,21 @@ iPhone 上的**全局悬浮球**（类似系统「辅助触控」小白点，但
   `IOHIDEventCreateDigitizerEvent`、`SBSLaunchApplicationWithIdentifierAndLaunchOptions`、
   `SBSSpringBoardServerPort`、`SBGetScreenLockStatus`、`posix_spawn` + `posix_spawnattr_*`。
 
-### ⚠️ 最重要的一条：**HUD 窗口能收到触摸，这是被成品证明的**
+### ⚠️ 触摸这一条：当年判断错了，2026-10-17 真机改正
 
-TheBall 的球是**可点可拖**的，它用的是标准手势识别器：
-`UITapGestureRecognizer` / `UISwipeGestureRecognizer`（上下左右四个）/ `UILongPressGestureRecognizer` /
+这里的原文是「HUD 窗口能收到触摸，这是被成品证明的」—— **这个推论是错的**，
+0.1.0~0.1.2 就是被它带偏的。TheBall 的球确实可点可拖，用的是标准手势识别器
+（`UITapGestureRecognizer` / `UISwipeGestureRecognizer` / `UILongPressGestureRecognizer` /
 `UIPanGestureRecognizer`，外加 `handleCapturedPan:`、`snapToEdge`、`autoHidePosition`、
-`gestureRecognizer:shouldReceiveEvent:` / `shouldReceiveTouch:` 这几个覆盖点。
+`gestureRecognizer:shouldReceiveEvent:` 这几个覆盖点），
 
-→ 所以「最大未知数」（球能不能被点中）**降级为「照做」**，但仍需 v0.1 真机确认。
+**但它能点 ≠ 窗口能收触摸。** 真机结果是：SpringBoard 托管的窗口**只负责显示**，
+触摸一个都送不进来。回头再看 TheBall 的私有 API 清单，
+里面**有 `BKSHIDEventRegisterEventCallback`** —— 它八成是靠那条路自己喂触摸的，
+只是当时我们只盯着「它有手势识别器」这一半。
+
+→ 结论：手势识别器照抄没问题（那是「收到触摸之后」的事），
+但「触摸怎么进来」必须自己解决，见第十一节。
 
 ### 它怎么做跨进程同步 / 持久化（我们**不照抄**，太乱）
 
@@ -79,6 +86,10 @@ TheBall 的球是**可点可拖**的，它用的是标准手势识别器：
    `platform-application`、`no-sandbox` …）。清单直接用 `E:\文档\Helium\ent.plist`。
 3. 它向 SpringBoard 注册一个**全局窗口**：
    `SBSAccessibilityWindowHostingController -registerWindowWithContextID:atLevel:`（Helium 用 10000010.0）。
+   ⚠️ 这一步只解决**显示**。
+4. **触摸要单独想办法**（2026-10-17 真机推翻「窗口能收触摸」的假设）：
+   那个窗口收到的是 0 个触摸事件（`_ignoresHitTest` 改 NO 也没用）。
+   现在用「全局 HID 事件回调 + 自己喂 UITouch」，见第十一节。
 
 > ⚠️ **PPL 禁项绝对不能加**（iOS 15 + A12 以上必崩）：
 > `com.apple.private.cs.debugger`、`dynamic-codesigning`、`com.apple.private.skip-library-validation`。
@@ -290,8 +301,12 @@ _CTServerConnectionResetModem(conn, CFSTR("UserTriggeredReload"))
 
 ## 九、待办 / 待验证
 
-- [ ] **v0.1（验证版）**：球全局显示 + 能点 + 能拖 + 点一下打开「设置」。
-      **这一版不通，整个形态要换**（备选：用全局 HID 回调自己算命中）。
+- [x] 球**全局显示**：2026-10-17 真机确认**正常**（每个界面都在，切 App、回桌面都在）。
+- [ ] 球**能点 / 能拖**：0.1.0~0.1.2 一直不通，原因是窗口收不到触摸（见第十一节）。
+      0.1.3 改走「全局 HID 事件回调」这条路，**待真机复验**：
+      判据 = 点球时球上的数字涨不涨 + 日志有没有 `触摸：按下落在球上`。
+- [ ] **已知副作用待观察**：HID 回调不能吃掉事件 → 点在球上时球下面的 App 也会收到这一下。
+      实机上体验到底有多烦（球吸在屏幕边上、下面多为壁纸/列表边缘），等用户反馈再决定要不要治。
 - [ ] 真机上顺带验外观：三种样式能否即时切换（不重启）、大小滑块是否即时生效、桌面图标是不是小圆点。
 - [ ] 顺带把 `E:\文档\默认项目\MEMORY.md` 里两条过时信息更正：
       ① 「persona root spawn 是线索未证实」→ Helium/TheBall 都在生产用；
@@ -346,5 +361,55 @@ _CTServerConnectionResetModem(conn, CFSTR("UserTriggeredReload"))
 所以留到单独一轮：先做最小验证（只发一次事件、看日志、看有没有卡触摸），
 验完再决定要不要进菜单。
 
-**已经有的、够用的替代**：球本身不吃球以外区域的触摸（`FBPassThroughView`），
+**已经有的、够用的替代**：球本身不吃球以外区域的触摸（球只接管球周围 6pt 以内的触摸），
 所以「在球以外的地方左缘右划」本来就是 App 自己的返回手势，能用。
+
+## 十一、触摸是怎么进来的（2026-10-17 真机定案，别再改回去）
+
+### 结论一句话
+
+**SpringBoard 托管的那个全局窗口只会「显示」，不会收到触摸。**
+
+「窗口能显示 → 窗口也能被点中」这个假设是错的，0.1.0~0.1.2 就卡在这：
+球浮在每个界面都正常，但点它**数字一个都不涨**（= 一个触摸事件都没进我们进程），
+把 `HUDMainWindow` 的 `_ignoresHitTest` 从 `YES` 改成 `NO` 也一样。
+
+### 现在的做法：全局 HID 事件 → 自己喂给球视图
+
+代码位置：`src/hud/HUDApp.mm` 的 `_HUDEventCallback`（`USE_HID_EVENT_CALLBACK = 1`）。
+
+1. `BKSHIDEventRegisterEventCallback(_HUDEventCallback)` 注册全局 HID 回调
+   （`BackBoardServices` 已经在 Makefile 里链着）；
+2. 每个 HID 事件用 `AXEventRepresentation` 翻成「坐标 + 阶段 + 触点 id」；
+3. 判断「这一下是不是按在球上」：拿球视图的 `bounds` → `convertRect:toView:window`
+   → 加上 `window.frame.origin` 得到**屏幕坐标**矩形，再往外放 6pt；
+4. 是 → `TSEventFetcher receiveAXEventID:...`（Lessica/TrollSpeed 那份）把它喂成真正的 `UITouch`；
+5. 之后 `BallRootViewController` 里那几个标准手势识别器就正常工作了。
+
+⚠️ 三个坑（踩过 / 差点踩）：
+
+- `TSEventFetcher` 的参数**叫** `atGlobalCoordinate`，内部却是 `setLocationInWindow:` ——
+  **必须传窗口坐标**。Helium 的窗口是全屏的，两种坐标正好一样，照抄必踩。
+- 只有「按下」落在球上才接管；接管之后该触点的 move / up **全归我们**
+  （手指划出球的范围也不能丢，否则拖动断在半路、还会留下半截触摸）。
+- 我们**只能看、不能吃掉**事件：点在球上时，球下面的 App **也会**收到这一下。
+  这是 HID 回调本身的限制。真要治，得走「往系统里发取消事件」那套（`IOHIDEventCreateDigitizerEvent`），
+  风险和第十节那两个动作同级，另开一轮做。
+
+### 安全上的收获（顺手把一个风险去掉了）
+
+既然触摸不靠窗口，`HUDMainWindow._ignoresHitTest` 就改回 **`YES`**（和 Helium 一样）：
+窗口**绝不参与命中测试** → 从根上不可能吞掉屏幕触摸。
+窗口尺寸仍然只有球那么大，算第二层保险。这比 0.1.2 更安全。
+
+### 排查触摸问题看这几行日志
+
+| 日志行 | 说明 |
+|---|---|
+| `触摸回调已绑定球视图 frame=…` | 球视图注册上了（`FBHUDSetBallView` 被调到） |
+| `触摸：按下落在球上（屏幕 x,y）→ 接管触点 n` | **最关键**：按在球上的那一下真的进来了 |
+| `触摸：触点 n 抬起/取消，交还` | 这次触摸正常收尾 |
+| `轻点：计数=n 绑定=…` | 手势识别器工作（`BallRootViewController` 记的） |
+
+点球时连「按下落在球上」都没有 → HID 回调那条路没生效；
+有它但没有「轻点」→ 「喂给视图」那一步有问题。

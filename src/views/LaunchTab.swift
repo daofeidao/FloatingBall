@@ -145,7 +145,7 @@ struct LaunchTab: View {
                 }
 
                 Section(header: Text("手势"),
-                        footer: Text("每条手势可以绑「内置动作」，也可以绑「快捷应用」里加过的任意一项。球上一直记着轻点次数，那是用来确认「点到了」的回执。")) {
+                        footer: Text("每条手势各绑一个动作，右边就是当前绑的是哪个。默认：单击 = 打开「设置」，双击 = 什么都不做，长按 = 移动悬浮图标。拖动固定是移动球。球上的数字是「点到了」的回执。")) {
                     ForEach(ShortcutStore.gestureKeys) { entry in
                         gestureRow(title: entry.title, key: entry.id)
                     }
@@ -283,33 +283,55 @@ struct LaunchTab: View {
         .buttonStyle(.plain)
     }
 
-    /// 一条手势的绑定行：点开是个菜单，里面是「内置动作 + 快捷列表里的 App」
+    /// 一条手势的绑定行：**右边直接显示现在绑的是哪个动作**（2026-10-17 要求），
+    /// 点开是个菜单，里面是「内置动作 + 快捷列表里的 App」。
     private func gestureRow(title: String, key: String) -> some View {
-        let binding = Binding<String>(
-            get: { gestures[key] ?? ShortcutStore.gestureTarget(key) },
-            set: { newValue in
-                gestures[key] = newValue
-                ShortcutStore.setGestureTarget(key, newValue)
-            }
-        )
+        let current = gestures[key] ?? ShortcutStore.gestureTarget(key)
 
-        // ⚠️ 这里只列「App」类的快捷项：内置动作上面已经单列了，
-        //    而 ShortcutItem 的 key 和各动作的 tag 是同一个字符串，
-        //    同一份菜单里出现两个一样的 tag，Picker 会分不清选中的是哪一个。
+        // ⚠️ 只列「App」类的快捷项：内置动作下面已经单列了。
+        //    （同一个 tag 在 Picker 里出现两次，SwiftUI 会分不清选中的是哪一个。）
         let appItems = shortcutItems.filter { $0.kind == .app }
 
-        return Picker(selection: binding) {
-            Text("未设置").tag("")
+        // 菜单里勾出当前这条：Menu 里的按钮不吃 Picker 的选中态，自己画个 ✓
+        func marked(_ target: String) -> String { target == current ? "✓ " : "" }
+        let noneMark = marked("")
+
+        return Menu {
+            Button("\(noneMark)未设置") { setGesture(key, "") }
+
+            Divider()
+
             ForEach(ShortcutAction.allCases) { action in
-                Text(action.title).tag("action:\(action.rawValue)")
+                let target = "action:\(action.rawValue)"
+                Button("\(marked(target))\(action.title)") { setGesture(key, target) }
             }
-            ForEach(appItems) { item in
-                Text(item.title).tag(item.key)
+
+            if !appItems.isEmpty {
+                Divider()
+                ForEach(appItems) { item in
+                    Button("\(marked(item.key))\(item.title)") { setGesture(key, item.key) }
+                }
             }
         } label: {
-            Text(title)
+            HStack {
+                Text(title)
+                    .foregroundColor(.primary)
+                Spacer()
+                Text(ShortcutStore.title(forKey: current, in: shortcutItems))
+                    .foregroundColor(.accentColor)
+                    .lineLimit(1)
+                Image(systemName: "chevron.up.chevron.down")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundColor(.secondary)
+            }
+            .contentShape(Rectangle())
         }
-        .pickerStyle(.menu)
+    }
+
+    /// 改一条手势的绑定（存起来 + 通知球进程重读）
+    private func setGesture(_ key: String, _ target: String) {
+        gestures[key] = target
+        ShortcutStore.setGestureTarget(key, target)
     }
 
     // MARK: - 读写设置

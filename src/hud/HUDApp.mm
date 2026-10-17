@@ -24,12 +24,41 @@
 #import "../helpers/private_headers/UIApplication+Private.h"
 
 // ============================================================================
-// v0.1 用「小窗口直接吃触摸」这条路（HUDMainWindow._ignoresHitTest 返回 NO）。
-// 这条路若不成立（球显示得出来但点不动），把下面改成 1 就切到备用路线：
-// 自己监听全局 HID 事件、手动把触摸喂给自己的视图。
-// ⚠️ 两条路不能同时开，否则一次点击会被处理两遍。
+// 触摸走哪条路（2026-10-17 真机结论，别再往回改）
+//
+// ❌ 原来的假设：「窗口能被 SpringBoard 托管 → 触摸也会送进我们进程」。
+//    真机结果：**窗口显示完全正常（浮在所有 App 之上、每个界面都在），
+//    但触摸一个都收不到** —— 点球时球上的数字一个都不涨，就是证据。
+//    也就是说「小窗口直接吃触摸」这条路在 iOS 15.6.1 上不成立，
+//    HUDMainWindow 的 _ignoresHitTest 改成 NO 也没用。
+//
+// ✅ 现在这条路：自己监听**全局 HID 事件**（BKSHIDEventRegisterEventCallback），
+//    判断「这一下是不是按在球上」，是就把它喂成一次真正的 UITouch 给球视图。
+//    机制来源：Lessica/TrollSpeed → Helium（都在生产用）。
+//
+//    ⚠️ 只「观察」不「拦截」：系统那份事件照样发给下面的 App，
+//       所以点在球上时，球下面的 App 也会同时收到这一下。
+//       这是这条路本身的限制（HID 回调没有「吃掉事件」的能力），先接受。
+//
+//    ⚠️ 只有「按下」落在球上才接管；接管之后它的 move / up 全归我们，
+//       手指划出球的范围也不能丢，否则拖动会断在半路。
 // ============================================================================
-#define USE_HID_EVENT_CALLBACK 0
+#define USE_HID_EVENT_CALLBACK 1
+
+/// 当前被我们接管的触点 id（0 = 没有）
+static NSInteger gFBActivePointer = 0;
+
+/// 球视图（由 BallRootViewController 在 viewDidLoad 里注册进来）。
+/// 触摸回调要靠它算「这一下是不是按在球上」。
+static __weak UIView *gFBBallView = nil;
+
+void FBHUDSetBallView(UIView *ballView)
+{
+    gFBBallView = ballView;
+    FBLog(@"触摸回调已绑定球视图 frame=%@ window=%@",
+          ballView ? NSStringFromCGRect(ballView.frame) : @"(nil)",
+          ballView.window ? @"有" : @"无");
+}
 
 static __used
 void _HUDEventCallback(void *target, void *refcon, IOHIDServiceRef service, IOHIDEventRef event)
@@ -57,41 +86,73 @@ void _HUDEventCallback(void *target, void *refcon, IOHIDServiceRef service, IOHI
         shouldUseAXEvent = NO;
     }
 
-    if (shouldUseAXEvent)
-    {
-        static Class AXEventRepresentationCls = nil;
-        static dispatch_once_t onceToken;
-        dispatch_once(&onceToken, ^{
-            [[NSBundle bundleWithPath:@"/System/Library/PrivateFrameworks/AccessibilityUtilities.framework"] load];
-            AXEventRepresentationCls = objc_getClass("AXEventRepresentation");
-        });
+    if (!shouldUseAXEvent) return;
 
-        AXEventRepresentation *rep = [AXEventRepresentationCls representationWithHIDEvent:event hidStreamIdentifier:@"UIApplicationEvents"];
+    static Class AXEventRepresentationCls = nil;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        [[NSBundle bundleWithPath:@"/System/Library/PrivateFrameworks/AccessibilityUtilities.framework"] load];
+        AXEventRepresentationCls = objc_getClass("AXEventRepresentation");
+    });
+    if (!AXEventRepresentationCls) return;
 
-        dispatch_async(dispatch_get_main_queue(), ^(void) {
-            static UIWindow *keyWindow = nil;
-            static dispatch_once_t onceToken2;
-            dispatch_once(&onceToken2, ^{
-                keyWindow = [[app windows] firstObject];
-            });
+    AXEventRepresentation *rep = [AXEventRepresentationCls representationWithHIDEvent:event
+                                                                    hidStreamIdentifier:@"UIApplicationEvents"];
+    if (!rep) return;
 
-            UIView *keyView = [keyWindow hitTest:[rep location] withEvent:nil];
+    NSInteger pointerId = [[[[rep handInfo] paths] firstObject] pathIdentity];
+    if (pointerId <= 0) return;
+    pointerId = MIN(MAX(pointerId, 1), 98);   // TSEventFetcher 一共 100 个槽位
 
-            UITouchPhase phase = UITouchPhaseEnded;
-            if ([rep isTouchDown])      phase = UITouchPhaseBegan;
-            else if ([rep isMove])      phase = UITouchPhaseMoved;
-            else if ([rep isCancel])    phase = UITouchPhaseCancelled;
-            else if ([rep isLift] || [rep isInRange] || [rep isInRangeLift]) phase = UITouchPhaseEnded;
+    BOOL isDown = [rep isTouchDown];
+    CGPoint onScreen = [rep location];        // 全局（屏幕）坐标
 
-            NSInteger pointerId = [[[[rep handInfo] paths] firstObject] pathIdentity];
-            if (pointerId > 0)
-                [TSEventFetcher receiveAXEventID:MIN(MAX(pointerId, 1), 98)
-                              atGlobalCoordinate:[rep location]
-                                  withTouchPhase:phase
-                                        inWindow:keyWindow
-                                          onView:keyView];
-        });
-    }
+    UITouchPhase phase = UITouchPhaseEnded;
+    if (isDown)                  phase = UITouchPhaseBegan;
+    else if ([rep isMove])       phase = UITouchPhaseMoved;
+    else if ([rep isCancel])     phase = UITouchPhaseCancelled;
+    else if ([rep isLift] || [rep isInRange] || [rep isInRangeLift]) phase = UITouchPhaseEnded;
+
+    dispatch_async(dispatch_get_main_queue(), ^(void) {
+        UIView *ball = gFBBallView;
+        UIWindow *window = ball.window;
+        if (!ball || !window) return;
+
+        // 球在屏幕上的矩形（含 6pt 宽容区）。
+        // ⚠️ 这里刻意**不用 hitTest**：窗口的 _ignoresHitTest 是 YES（为了绝不吃掉系统触摸），
+        //    那样对窗口 hitTest 永远回 nil。直接量矩形，不依赖坐标系约定，最不容易出错。
+        CGRect inWindowRect = [ball convertRect:ball.bounds toView:window];
+        CGRect onScreenRect = CGRectOffset(inWindowRect, window.frame.origin.x, window.frame.origin.y);
+        BOOL onBall = CGRectContainsPoint(CGRectInset(onScreenRect, -6.0, -6.0), onScreen);
+
+        if (isDown) {
+            if (!onBall) return;     // 按在别处：不插手，完全留给下面的 App
+            gFBActivePointer = pointerId;
+            FBLog(@"触摸：按下落在球上（屏幕 %.0f,%.0f）→ 接管触点 %ld",
+                  onScreen.x, onScreen.y, (long)pointerId);
+        } else if (gFBActivePointer != pointerId) {
+            return;                  // 不是我们接管的触点，别插手
+        }
+
+        CGPoint inWindow = CGPointMake(onScreen.x - window.frame.origin.x,
+                                       onScreen.y - window.frame.origin.y);
+
+        // ⚠️ atGlobalCoordinate 这个参数名是骗人的：TSEventFetcher 内部直接
+        //    `setLocationInWindow:`，所以必须传**窗口坐标**，不能传屏幕坐标。
+        //    （Helium 的窗口是全屏的，两种坐标正好一样，照抄会踩坑。）
+        [TSEventFetcher receiveAXEventID:pointerId
+                      atGlobalCoordinate:inWindow
+                          withTouchPhase:phase
+                                inWindow:window
+                                  onView:ball];
+
+        if (phase == UITouchPhaseEnded || phase == UITouchPhaseCancelled) {
+            if (gFBActivePointer == pointerId) {
+                gFBActivePointer = 0;
+                FBLog(@"触摸：触点 %ld 抬起/取消，交还", (long)pointerId);
+            }
+        }
+    });
 }
 
 #pragma mark -

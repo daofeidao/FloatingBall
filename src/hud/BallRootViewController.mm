@@ -168,6 +168,9 @@ static void LightHaptic(void)
         [(FBPassThroughView *)self.view setInteractiveSubview:_ball];
     }
 
+    // 把球交给 HUD 的触摸回调（全局 HID 事件那条路要用它算「按在球上」）
+    FBHUDSetBallView(_ball);
+
     _label = [[UILabel alloc] initWithFrame:_ball.bounds];
     _label.textAlignment = NSTextAlignmentCenter;
     _label.textColor = [UIColor whiteColor];

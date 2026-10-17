@@ -325,14 +325,17 @@ _CTServerConnectionResetModem(conn, CFSTR("UserTriggeredReload"))
       0.1.3 改走「全局 HID 事件回调」这条路，**仍没通**：
       2026-10-17 用户反馈「点球**直接穿透**了，没点到球的面板，球下面的屏幕（也收到了）」——
       即**球一个触摸都没接管**（数字不涨、动作不触发）。
-      0.1.6 加了「触摸自检」（见第十一节末）：让用户在 **App 的「关于」页**念一行字，
-      就能知道断在①回调 / ②AX转换 / ③手指路径·id / ④在不在球上 / ⑤喂球 哪一段。
-      **这一行是本轮最想拿到的东西**（比日志好拿，不用开终端）。
-- [ ] **0.1.6 待验**：① 「关于」页有没有「触摸自检」那一节、能不能刷新；
-      ② 点球几下之后那行字的计数：`回调` 涨不涨（= 有没有收到 HID 事件）。
-      ③ 如果 `回调=0` → 一条 HID 事件都没进来（回调没生效/注册没成）；
-         `回调`涨而`接管=0` → 看 `最后：` 那行写的坐标和球的矩形，八成是坐标口径问题；
-         `接管`涨而球仍不响应 → 问题在「喂球」那一步（TSEventFetcher）。
+      0.1.6 加的「触摸自检」（见第十一节末）已经**给出结论**：`回调=0`、按音量键也不涨
+      → 老那条 `BKSHIDEventRegisterEventCallback` 在 15.6.1 上**一条事件都收不到**。
+      0.1.7 换了另一条路（`IOHIDEventSystemClient` 监视客户端，见第十一节末），**待真机验证**。
+- [ ] **0.1.7 待验（本轮最想要的两条数）**：
+      ① 「关于」页 `匹配服务=` 是几（正常 1；**0 = 新路连触摸屏都没匹配上**）；
+      ② 点球之后 `路A=` / `路B=` 涨不涨、`最后：` 写什么。
+      三种走向：`匹配服务=0` → 匹配写法错；`=1` 但 `路B=0` → 权限/投递问题；
+      `路B` 涨而 `接管=0` → 看 `最后：` 的坐标与球矩形（坐标口径）。
+      因为 0.1.6 的 `回调=0`（按音量键也不涨）已经证明**路A 在 15.6.1 上收不到任何事件**。见 §十一 末。
+- [ ] **0.1.7 震动待验**：按「试一下震动」应该是**手指按下去**就震（不是松开），
+      「复位位置」「刷新」「换一张图片」同理；球的震感是否比 0.1.6 利索。
 - [ ] **已知副作用待观察**：HID 回调不能吃掉事件 → 点在球上时球下面的 App 也会收到这一下。
       实机上体验到底有多烦（球吸在屏幕边上、下面多为壁纸/列表边缘），等用户反馈再决定要不要治。
 - [ ] 真机上顺带验外观：三种样式能否即时切换（不重启）、大小滑块是否即时生效、桌面图标是不是小圆点。
@@ -369,6 +372,22 @@ _CTServerConnectionResetModem(conn, CFSTR("UserTriggeredReload"))
 | 0.1.4 | 2026-10-17 | `E:\下载\FloatingBall_0.1.4.tipa` | 303,232 | `056a29c9` |
 | 0.1.5 | 2026-10-17 | `E:\下载\FloatingBall_0.1.5.tipa` | 309,304 | `6711a8d2` |
 | 0.1.6 | 2026-10-17 | `E:\下载\FloatingBall_0.1.6.tipa` | 316,121 | `feb59a51` |
+| 0.1.7 | 2026-10-17 | `E:\下载\FloatingBall_0.1.7.tipa` | 326,684 | `4d8303bf` |
+
+- 0.1.7：tag `v0.1.7` → CI run `39034218323` **success** → 交付邮件 **20:56 发出**
+  （附件已在 126 收件箱核验：`FloatingBall_0.1.7.tipa` 319.0 KB = 326,684 字节，
+  sha256 `4d8303bf797ae00f37e288096859fa7de3d676de99c0bf296dc87708d673d73e`，
+  包内 0.1.7 / build 8，二进制 **929,088 B** —— 比 0.1.6 大 53,952 B）。
+  内容是**触摸换路（IOHIDEventSystemClient 监视客户端，两条路一起听）+ 震动跟手性**
+  （见 §十一 末、「震动」那节）。正文落盘 `ref/mail_0.1.7_body.txt`。
+  远端 main 推到 `c2668821a1681e1f63bf59ba197224a776f5847e`（本地提交 `e93a590`）。
+
+  核对脚本落盘 **`ref/fetch_release.py`**（走 API 取 Release 附件 → 落 `E:\下载\` →
+  验 sha256 / 包内版本 / 二进制大小 / 新字符串在不在，并跟上一版对照）。
+  0.1.7 的核对结果：`IOHIDEventSystemClientCreateWithType` /
+  `…RegisterEventCallback` / `…ScheduleWithRunLoop` / `PrimaryUsagePage`（都是 UTF-8）、
+  「监视客户端」「路A」「路B」「匹配服务」（`__ustring`，UTF-16-LE + 也撞见 UTF-8 副本）
+  在 0.1.7 有、在 0.1.6 全无；Swift 侧 `HapticOnPressModifier`、ObjC 侧 `warmHaptics` 同理。
 
 - 0.1.6：tag `v0.1.6` → CI run `39022401985` **success** → 交付邮件 **17:51 发出**
   （附件已在 126 收件箱核验：`FloatingBall_0.1.6.tipa` 308.7 KB ≈ 316,121 字节，
@@ -489,6 +508,8 @@ _CTServerConnectionResetModem(conn, CFSTR("UserTriggeredReload"))
 
 1. `BKSHIDEventRegisterEventCallback(_HUDEventCallback)` 注册全局 HID 回调
    （`BackBoardServices` 已经在 Makefile 里链着）；
+   ⚠️ **这条路 0.1.7 起只当备用**：0.1.6 真机自检证明它在 15.6.1 上收不到任何事件，
+   新的主路是 `IOHIDEventSystemClient` 监视客户端（见本节末「0.1.7」）。
 2. 每个 HID 事件用 `AXEventRepresentation` 翻成「坐标 + 阶段 + 触点 id」；
 3. 判断「这一下是不是按在球上」：拿球视图的 `bounds` → `convertRect:toView:window`
    → 加上 `window.frame.origin` 得到**屏幕坐标**矩形，再往外放 6pt；
@@ -534,13 +555,16 @@ _CTServerConnectionResetModem(conn, CFSTR("UserTriggeredReload"))
 
 | 段 | 计数 | 断了说明什么 |
 |---|---|---|
-| ① | `回调=` | `BKSHIDEventRegisterEventCallback` 没生效 —— 一条 HID 事件都没进我们进程 |
+| ① | `回调=` | 两条路加起来收到几次 HID 事件；**一直是 0 = 一条事件都没进我们进程** |
+| ① | `路A=` `路B=` | 这些事件分别是哪条路送来的：A = 老的 `BKSHIDEventRegisterEventCallback`，B = 0.1.7 新加的 `IOHIDEventSystemClient` 监视客户端 |
+| ① | `匹配服务=` | 监视客户端按 `PrimaryUsagePage 13 / PrimaryUsage 4` 匹配到几个触摸屏服务（`-1` = 没问；**正常是 1**；**0 = 连匹配都没匹配上，那肯定收不到**） |
 | ② | `无rep=` | `AXEventRepresentation` 转不出来（类没加载 / 方法签名不对） |
 | ③ | `无路径=` | `[[rep handInfo] paths]` 是空（非触摸事件，或只有父事件） |
 | ③ | `id<=0=` | `pathIdentity <= 0`（**0.1.6 起当 1 用**，不再整条丢弃） |
 | ④ | `不在球=` | 按在球外（本来的设计）⭐ 这行会打印**当时的点和球的矩形** → 坐标口径问题一眼看出 |
 | ④ | `非本触点=` | `isTouchDown` 一直是 0 → 永远进不了「接管」分支 |
 | ⑤ | `接管=` `喂球=` | 接管了、喂给 `TSEventFetcher` 了 |
+| —— | `另一条路=` | 两条路都活着时，**非活跃**那条又送来的触摸（只计数，不喂，防同一根手指喂两遍） |
 | —— | `最后：` | 最后停在哪一段（带坐标） |
 
 同时启动时先写一份「全是 0」的，好区分「回调从来没被调过」和「球进程根本没起来」。
@@ -560,4 +584,44 @@ _CTServerConnectionResetModem(conn, CFSTR("UserTriggeredReload"))
 - `FBHIDEventTypeOf()` 同理（只看标志位，不做加载）。
 
 **以后往 `_HUDEventCallback` 里加东西，先问一句：这里会不会触发加载 / 阻塞 / 等锁？**
+
+### 0.1.7：老路被真机证伪，换 `IOHIDEventSystemClient` 监视客户端
+
+**用户 2026-10-17 念回来的自检**：`回调=0 无rep=0 无路径=0 … 接管=0 喂球=0`，
+`最后：` 还是那句「还没收到过任何 HID 事件」，**按音量键也不涨**。
+
+→ 结论：`BKSHIDEventRegisterEventCallback` 这条路在 iOS 15.6.1 上
+**一条事件都收不到**。不是坐标算错、不是球没接住，是**源头不来事件**。
+
+**为什么抄错了**：这份代码的源头是 Helium ← TrollSpeed ← UIDaemon。
+在 GitHub 上把这条脉全翻了一遍（Lessica/TrollSpeed、huami1314/DarkSpeed、
+iamjhe08/VidGrab……）——**每一份的声明和用法都一模一样，而且没有人验证过它真能收事件**
+（它们的 HUD 只用来「显示」，触摸是遗留代码）。Helium 的 HUD 里
+`addGestureRecognizer:` / `touchesBegan:` **一个都没有** —— 这条路的「能用」从来没有证据。
+
+**0.1.7 的做法：两条路一起听，谁先送来触摸谁生效**（`HUDApp.mm`）
+
+| 路 | 做法 | 依据 |
+|---|---|---|
+| A（老，留着计数） | `BKSHIDEventRegisterEventCallback(_HUDEventCallback)` | Helium/TheBall 同款，实测收不到 |
+| B（新，主用） | `IOHIDEventSystemClient` **监视**客户端：`IOHIDEventSystemClientCreateWithType(alloc, 1, NULL)` → `SetMatching({PrimaryUsagePage:13, PrimaryUsage:4})` → `RegisterEventCallback` → `ScheduleWithRunLoop(CFRunLoopGetMain(), kCFRunLoopDefaultMode)` | macPad 的 `misc/ios_hid_touch_probe.m`（作者照 **iOS 16.3.1 反汇编**写的观察+注入程序）、ZXTouch 的 `pccontrol/Touch.xm` |
+
+要点：
+
+- 两条路的回调签名**本来就一样**（`(target, refcon, service, event)`），共用一个
+  `FBHandleHIDEvent(route, …)`；`_HUDEventCallback` / `_HUDMonitorRouteCallback` 只是薄壳。
+  → 说明当年 Helium 那位作者大概是**把 IOHIDEventSystemClient 的回调类型安到了 BKS 的函数上**。
+- 「监视」类型（`type=1`）是**只看不吃**，不会把系统事件截下来（第六节末尾那条安全底线不受影响）。
+- 匹配字典**只写 13/4 两个键**（不写 `Transport`/`Built-In`，少写一点匹配面更大）；
+  匹配到几个服务用 `IOHIDEventSystemClientCopyServices` 数出来，写进自检的 `匹配服务=`。
+- **同一根手指不能被喂两遍**：第一条触摸事件来自哪条路，哪条就是「活跃路」，
+  另一条之后只累加 `另一条路=`。
+- 顺手替老路补一次机会：BKS 注册函数的返回值**如果类型是 IOHIDEventSystemClient**
+  （`CFGetTypeID` 比对 + 指针下限 `0x100000000` 两道检查，够不着就**不碰**），
+  就替它 `SetMatching` + `ScheduleWithRunLoop` —— 万一老路就差这一步。
+- ⚠️ 回调里**依然绝不做 dlopen**（硬规则不变）：监视客户端那几个符号在
+  `FBStartHIDMonitor()` 里启动时取，回调里只调函数指针。
+
+**还没验证的**（下一版看用户回报）：路B 能不能真收到事件。
+如果 `匹配服务=0` → 匹配写错；`=1` 但 `路B=0` → 权限/投递问题；`路B` 涨而 `接管=0` → 看 `最后：` 的坐标与球矩形。
 

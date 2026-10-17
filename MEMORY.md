@@ -570,6 +570,25 @@ _CTServerConnectionResetModem(conn, CFSTR("UserTriggeredReload"))
 | 0.1.10 | 2026-10-17 | `E:\下载\FloatingBall_0.1.10.tipa` | 373,892 | `c056d248` |
 | 0.1.11 | 2026-10-17 | `E:\下载\FloatingBall_0.1.11.tipa` | 376,147 | `1f8bb00f` |
 | 0.1.12 | 2026-10-18 | `E:\下载\FloatingBall_0.1.12.tipa` | 377,236 | `1138c183` |
+| 0.1.13 | 2026-10-18 | `E:\下载\FloatingBall_0.1.13.tipa` | 372,758 | `521853ed` |
+
+- 0.1.13：tag `v0.1.13` → CI run `39049195442` **success**（远端 main = `26610198dac8ce0ee8592998d93363071a1a212e`）
+  → 交付邮件 **0:27 发出**（收件箱核验：附件 364.0 KB = 372,758 字节，整封 504.4 KB，带抄送）；
+  包内 0.1.13 / build 14，二进制 **1,031,856 B**，**比 0.1.12 小 3,376 B**
+  （删掉整套 onDrag/onDrop 拖放代码的副产品）。
+  两件事（详见 §九 0.1.13 待验和 README 0.1.13 行）：
+  ① **排序重做**（用户 0.1.12 反馈手柄有、顺序拖不动）：0.1.10 的 onDrag/onDrop
+     整套删掉（`ShortcutDropDelegate` 没了），改 `ForEach.onMove` —— List 自带
+     「长按一行拖着换位置」，不用编辑模式；每换一次就写一次盘。
+     ⚠️ 教训进 MEMORY：那套 0.1.10 是没条件上真机写的，第一手真机就翻车 ——
+     **没验证过的交互别定案**。
+  ② **添加页搜索框常驻顶行**（用户要求：放已安装 App 顶行、上滑时固定最上一行）：
+     `.searchable` 删掉，body 套 `VStack{ 搜索行; Divider; List }`，
+     搜索行 = 放大镜 + 圆角输入框 + 有字时的 ✕ 一键清空，普通视图不随列表滚。
+  核对脚本 `ref/verify_0.1.13.py` 全绿（⚠️ 新踩一次老坑：`magnifyingglass` 恰好
+  15 字节 = 小字符串优化搜不到；`onMove`/`.searchable` 是 API 调用无字节可验，
+  靠 CI 编译 + 真机验收）。
+  本地提交 `54ee590`，正文落盘 `ref/mail_0.1.13_body.txt`。
 
 - 0.1.12：tag `v0.1.12` → CI run `39047829617` **success**（远端 main = `04f1ea807fbe9ca9fc2810c96acbf0f4af054cfd`）
   → 交付邮件 **0:09 发出**（收件箱核验：附件 `FloatingBall_0.1.12.tipa` 368.4 KB = 377,236 字节，

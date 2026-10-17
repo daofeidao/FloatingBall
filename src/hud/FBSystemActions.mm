@@ -118,6 +118,66 @@ BOOL FBOpenApplication(NSString *bundleID)
     return NO;
 }
 
+#pragma mark - 打开 URL（URL 协议 / 系统快捷指令）
+
+BOOL FBOpenURL(NSString *urlString)
+{
+    if (urlString.length == 0) return NO;
+
+    NSURL *url = [NSURL URLWithString:urlString];
+    if (!url || url.scheme.length == 0) {
+        // 没 scheme 的字符串交给系统也是白搭（会被当成路径），先拦下来
+        FBLog(@"⚠️ 这条算不上 URL（没 scheme）：%@", urlString);
+        return NO;
+    }
+
+    // ---- ① LSApplicationWorkspace：root 进程里的正路 ----
+    // 和 FBOpenApplication 一样：objc_getClass 取类名，不写类符号（不写就不会链接失败）
+    Class wsClass = objc_getClass("LSApplicationWorkspace");
+    id ws = wsClass ? [(id)wsClass performSelector:@selector(defaultWorkspace)] : nil;
+
+    if (ws) {
+        // 带 error 的重载：能顺便把失败原因记进日志
+        SEL selErr = NSSelectorFromString(@"openURL:withOptions:error:");
+        if ([ws respondsToSelector:selErr]) {
+            NSError *error = nil;
+            BOOL (*fn)(id, SEL, NSURL *, NSDictionary *, NSError **) =
+                (BOOL (*)(id, SEL, NSURL *, NSDictionary *, NSError **))objc_msgSend;
+            if (fn(ws, selErr, url, @{}, &error)) return YES;
+            FBLog(@"打开 URL 没成（LSApplicationWorkspace）：%@", error.localizedDescription ?: @"没说原因");
+        }
+
+        SEL selPlain = NSSelectorFromString(@"openURL:withOptions:");
+        if ([ws respondsToSelector:selPlain]) {
+            BOOL (*fn)(id, SEL, NSURL *, NSDictionary *) =
+                (BOOL (*)(id, SEL, NSURL *, NSDictionary *))objc_msgSend;
+            if (fn(ws, selPlain, url, @{})) return YES;
+        }
+
+        // 有些 scheme 系统只从「敏感 URL」那条口子放行（这条是特权进程才有的待遇）
+        SEL selSensitive = NSSelectorFromString(@"openSensitiveURL:withOptions:");
+        if ([ws respondsToSelector:selSensitive]) {
+            BOOL (*fn)(id, SEL, NSURL *, NSDictionary *) =
+                (BOOL (*)(id, SEL, NSURL *, NSDictionary *))objc_msgSend;
+            if (fn(ws, selSensitive, url, @{})) return YES;
+        }
+    }
+
+    // ---- ② UIApplication：App 进程里的正路 ----
+    // （HUD 进程也是 UIApplicationMain 起来的，所以两边都有这个对象）
+    UIApplication *app = [UIApplication sharedApplication];
+    SEL selOpen = NSSelectorFromString(@"openURL:options:completionHandler:");
+    if (app && [app respondsToSelector:selOpen]) {
+        void (*fn)(id, SEL, NSURL *, NSDictionary *, void (^)(BOOL)) =
+            (void (*)(id, SEL, NSURL *, NSDictionary *, void (^)(BOOL)))objc_msgSend;
+        fn(app, selOpen, url, @{}, nil);
+        return YES;
+    }
+
+    FBLog(@"⚠️ 打不开 URL（三条路都不通）：%@", urlString);
+    return NO;
+}
+
 #pragma mark - 全局返回（往系统里注入一次「从左缘往右划」）
 // ============================================================================
 // ⚠️⚠ 先读这段再改。这是全项目唯一一个能**伤到系统本身**的动作。

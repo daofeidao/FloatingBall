@@ -3,12 +3,14 @@
 //
 //  快捷项目 = 「一键刷新信号」这类东西的骨架。
 //
-//  两种：
+//  三种：
 //    ① 打开某个 App（kind = app，id = bundleID）
-//    ② 内置动作（kind = action，id = ShortcutAction）—— 刷新信号、移动球、打开列表…
+//    ② 内置动作（kind = action，id = ShortcutAction）—— 刷新信号、截屏、移动球、打开菜单…
+//    ③ URL 协议 / 系统快捷指令（kind = url，id = 一整条 URL）——
+//       微信扫一扫 weixin://scanqrcode、系统快捷指令 shortcuts://run-shortcut?name=…
 //
 //  存在 App 和悬浮球进程共享的那个 plist 里，两边读同一份（见 hud-prefix.pch）。
-//  手势绑定里存的是 key（"app:xxx" / "action:xxx"），不存下标 ——
+//  手势绑定里存的是 key（"app:xxx" / "action:xxx" / "url:xxx"），不存下标 ——
 //  这样快捷列表增删排序都不会把绑定搞乱。
 //
 
@@ -72,17 +74,61 @@ enum ShortcutAction: String, CaseIterable, Identifiable {
     }
 }
 
+// MARK: - 内置 URL（URL 协议 / 系统快捷指令）
+
+/// 「添加」页「URL 协议」那一栏的内置条目。
+///
+/// ⚠️ 每条 URL 都是**查证过**的（2026-10-17，见 MEMORY §七）：
+///   · 微信扫一扫   `weixin://scanqrcode`
+///   · 微信收付款码 `weixin://widget/pay`
+///   · 支付宝扫一扫 `alipayqr://platformapi/startapp?saId=10000007`
+///   · 系统快捷指令 `shortcuts://run-shortcut?name=<名字>`（Apple 官方文档的 scheme）
+struct BuiltinURL: Identifiable {
+    let title: String       // 显示名
+    let url: String         // 真正打开的那条 URL
+    let icon: String        // SF Symbol（「简单的图标」：按功能给，不模仿各家的 Logo）
+
+    var id: String { url }
+
+    var item: ShortcutItem {
+        ShortcutItem(kind: .url, id: url, title: title, icon: icon)
+    }
+}
+
+enum BuiltinURLs {
+
+    /// 「URL 协议」栏里默认内置的三条
+    static let presets: [BuiltinURL] = [
+        BuiltinURL(title: "微信扫一扫",   url: "weixin://scanqrcode",        icon: "qrcode.viewfinder"),
+        BuiltinURL(title: "支付宝扫一扫", url: "alipayqr://platformapi/startapp?saId=10000007",
+                   icon: "qrcode.viewfinder"),
+        BuiltinURL(title: "微信收付款码", url: "weixin://widget/pay",        icon: "creditcard"),
+    ]
+
+    /// 系统快捷指令的图标（那一行不是「点一下就加」，是在同一页填名字）
+    static let shortcutIcon = "sparkles"
+
+    /// 把「快捷指令」App 里的指令名字拼成 URL（名字要 URL 编码）
+    static func shortcutURL(name: String) -> String {
+        let encoded = name.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? name
+        return "shortcuts://run-shortcut?name=\(encoded)"
+    }
+}
+
 // MARK: - 快捷项目
 
 struct ShortcutItem: Identifiable, Equatable {
     enum Kind: String {
         case app    = "app"
         case action = "action"
+        case url    = "url"     // URL 协议 / 系统快捷指令（id 就是一整条 URL）
     }
 
     var kind: Kind
-    var id: String          // app -> bundleID；action -> ShortcutAction.rawValue
+    var id: String          // app -> bundleID；action -> ShortcutAction.rawValue；url -> 整条 URL
     var title: String
+    /// 内置图标（SF Symbol 名）。nil = 按 kind 猜一个
+    var icon: String? = nil
 
     /// 手势绑定 / 去重用的唯一 key
     var key: String { "\(kind.rawValue):\(id)" }
@@ -93,9 +139,11 @@ struct ShortcutItem: Identifiable, Equatable {
     }
 
     var symbol: String {
+        if let icon = icon { return icon }
         switch kind {
-        case .app: return "app"
+        case .app:    return "app"
         case .action: return action?.symbol ?? "questionmark"
+        case .url:    return "link"
         }
     }
 
@@ -105,6 +153,11 @@ struct ShortcutItem: Identifiable, Equatable {
     var displayTitle: String {
         if let action = action { return action.title }
         return title
+    }
+
+    /// 列表里那行小字：内置动作看它的 detail，其它就把 id 摆出来（App 就是 bundleID、URL 就是那条 URL）
+    var detail: String {
+        action?.detail ?? id
     }
 
     static func make(action: ShortcutAction) -> ShortcutItem {
@@ -160,14 +213,21 @@ enum ShortcutStore {
                   let id = row["id"] as? String,
                   let title = row["title"] as? String
             else { return nil }
-            return ShortcutItem(kind: kind, id: id, title: title)
+            return ShortcutItem(kind: kind, id: id, title: title,
+                                icon: row["icon"] as? String)
         }
         return items.isEmpty ? defaults : items
     }
 
     static func save(_ items: [ShortcutItem]) {
-        let raw: [[String: Any]] = items.map {
-            ["kind": $0.kind.rawValue, "id": $0.id, "title": $0.title]
+        let raw: [[String: Any]] = items.map { item in
+            // ⚠️ 「url」这类老版本没有的字段是**可选**的：老列表读进来 icon 是 nil，
+            //    存回去就不写这个键（不会凭空多出一堆空字段）。
+            var row: [String: Any] = ["kind": item.kind.rawValue,
+                                      "id": item.id,
+                                      "title": item.title]
+            if let icon = item.icon { row["icon"] = icon }
+            return row
         }
         BallSettings.set(raw, shortcutsKey)
     }

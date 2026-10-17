@@ -23,6 +23,13 @@ OBJC_EXTERN NSArray<NSDictionary<NSString *, NSString *> *> *FBInstalledApps(voi
 /// 打开任意 App（和悬浮球进程里那条是同一份实现）
 OBJC_EXTERN BOOL FBOpenApplication(NSString *bundleID);
 
+/// 打开任意 URL（URL 协议 / 系统快捷指令都走这条）：
+/// 微信扫一扫 weixin://scanqrcode、微信收付款 weixin://widget/pay、
+/// 支付宝扫一扫 alipayqr://platformapi/startapp?saId=10000007、
+/// 系统快捷指令 shortcuts://run-shortcut?name=<名字>
+/// ⚠️ 返回 YES 只代表「系统收下了这个请求」，不代表对面真的执行了。
+OBJC_EXTERN BOOL FBOpenURL(NSString *urlString);
+
 /// 刷新蜂窝网络信号（卡贴机没信号 / 假信号时点一下）
 /// ⚠️ 没有结果可看：这个 API 只是把请求交给 CommCenter，成没成只能看状态栏
 OBJC_EXTERN BOOL FBRefreshCellularSignal(void);

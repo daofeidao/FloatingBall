@@ -388,7 +388,7 @@ static void FBHapticPlay(FBHapticKind kind, CGFloat intensity, int pulses)
     return defaults[key] ?: @"action:none";
 }
 
-/// 绑定只存两种写法："app:bundleID" / "action:动作名"
+/// 绑定只存三种写法："app:bundleID" / "action:动作名" / "url:整条URL"
 - (void)performTargetKey:(NSString *)key
 {
     if (key.length == 0) return;
@@ -397,6 +397,14 @@ static void FBHapticPlay(FBHapticKind kind, CGFloat intensity, int pulses)
         NSString *bundleID = [key substringFromIndex:4];
         BOOL ok = FBOpenApplication(bundleID);
         FBLog(@"绑定动作=打开 App %@ -> %@", bundleID, ok ? @"成功" : @"失败");
+        return;
+    }
+
+    if ([key hasPrefix:@"url:"]) {
+        // URL 协议 / 系统快捷指令：交给系统打开（和 App 里「快捷菜单」点一下同一条路）
+        NSString *url = [key substringFromIndex:@"url:".length];
+        BOOL ok = FBOpenURL(url);
+        FBLog(@"绑定动作=打开 URL %@ -> %@", url, ok ? @"已交给系统" : @"打不开");
         return;
     }
 

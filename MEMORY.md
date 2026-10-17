@@ -257,19 +257,20 @@ App 侧（uid 501）                          HUD 侧（root）
 
 | 键 | 内容 |
 |---|---|
-| `Shortcuts` | 数组 `[{kind: "app"\|"action", id, title}]` |
-| `GestureTap` / `GestureDoubleTap` / `GestureLongPress` | 一条字符串：`app:<bundleID>` 或 `action:<动作名>` |
+| `Shortcuts` | 数组 `[{kind: "app"\|"action"\|"url", id, title, icon(可选, 0.1.10 起)}]` |
+| `GestureTap` / `GestureDoubleTap` / `GestureLongPress` | 一条字符串：`app:<bundleID>` / `action:<动作名>` / `url:<整条URL>` |
 | `ShowLabel` | 球上的数字显不显示（原来是内存态，现在持久化） |
 | `HapticsEnabled` | 震动反馈开关（Bool，**默认开**；「没设过」必须当开，见下「震动反馈」） |
 | `PendingTab` | HUD 写、App 读一次就清：`"apps"` / `"launch"` |
 
-- ⚠️ **手势绑定存 key，不存下标**（`app:xxx` / `action:xxx`）。
+- ⚠️ **手势绑定存 key，不存下标**（`app:xxx` / `action:xxx` / `url:xxx`）。
   存下标的话，快捷列表一排序/删除，绑定就全错位了。
 - ⚠️ **Swift 里别用元组数组 + `ForEach(id: \.key)`**：keyPath 不能指向元组成员，编译不过。
   用 `ShortcutStore.GestureSlot` 结构体。
 - ⚠️ **Picker 里不能出现重复 tag**：`ShortcutItem.make(action:)` 的 key 是 `action:refreshSignal`，
   和内置动作那一组的 tag 一模一样 → 同一份菜单里两个相同 tag，Picker 分不清选中谁。
-  所以手势菜单里**只列 `kind == .app` 的快捷项**。
+  所以手势菜单里**只列 `kind != .action` 的快捷项**（0.1.10 起 App 和 URL 两类都列；
+  它们的 key 前缀分别是 `app:` / `url:`，不会和 `action:` 撞）。
 - 「打开悬浮球 / 打开快捷列表」走 **写 `PendingTab` + 拉起 App**，**不用 URL scheme**：
   不用动 Info.plist，而且 App 没在跑时也生效（启动时读一次；
   在后台跑着时靠 `didBecomeActive` 再读一次，两条路都覆盖）。App 读完立刻清空，免得下次白跳。
@@ -291,6 +292,48 @@ App 侧（uid 501）                          HUD 侧（root）
   2026-10-17 的「快捷应用 → 快捷菜单」就是这么做的。
   配套：`ShortcutItem.displayTitle` 对内置动作**现算** `action.title`，
   所以已经存过 `title` 的老列表也会立刻显示新文案（不用迁移、不用重新添加）。
+
+**URL 项 / 系统快捷指令（0.1.10，用户 2026-10-17 追加）**：
+
+用户原话：添加页在【内置动作】和【已安装 APP】之间新增一栏【添加】=【添加系统快捷指令，添加URL协议】
+（直接在一页显示，不做嵌套页面或折叠页）；URL 协议下默认内置微信扫一扫、支付宝扫一扫、微信收付款码，
+并内置一些简单的图标。
+
+| 项 | URL | 图标（SF Symbol） |
+|---|---|---|
+| 微信扫一扫 | `weixin://scanqrcode` | `qrcode.viewfinder` |
+| 支付宝扫一扫 | `alipayqr://platformapi/startapp?saId=10000007` | `qrcode.viewfinder` |
+| 微信收付款码 | `weixin://widget/pay` | `creditcard` |
+| 系统快捷指令 | `shortcuts://run-shortcut?name=<名字>` | `sparkles` |
+
+- 这几条是 **2026-10-17 查证过**的：微信/支付宝那三条来自 URL scheme 汇总（`weixin://scanqrcode`
+  是最常见的那条，「收付款」是 `weixin://widget/pay`）；系统快捷指令那条是 **Apple 官方文档**
+  （Shortcuts User Guide · Run a shortcut using a URL scheme）。
+  ⚠️ **别凭印象改这几条 URL** —— 没装 App 和 scheme 写错的表现都是「点了没反应」，很难分辨。
+- 系统快捷指令**没有公开 API 能列出用户装了哪些指令**（Shortcuts 的库在私有 sqlite 里，版本间还变），
+  所以不做二级页面去选，就是同一页里填名字 → 拼成 `shortcuts://run-shortcut?name=<URL 编码>`
+  （用户要求「不做嵌套页面」，正好合上）。名字写错时是「快捷指令」App 自己提示找不到。
+- 图标**按功能给，不模仿各家 Logo**（用户说的「简单的图标」）：扫一扫 → `qrcode.viewfinder`、
+  收付款 → `creditcard`、系统快捷指令 → `sparkles`。图标存在 `icon` 字段里（可选；老数据没有就是 nil，
+  按 kind 猜一个），以后改默认图标不会动到已添加的项。
+- 打开 URL 走新的 **`FBOpenURL()`**（`hud/FBSystemActions.{h,mm}`）：三条路逐级退
+  `LSApplicationWorkspace -openURL:withOptions:error:` → `-openSensitiveURL:withOptions:` →
+  `UIApplication -openURL:options:completionHandler:`。HUD 侧手势绑定的 `url:` 前缀也走它。
+- ⚠️ `ShortcutItem.Kind` 新增 `url`：**`rawValue` 一样是数据**（老数据只有 `app`/`action`，加新值不影响它们）。
+
+**快捷菜单那一栏的排序（0.1.10，用户 2026-10-17 追加）**：
+
+用户原话：把右上角的编辑直接去掉，列表右边的箭头直接变成拖动排序功能的三个横条 ——
+左滑删除和编辑模式里的删除重复，所以编辑功能是多余的。
+
+- 实现是 `.onDrag` + 自定义 `ShortcutDropDelegate`（`src/views/AppsTab.swift`），
+  **不用 List 的编辑模式**，两个原因：(a) 编辑模式左边会多出删除圈，和「左滑删除」重复；
+  (b) **编辑模式下点一行不会执行动作** —— 那样「点一下就执行」直接没了。
+  拖动过程只在本地下标上动，松手（`performDrop`）才写盘。
+- 行点击从 `Button` 改成 `.contentShape(Rectangle()) + .onTapGesture`：
+  `Button` 和 `.onDrag` 放一起手势会打架（而且 `.plain` 按钮的按下高亮也会和拖动抢）。
+- ⚠️ `onDrop` 用的是 **`[String]` 那个老重载**（`["public.text"]`）而不是 `[UTType]`：
+  本机没有 Xcode，编译只能靠 CI，能少一个「不确定存在与否的 API」就少一个。
 
 - 新文件 `src/hud/FBSystemActions.{h,mm}`：`FBRefreshCellularSignal` / `FBOpenApplication`
   两个 C 函数，**HUD 和 App 共用一份实现**（同一个二进制、同一份 entitlements，只是 uid 不同）。
@@ -402,6 +445,22 @@ _CTServerConnectionResetModem(conn, CFSTR("UserTriggeredReload"))
          原因见 README 那节：iOS 不给第三方毫秒波形）。
       ③ **改名**：第二栏 tab 文案应该是**快捷菜单**；手势菜单里那条内置动作应显示
          「打开快捷菜单」（老列表里的旧文案也会立刻变 —— `ShortcutItem.displayTitle` 现算）。
+- [ ] **0.1.10 待验（2026-10-17 追加的快捷菜单改交互）**：
+      ① 第二栏右上角**没有「编辑」**了；每行右边是**三条横线**（不再是箭头）。
+      ② **拖动排序**：按住一行拖到别处松手 → 顺序变了；杀掉 App 重开，顺序还在（写进 `Shortcuts`）。
+         同一行点一下照样执行、左滑照样能删。
+      ③ 「添加」页三栏顺序：**内置动作库 → 添加 → 已安装的 App**；
+         中间那栏里「系统快捷指令」（一行输入框 + 添加）和「URL 协议」
+         （输入框 + 三条内置：微信扫一扫 / 支付宝扫一扫 / 微信收付款码）**都在同一页**，不用点进二级页。
+      ④ **URL 真能打开**：把「微信扫一扫」加进菜单 → 点一下 → 应该切到微信的扫一扫；
+         支付宝扫一扫 → 切到支付宝扫一扫；微信收付款码 → 切到微信收付款界面。
+         （切到别的 App 是正常的，URL 就是干这个的。）
+      ⑤ **系统快捷指令**：先在「快捷指令」App 里确认有一条（比如「一键回家」），
+         在添加页填**一模一样的名字** → 加进菜单 → 点一下看有没有跑起来。
+         没跑起来多半是名字不一致（那个 App 会自己提示），或者指令本身要输入/确认。
+      ⑥ URL 项**能绑手势**：「启动」页手势菜单里应能看到刚加的 URL 项。
+      日志里能看个大概：`/tmp/FloatingBall.log` 的
+      `绑定动作=打开 URL … -> 已交给系统` / `打不开`（⚠️ 「已交给系统」≠ 对面真的执行了）。
 - [ ] 顺带把 `E:\文档\默认项目\MEMORY.md` 里两条过时信息更正：
       ① 「persona root spawn 是线索未证实」→ Helium/TheBall 都在生产用；
       ② 它指向的 `E:\文档\Helium\MEMORY.md` **并不存在**。
@@ -544,7 +603,7 @@ _CTServerConnectionResetModem(conn, CFSTR("UserTriggeredReload"))
   查询改用 Python 调 `gh api` 再自己解析，脚本放在 `ref/`（该目录已 gitignore，不进公开仓库）：
   `ref/ci_status.py`（看 runs + releases）、`ref/tag_rest.py`（REST 打 tag）、`ref/watch_tag.py`（盯 tag 构建）。
 
-## 十、系统级动作：全局返回（0.1.5 做了）/ 截屏（0.1.9 做了）
+## 十、系统级动作：全局返回（0.1.5 做了）/ 截屏（0.1.9 做了）/ 打开 URL（0.1.10 做了）
 
 ### 全局返回 —— 0.1.5 做了（2026-10-17 用户追加要求）
 
@@ -609,6 +668,22 @@ _CTServerConnectionResetModem(conn, CFSTR("UserTriggeredReload"))
 `FBTakeScreenshot()` 返回 1（系统服务）/2（按键注入）/0（都没走通），
 走不通时日志里会列出这台机器上**实际存在**的私有类（`SBScreenShotter` / `SSMainScreenSnapshotter` …），
 等于让用户的手机帮我们做一次侦察 —— 下一版按那份清单再试。
+
+### 打开 URL —— 0.1.10 做了（`FBOpenURL()`）
+
+「URL 协议」和「系统快捷指令」两类快捷项都走它（URL 表见第七节）。**三条路逐级退**：
+
+1. `LSApplicationWorkspace -openURL:withOptions:error:` —— root 进程（HUD）里的正路，
+   带 error 的重载还能把失败原因写进日志。
+2. 同一个 workspace 的 `-openSensitiveURL:withOptions:` —— 有些 scheme 系统只从这条口子放行
+   （特权进程才有的待遇）。⚠️ 它**不做 scheme 白名单校验**，留着就是当兜底。
+3. `UIApplication -openURL:options:completionHandler:` —— App 进程里的正路
+   （HUD 进程也是 `UIApplicationMain` 起来的，两边都有这个对象）。
+
+⚠️ 全部 `objc_getClass` + `respondsToSelector` + `objc_msgSend` **显式函数指针**：
+写类名会让链接期要求解析私有 framework 的类符号；用 `performSelector` 会把 BOOL 的 0x1
+当对象 retain（`FBOpenApplication` 里已经踩过这个坑）。
+⚠️ 返回 YES **只代表「系统收下了」**，不代表对面真的执行了 —— 别拿它当「成功」写进 UI。
 
 ### 顺带说明：0.1.4 及以前那条「替代方案」已经过时
 

@@ -30,6 +30,19 @@ BOOL FBRefreshCellularSignal(void);
 /// 全部字符串查找，取不到只是返回 NO，不会链接失败。
 BOOL FBOpenApplication(NSString *bundleID);
 
+/// 打开任意 URL —— 「URL 协议」类快捷项都走这里（微信扫一扫 `weixin://scanqrcode`、
+/// 微信收付款 `weixin://widget/pay`、支付宝扫一扫 `alipayqr://platformapi/startapp?saId=10000007`），
+/// 「系统快捷指令」也走这里（`shortcuts://run-shortcut?name=<名字>`，Apple 官方 scheme）。
+///
+/// 三条路按可靠性排，全部字符串查找/objc_msgSend，取不到只是往下退：
+///   ① LSApplicationWorkspace `-openURL:withOptions:error:`（root 进程里的正路）
+///   ② 同一个 workspace 的 `-openSensitiveURL:withOptions:`（有些 scheme 只认这条口子）
+///   ③ UIApplication `-openURL:options:completionHandler:`（App 进程里的正路）
+///
+/// ⚠️ 返回 YES 只代表**系统收下了这个请求**，不代表对面真的执行了 ——
+///    比如系统快捷指令的名字写错，是「快捷指令」App 自己弹「找不到」。
+BOOL FBOpenURL(NSString *urlString);
+
 /// 【全局返回】往系统里**注入一次「从左缘往右划」的触摸**，效果等于用户按了「上一页」。
 ///
 /// ⚠️⚠ 这是全项目**最危险**的一个动作 —— 唯一一个能伤到系统本身的：

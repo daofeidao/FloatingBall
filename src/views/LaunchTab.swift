@@ -46,6 +46,9 @@ struct LaunchTab: View {
     """
 
     private static let versionFooter = """
+    0.1.10：快捷菜单里去掉了右上角「编辑」——每行右边那三条横线直接就是拖动手柄（点一下照样执行、左滑照样删）；
+    「添加」页在「内置动作库」和「已安装的 App」中间多了一栏「添加」，里面有「系统快捷指令」和「URL 协议」
+    （内置微信扫一扫 / 支付宝扫一扫 / 微信收付款码，也能自己填一条），URL 项同样能绑到手势上。
     0.1.9：内置动作库多了「截屏」；「快捷应用」改名「快捷菜单」；震动强度和时长可调（上面「悬浮球」一节）。
     球浮在任何界面之上；轻点 / 双击 / 长按各自绑一个动作（见下面「手势」一栏），拖动一直是移动球。
     点球没反应时，去「关于」页看「触摸自检」那一行。
@@ -356,9 +359,10 @@ struct LaunchTab: View {
     private func gestureRow(title: String, key: String) -> some View {
         let current = gestures[key] ?? ShortcutStore.gestureTarget(key)
 
-        // ⚠️ 只列「App」类的快捷项：内置动作下面已经单列了。
-        //    （同一个 tag 在 Picker 里出现两次，SwiftUI 会分不清选中的是哪一个。）
-        let appItems = shortcutItems.filter { $0.kind == .app }
+        // ⚠️ 只列「App」和「URL」类的快捷项：内置动作下面已经单列了。
+        //    （同一个 tag 在菜单里出现两次，会分不清勾中的是哪一个。）
+        //    0.1.10 起 URL 项（微信扫一扫、系统快捷指令…）也能绑手势了。
+        let appItems = shortcutItems.filter { $0.kind != .action }
 
         // 菜单里勾出当前这条：Menu 里的按钮不吃 Picker 的选中态，自己画个 ✓
         func marked(_ target: String) -> String { target == current ? "✓ " : "" }

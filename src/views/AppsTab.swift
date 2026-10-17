@@ -2,40 +2,55 @@ import SwiftUI
 
 /// 第二栏：快捷菜单
 ///
-/// 两种条目：
+/// 三种条目：
 ///   · 打开某个 App
 ///   · 内置动作库里的动作（刷新信号 / 全局返回 / 截屏 / 移动悬浮图标 / 打开菜单…）
+///   · URL 协议 / 系统快捷指令（微信扫一扫、shortcuts://run-shortcut?name=…）
 ///
 /// 这一栏既是「手动点一下」的清单，也是手势绑定的候选池（见「启动」页的手势一节）。
+///
+/// ⚠️ 排序**不用系统的「编辑」模式**（2026-10-17 用户要求）：
+///    编辑模式的删除圈和「左滑删除」重复，而且编辑模式下点一行不会执行动作。
+///    改法：常驻拖动 —— 每行右边是三条横线的手柄，手指按住一行拖到哪就插到哪
+///    （`.onDrag` + `ShortcutDropDelegate`），点一下照样执行、左滑照样删。
 struct AppsTab: View {
 
     @State private var items: [ShortcutItem] = []
     @State private var showAdd = false
     @State private var message = ""
     @State private var showMessage = false
+    /// 正在被拖着的那一行（排序用）
+    @State private var dragging: ShortcutItem?
 
     var body: some View {
         NavigationView {
             List {
                 Section(header: Text("菜单项"),
-                        footer: Text("点一行就执行。右上角「编辑」可以拖动排序、左滑删除。这里的每一项也能绑到手势上。")) {
+                        footer: Text("点一行就执行。右边那三条横线是拖动手柄：按住一行拖到别处就换顺序。左滑一行可以删除。这里的每一项也能绑到手势上。")) {
                     if items.isEmpty {
                         Text("还是空的，点下面「添加」").foregroundColor(.secondary)
                     }
                     ForEach(items) { item in
-                        Button {
-                            run(item)
-                        } label: {
-                            row(item)
-                        }
-                        .buttonStyle(.plain)
+                        row(item)
+                            .contentShape(Rectangle())
+                            .onTapGesture { run(item) }
+                            // 常驻拖动：按住一行拖走。松手（performDrop）时才写盘，
+                            // 免得拖的过程中每移一格都写一次 plist。
+                            .onDrag {
+                                dragging = item
+                                return NSItemProvider(object: item.key as NSString)
+                            }
+                            // ⚠️ 这里用 [String] 那个老重载：iOS 13.4 就有，
+                            //    比 [UTType] 那版稳（本机没有 Xcode，不能先编译验证）。
+                            .onDrop(of: ["public.text"], delegate: ShortcutDropDelegate(
+                                item: item,
+                                items: $items,
+                                dragging: $dragging,
+                                onCommit: { ShortcutStore.save($0) }
+                            ))
                     }
                     .onDelete { offsets in
                         items.remove(atOffsets: offsets)
-                        ShortcutStore.save(items)
-                    }
-                    .onMove { from, to in
-                        items.move(fromOffsets: from, toOffset: to)
                         ShortcutStore.save(items)
                     }
                 }
@@ -53,7 +68,6 @@ struct AppsTab: View {
                 }
             }
             .navigationTitle("快捷菜单")
-            .toolbar { EditButton() }
         }
         .onAppear { items = ShortcutStore.load() }
         .sheet(isPresented: $showAdd) {
@@ -76,13 +90,17 @@ struct AppsTab: View {
                 .foregroundColor(.accentColor)
             VStack(alignment: .leading, spacing: 2) {
                 Text(item.displayTitle)
-                Text(item.action?.detail ?? item.id)
+                Text(item.detail)
                     .font(.caption)
                     .foregroundColor(.secondary)
                     .lineLimit(1)
             }
-            Spacer()
-            Image(systemName: "chevron.right").font(.caption).foregroundColor(.secondary)
+            Spacer(minLength: 8)
+            // 拖动手柄：老版本这里是「>」（点进二级页的箭头），
+            // 现在点一行就是执行，没有二级页可进 —— 所以换成能拖的表示。
+            Image(systemName: "line.3.horizontal")
+                .font(.system(size: 14, weight: .semibold))
+                .foregroundColor(.secondary)
         }
     }
 
@@ -93,7 +111,16 @@ struct AppsTab: View {
         case .app:
             Haptics.fire(.tap)
             if !FBOpenApplication(item.id) {
-                say("打不开 \(item.title)（可能是没装，或者系统不让从这儿跳）")
+                say("打不开 \(item.displayTitle)（可能是没装，或者系统不让从这儿跳）")
+            }
+
+        case .url:
+            // URL 协议 / 系统快捷指令都走同一条：把 URL 交给系统。
+            // ⚠️ 只能知道「系统收下了」，不知道对面有没有真执行 ——
+            //    例如系统快捷指令的名字写错了，「快捷指令」App 自己会提示找不到。
+            Haptics.fire(.tap)
+            if !FBOpenURL(item.id) {
+                say("打不开这个链接：\n\(item.id)\n\n可能是没装对应的 App，或者这条 scheme 不对。")
             }
 
         case .action:
@@ -162,6 +189,45 @@ struct AppsTab: View {
     }
 }
 
+// MARK: - 拖动排序
+
+/// 常驻拖动排序的落点逻辑：
+/// 拖着某一行进到另一行身上时，就把它插到那一行的位置（上下方向都对：
+/// 往下拖时插到对方后面、往上拖时插到对方前面）。
+/// ⚠️ 松手才写盘（`onCommit`）—— 拖的过程中每移一格都写一次 plist 太亏。
+struct ShortcutDropDelegate: DropDelegate {
+
+    let item: ShortcutItem
+    @Binding var items: [ShortcutItem]
+    @Binding var dragging: ShortcutItem?
+    let onCommit: ([ShortcutItem]) -> Void
+
+    func dropEntered(info: DropInfo) {
+        guard let dragging,
+              dragging != item,
+              let from = items.firstIndex(of: dragging),
+              let to = items.firstIndex(of: item)
+        else { return }
+
+        if items[to] != dragging {
+            withAnimation(.easeInOut(duration: 0.18)) {
+                items.move(fromOffsets: IndexSet(integer: from),
+                           toOffset: to > from ? to + 1 : to)
+            }
+        }
+    }
+
+    func dropUpdated(info: DropInfo) -> DropProposal? {
+        DropProposal(operation: .move)
+    }
+
+    func performDrop(info: DropInfo) -> Bool {
+        dragging = nil
+        onCommit(items)
+        return true
+    }
+}
+
 // MARK: - 添加
 
 struct AddShortcutView: View {
@@ -172,6 +238,11 @@ struct AddShortcutView: View {
     @Environment(\.presentationMode) private var presentationMode
     @State private var query = ""
     @State private var apps: [ShortcutItem] = []
+    /// 「系统快捷指令」那一行填的名字
+    @State private var shortcutName = ""
+    /// 「URL 协议」里自己填的 URL
+    @State private var customURL = ""
+    @State private var hint = ""
 
     private var usedKeys: Set<String> { Set(existing.map { $0.key }) }
 
@@ -186,10 +257,25 @@ struct AddShortcutView: View {
                     }
                 }
 
+                // ---- 新增的一栏（2026-10-17 用户要求）----
+                // 位置就在「内置动作库」和「已安装的 App」之间；
+                // 两块内容**都在这一页里**：不做二级页面、不做折叠页。
+                Section(header: Text("添加"),
+                        footer: Text("系统快捷指令 = 「快捷指令」App 里那条指令，名字要写一样（中文、空格都算）。\n"
+                                     + "URL 协议 = 别的 App 留的口子：下面三条是内置的，也可以自己填一条。\n"
+                                     + "⚠️ 只能知道「系统收下了这个请求」；名字写错时是「快捷指令」App 自己提示找不到。")) {
+                    systemShortcutRows
+                    urlRows
+                }
+
                 Section(header: Text("已安装的 App（\(apps.count)）")) {
                     ForEach(filteredApps) { item in
                         optionRow(item, detail: item.id, symbol: "app")
                     }
+                }
+
+                if !hint.isEmpty {
+                    Section(footer: Text(hint)) { EmptyView() }
                 }
             }
             .searchable(text: $query, prompt: "搜 App 名字")
@@ -211,6 +297,97 @@ struct AddShortcutView: View {
         }
     }
 
+    // MARK: 系统快捷指令 / URL 协议（同一页）
+
+    @ViewBuilder
+    private var systemShortcutRows: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Label {
+                Text("系统快捷指令")
+            } icon: {
+                Image(systemName: BuiltinURLs.shortcutIcon).foregroundColor(.accentColor)
+            }
+            Text("填「快捷指令」App 里那条指令的名字")
+                .font(.caption)
+                .foregroundColor(.secondary)
+            HStack(spacing: 8) {
+                TextField("例如：一键回家", text: $shortcutName)
+                    .textFieldStyle(.roundedBorder)
+                    .autocapitalization(.none)
+                    .disableAutocorrection(true)
+                Button("添加") { addSystemShortcut() }
+                    .disabled(shortcutName.trimmingCharacters(in: .whitespaces).isEmpty)
+            }
+        }
+        .padding(.vertical, 2)
+    }
+
+    @ViewBuilder
+    private var urlRows: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Label {
+                Text("URL 协议")
+            } icon: {
+                Image(systemName: "link").foregroundColor(.accentColor)
+            }
+            Text("点一下就加进菜单；下面三条是内置的常用入口")
+                .font(.caption)
+                .foregroundColor(.secondary)
+            HStack(spacing: 8) {
+                TextField("也可以自己填，如 weixin://scanqrcode", text: $customURL)
+                    .textFieldStyle(.roundedBorder)
+                    .autocapitalization(.none)
+                    .disableAutocorrection(true)
+                    .keyboardType(.URL)
+                Button("添加") { addCustomURL() }
+                    .disabled(customURL.trimmingCharacters(in: .whitespaces).isEmpty)
+            }
+        }
+        .padding(.vertical, 2)
+
+        ForEach(BuiltinURLs.presets) { preset in
+            optionRow(preset.item, detail: preset.url, symbol: preset.icon)
+        }
+    }
+
+    // MARK: 加项
+
+    private func addSystemShortcut() {
+        let name = shortcutName.trimmingCharacters(in: .whitespaces)
+        guard !name.isEmpty else { return }
+        let item = ShortcutItem(kind: .url,
+                               id: BuiltinURLs.shortcutURL(name: name),
+                               title: name,
+                               icon: BuiltinURLs.shortcutIcon)
+        pick(item)
+        shortcutName = ""
+    }
+
+    private func addCustomURL() {
+        let raw = customURL.trimmingCharacters(in: .whitespaces)
+        guard !raw.isEmpty else { return }
+        // 没写 scheme 就没法当 URL 打开，先拦一下（不然加进去也是坏的）
+        guard raw.contains("://") else {
+            hint = "「\(raw)」不像一条 URL —— 要带 scheme，例如 weixin://scanqrcode。"
+            return
+        }
+        let item = ShortcutItem(kind: .url, id: raw, title: raw, icon: "link")
+        pick(item)
+        customURL = ""
+    }
+
+    private func pick(_ item: ShortcutItem) {
+        if usedKeys.contains(item.key) {
+            hint = "「\(item.displayTitle)」已经在菜单里了。"
+            return
+        }
+        hint = ""
+        onPick(item)
+        presentationMode.wrappedValue.dismiss()
+    }
+
+    // MARK: App 名单
+
     private var filteredApps: [ShortcutItem] {
         apps.filter { item in
             if usedKeys.contains(item.key) { return false }
@@ -231,7 +408,7 @@ struct AddShortcutView: View {
                     .frame(width: 26)
                     .foregroundColor(.accentColor)
                 VStack(alignment: .leading, spacing: 2) {
-                    Text(item.title).foregroundColor(.primary)
+                    Text(item.displayTitle).foregroundColor(.primary)
                     Text(used ? "已经在列表里了" : detail)
                         .font(.caption)
                         .foregroundColor(.secondary)

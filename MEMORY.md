@@ -111,6 +111,15 @@ iPhone 上的**全局悬浮球**（类似系统「辅助触控」小白点，但
    `ESRCH` 顺手删掉过期文件）。⚠️ 原来用 `NSCachesDirectory` 存 pid、再 `posix_spawn -check`
    去读 —— 球是 uid 0、App 是 uid 501，两边文件**不在一块**，所以必须 spawn；
    那是「开关要等一两秒」的根因。
+6. **看门狗：App 被删，球自尽**（0.1.12 新增，防「僵尸球」）：
+   用户 2026-10-17 报的 bug —— 把 App 删了，桌面上的球还留着。原因是结构性的：
+   球是 root 独立进程，删 App = 拆 .app 目录，**正在跑的进程不会因此被杀**（POSIX 常态），
+   而原来没人写过「App 没了就退」的规矩。改法：HUD 每 3 秒 `stat` 一下
+   `NSBundle.main.bundlePath`（自己所在的 .app 目录），**连续 3 次摸不到**就 `exit(0)`
+   （首查延迟 5 秒 → 约 5~11 秒内球消失；`atexit` 顺手清 pid 文件；
+   SpringBoard 托管的窗口跟进程一起回收）。三连摸是防 TrollStore 覆盖安装时
+   目录被短暂拆掉重建而误杀。判据用「目录在不在」而不是「App 进程在不在」——
+   球本来就是设计成 App 关了它也活着的，「进程在不在」分不出「关了」和「删了」。
 
 > ⚠️ **PPL 禁项绝对不能加**（iOS 15 + A12 以上必崩）：
 > `com.apple.private.cs.debugger`、`dynamic-codesigning`、`com.apple.private.skip-library-validation`。
@@ -493,6 +502,20 @@ _CTServerConnectionResetModem(conn, CFSTR("UserTriggeredReload"))
         · `接管>0` 而 ④ 还是没反应 → 喂贴进 TSEventFetcher 那层的问题（下一版换
           `touchesBegan/Ended` 直接处理）。
       ⚠️ 这版触摸改动**在开发机上无法验证**（无 Xcode、无真机调试），只有读数能证伪。
+- [ ] **0.1.12 待验（2026-10-18 这版：删 App 看门狗 + 球按下即震 + 时长滑块删除 + 原理来自可点）**：
+      ① **删 App → 球自己消失**（新 bug 修复）：在 TrollStore（或长按图标）里把悬浮球
+         **删掉** → 桌面上的球应在**约 5~11 秒内**自己消失，不用重启。
+         （注意：是「App 整个删掉」，不是「从最近任务里划掉」——划掉本来就不该影响球。）
+         `/tmp/FloatingBall.log` 里应有 `看门狗：.app 目录摸不到了` 三行 + `自杀退出`。
+      ② **点球按下去就有震感**（用户点的这个名）：手按上球**那一瞬间**震一下
+         （不用等手势、不用等松手）；长按出菜单、动作执行仍各有反馈。
+         挂点是 HUD「起手落在球上→Began」→ `FBBallHapticTouchDown()`。
+      ③ 「启动」页震动栏**只剩「强度」**滑块（「时长」没了）；
+         拖强度滑块依然当场震。旧设置里残留的 `HapticDurationMs` 键现在没人读，不影响。
+      ④ 「关于」页「原理来自」四个项目名是**蓝色**，点一下开 Safari 直达项目主页
+         （TrollSpeed / UIDaemon / Helium / TheBall，链接全核过 200）。
+      ⑤ 0.1.11 那批照旧要验：开关是不是松手即变、4 行自检读数（见上一条 0.1.11 待验）。
+      ⚠️ ① 若超过 20 秒球还在：念 `/tmp/FloatingBall.log` 末尾几行（有没有「看门狗」）。
 - [ ] 顺带把 `E:\文档\默认项目\MEMORY.md` 里两条过时信息更正：
       ① 「persona root spawn 是线索未证实」→ Helium/TheBall 都在生产用；
       ② 它指向的 `E:\文档\Helium\MEMORY.md` **并不存在**。
@@ -844,6 +867,9 @@ _CTServerConnectionResetModem(conn, CFSTR("UserTriggeredReload"))
    ⚠️ 0.1.11 起 `[rep location]` 的坐标系**两种解释都试**（屏幕 / 窗口各算一次，
    命中任意一个就算在球上）—— 我们窗口只有球那么大，赌错就是「永远不在球上」；
 4. 是 → `TSEventFetcher receiveAXEventID:...`（Lessica/TrollSpeed 那份）把它喂成真正的 `UITouch`；
+   **喂出 `Began` 的同时调 `FBBallHapticTouchDown()` 震一下**（0.1.12：
+   「球按下去就震」挂在这 —— 整条链里最早、最不依赖手势的时刻；
+   声明在 `HUDHelper.h`，实现在 `BallRootViewController.mm`，登记在 `viewDidLoad` 的 `sBallVC`）。
 5. 之后 `BallRootViewController` 里那几个标准手势识别器就正常工作了。
 
 ⚠️ 坑（踩过 / 差点踩）：

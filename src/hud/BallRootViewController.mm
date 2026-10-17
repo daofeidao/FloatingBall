@@ -53,6 +53,9 @@ typedef NS_ENUM(NSInteger, FBHapticKind) {
 static UIImpactFeedbackGenerator *sHapticLight  = nil;
 static UIImpactFeedbackGenerator *sHapticMedium = nil;
 
+/// 球控制器（viewDidLoad 时登记），给 FBBallHapticTouchDown() 用的。
+static BallRootViewController *sBallVC = nil;
+
 /// 建好常驻生成器并提前预热（异步的，越早越好）。见 FBHapticPlay 的注释。
 static void FBHapticWarmUp(void)
 {
@@ -164,6 +167,17 @@ static void FBHapticPlay(FBHapticKind kind, CGFloat intensity)
     FBHapticPlay(kind, [self hapticIntensity]);
 }
 
+/// HUD 那边「起手在球上」那一刻调（0.1.12：「按下去就震」，用户 2026-10-17 定的）。
+///
+/// 以前的震动全靠球上的手势判出来才给（单击 / 长按 / 落位），
+/// 而手势认不认得出来一直是这条链上最脆的一环 —— 手势一失灵，按球就一点反馈都没有。
+/// 现在把「震一下」提到**最早、最不依赖别人的那一刻**：手落到球上就震，
+/// 后面的手势要不要再震一层（长按、动作执行）照旧 —— 那是「确认」，这里是「迎客」。
+void FBBallHapticTouchDown(void)
+{
+    [sBallVC haptic:FBHapticTap];
+}
+
 /// 定时保温（每 2 秒一次）：球会一直挂在屏幕上、可能隔很久才被点一下，
 /// 引擎一凉就变成「按下去半天才震」。走同一个开关：关掉震动就不保温。
 - (void)warmHaptics
@@ -245,6 +259,7 @@ static void FBHapticPlay(FBHapticKind kind, CGFloat intensity)
 - (void)viewDidLoad
 {
     [super viewDidLoad];
+    sBallVC = self;   // 登记给 FBBallHapticTouchDown()（HUD「起手在球上」那一震走这里）
     [self loadPrefs];
 
     // 振动：生成器常驻 + 每 2 秒保温一次，保证「按下去立刻有反馈」。

@@ -413,6 +413,14 @@ static void FBHandleHIDEvent(int route, void *target, void *refcon, IOHIDService
                           withTouchPhase:phase
                                 inWindow:window
                                   onView:ball];
+
+        // ⭐ 0.1.12：按下去就震。
+        //    「起手在球上」是这条链里最早、最不依赖别人的时刻 —— 在这里给一下轻震，
+        //    手势认不认得出来都不影响按压反馈（手势那边认出来还会有它自己的那一下）。
+        if (phase == UITouchPhaseBegan) {
+            FBBallHapticTouchDown();
+        }
+
         sProbeFed++;
         sLastFedAt = now;
         sLastFedPoint = inWindow;
@@ -589,6 +597,68 @@ static void FBHUDUnlinkPIDFile(void)
 }
 
 #pragma mark -
+#pragma mark ⚠️ 看门狗：App 被删，球跟着自尽（0.1.12 防「僵尸球」）
+//
+// 用户报的 bug：把悬浮球 App 删了，桌面上的球还留着，重启才能清掉。
+// 原理上这不是「骨架选错」：球是 root 的独立进程，删 App = 把 .app 目录拆掉，
+// **正在跑的进程不会被顺带杀死**（把文件删了进程照跑，这是 POSIX 的正常行为）。
+// 原来缺的是一条规矩：「App 没了，球就该死」—— 现在补上。
+//
+// 判据：每隔几秒 stat 一下自己所在的 .app 目录（NSBundle mainBundle 的目录）。
+//   · App 只是没开（正常长期状态）→ 目录还在 → 什么都不做；
+//   · App 被删 → 目录没了 → 连续摸不到就退出。
+//   连续 3 次（首查延迟 5 秒、之后每 3 秒一次，约 5~11 秒后生效）是因为
+//   TrollStore 覆盖安装时会短暂拆掉重建目录，一次摸不到别急着判死刑，
+//   免得用户更新 App 的时候球自己散场。
+// 退出方式：exit(0) —— atexit 会把 pid 文件带走，进程一死，
+// 托管给 SpringBoard 的窗口跟着回收，球就消失了（和「关球」的效果一样）。
+
+static void FBHUDAppGoneCheck(void)
+{
+    static NSString *sBundlePath = nil;
+    if (!sBundlePath) {
+        sBundlePath = [[[NSBundle mainBundle] bundlePath] copy];
+        if (sBundlePath.length == 0) {
+            // 连自己从哪儿来的都解析不出来：保守直接退，别当无主的僵尸飘着。
+            FBLog(@"看门狗：解析不到所属 .app 目录，直接退出");
+            exit(0);
+        }
+        FBLog(@"看门狗：盯住 %@（摸不到就说明 App 被删了）", sBundlePath);
+    }
+
+    struct stat st;
+    if (stat([sBundlePath fileSystemRepresentation], &st) == 0 && (st.st_mode & S_IFDIR)) {
+        // App 还在 —— 最常见的返回，什么都不做
+        return;
+    }
+    static int sMisses = 0;
+    sMisses++;
+    FBLog(@"看门狗：.app 目录摸不到了（第 %d/3 次），App 可能已删除：%@", sMisses, sBundlePath);
+    if (sMisses >= 3) {
+        FBLog(@"看门狗：App 已删除，悬浮球进程自杀退出（pid=%d）", getpid());
+        exit(0);
+    }
+}
+
+/// 挂一个后台定时器，每 3 秒查一次「App 的 .app 目录还在不在」。
+/// ⚠️ 在进入 runloop 之前就挂好（这里只是注册了源，真正起跑不挑时机）。
+static void FBHUDStartAppBundleWatchdog(void)
+{
+    static dispatch_source_t sWatchdog = nil;
+    sWatchdog = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0,
+                                       dispatch_get_global_queue(QOS_CLASS_UTILITY, 0));
+    dispatch_source_set_timer(sWatchdog,
+                              dispatch_time(DISPATCH_TIME_NOW, (int64_t)(5 * NSEC_PER_SEC)),  // 先等 5 秒（让球先立起来）
+                              (uint64_t)(3 * NSEC_PER_SEC),   // 每 3 秒查一次
+                              (uint64_t)(2 * NSEC_PER_SEC));  // 允许 2 秒的调度抖动
+    dispatch_source_set_event_handler(sWatchdog, ^{
+        FBHUDAppGoneCheck();
+    });
+    dispatch_resume(sWatchdog);
+    FBLog(@"看门狗已挂上：每 3 秒确认 App 还在不在（连续 3 次摸不到 = App 被删 = 自尽）");
+}
+
+#pragma mark -
 
 int main(int argc, char *argv[])
 {
@@ -614,6 +684,12 @@ int main(int argc, char *argv[])
             // 正常退出时把 pid 文件带走（App 就是靠「文件在 + 进程在」判断球在不在跑）。
             // ⚠️ 被 SIGKILL 杀掉时 atexit 不会执行 —— 那种情况下由 -exit 自己 unlink（见下）。
             atexit(FBHUDUnlinkPIDFile);
+
+            // ⚠️ 0.1.12 看门狗：App 被删了，球要跟着自尽。
+            //    复现（用户 2026-10-17 报的）：把悬浮球 App 删了，屏幕上的球还在 ——
+            //    球是 root 的独立进程，删 App 只是把 .app 目录拆掉，正在跑的进程没人管，
+            //    原来又没人写过「App 不在了就退」这条规矩，于是球成僵尸（只能重启才能清）。
+            FBHUDStartAppBundleWatchdog();
 
             // 不走 SpringBoard，自己把 UIKit 支起来
             [UIScreen initialize];

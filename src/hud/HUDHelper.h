@@ -42,4 +42,8 @@ OBJC_EXTERN void FBProbeRealTapDidFire(void);
 ///    那样 HID 这条备份路会被提前关掉，两边都不响应（球彻底没反应）。
 OBJC_EXTERN BOOL FBRealTouchWorks(void);
 
+/// 球「按下」了（0.1.12 新增）：在 HUDApp.mm 的「起手在球上」那一刻调。
+/// 球那边据此立刻震一下 —— 反馈要跟手指同步，不能等手势判完（有时根本判不出来）。
+OBJC_EXTERN void FBBallHapticTouchDown(void);
+
 NS_ASSUME_NONNULL_END

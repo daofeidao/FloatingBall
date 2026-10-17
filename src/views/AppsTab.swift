@@ -9,24 +9,24 @@ import SwiftUI
 ///
 /// 这一栏既是「手动点一下」的清单，也是手势绑定的候选池（见「启动」页的手势一节）。
 ///
-/// ⚠️ 排序**不用系统的「编辑」模式**（2026-10-17 用户要求）：
-///    编辑模式的删除圈和「左滑删除」重复，而且编辑模式下点一行不会执行动作。
-///    改法：常驻拖动 —— 每行右边是三条横线的手柄，手指按住一行拖到哪就插到哪
-///    （`.onDrag` + `ShortcutDropDelegate`），点一下照样执行、左滑照样删。
+/// ⚠️ 排序**不用系统的「编辑」模式**（2026-10-17 用户要求），也**不走 `.onDrag`/`.onDrop`**
+///    （那条在 2026-10-18 被真机证伪：手柄显示出来了，但拖动调不了顺序）。
+///    现在的改法：`ForEach` 挂 `.onMove(perform:)` —— SwiftUI 的 List 自带
+///    **长按一行就能拖着换位置**的能力（Apple 文档明说「by using a long press on a row」，
+///    不需要进编辑模式），每行右边照旧画着三条横线当「能拖」的示意。
+///    点一下照样执行、左滑照样删，排序时松手就写盘。
 struct AppsTab: View {
 
     @State private var items: [ShortcutItem] = []
     @State private var showAdd = false
     @State private var message = ""
     @State private var showMessage = false
-    /// 正在被拖着的那一行（排序用）
-    @State private var dragging: ShortcutItem?
 
     var body: some View {
         NavigationView {
             List {
                 Section(header: Text("菜单项"),
-                        footer: Text("点一行就执行。右边那三条横线是拖动手柄：按住一行拖到别处就换顺序。左滑一行可以删除。这里的每一项也能绑到手势上。")) {
+                        footer: Text("点一下就执行。想换顺序：**长按**一行（那三条横线的位置最好使）往上拖，松手就定位置。左滑一行可以删除。这里的每一项也能绑到手势上。")) {
                     if items.isEmpty {
                         Text("还是空的，点下面「添加」").foregroundColor(.secondary)
                     }
@@ -34,20 +34,12 @@ struct AppsTab: View {
                         row(item)
                             .contentShape(Rectangle())
                             .onTapGesture { run(item) }
-                            // 常驻拖动：按住一行拖走。松手（performDrop）时才写盘，
-                            // 免得拖的过程中每移一格都写一次 plist。
-                            .onDrag {
-                                dragging = item
-                                return NSItemProvider(object: item.key as NSString)
-                            }
-                            // ⚠️ 这里用 [String] 那个老重载：iOS 13.4 就有，
-                            //    比 [UTType] 那版稳（本机没有 Xcode，不能先编译验证）。
-                            .onDrop(of: ["public.text"], delegate: ShortcutDropDelegate(
-                                item: item,
-                                items: $items,
-                                dragging: $dragging,
-                                onCommit: { ShortcutStore.save($0) }
-                            ))
+                    }
+                    // ⚠️ 排序就这一句：List 对挂了 onMove 的 ForEach 自带「长按+拖动」。
+                    //    每换一次位置就写一次盘（plist 很小，写盘反而稳 —— 中途退出去也不丢）。
+                    .onMove { from, to in
+                        items.move(fromOffsets: from, toOffset: to)
+                        ShortcutStore.save(items)
                     }
                     .onDelete { offsets in
                         items.remove(atOffsets: offsets)
@@ -96,8 +88,9 @@ struct AppsTab: View {
                     .lineLimit(1)
             }
             Spacer(minLength: 8)
-            // 拖动手柄：老版本这里是「>」（点进二级页的箭头），
-            // 现在点一行就是执行，没有二级页可进 —— 所以换成能拖的表示。
+            //三条横线手柄：老版本这里是「>」（点进二级页的箭头），
+            // 现在点一行就是执行，没有二级页可进 —— 换成「能拖着换顺序」的示意。
+            // 真正的排序靠 List 自带的「长按+拖」（onMove），从这附近按下去最顺手。
             Image(systemName: "line.3.horizontal")
                 .font(.system(size: 14, weight: .semibold))
                 .foregroundColor(.secondary)
@@ -195,40 +188,11 @@ struct AppsTab: View {
 /// 拖着某一行进到另一行身上时，就把它插到那一行的位置（上下方向都对：
 /// 往下拖时插到对方后面、往上拖时插到对方前面）。
 /// ⚠️ 松手才写盘（`onCommit`）—— 拖的过程中每移一格都写一次 plist 太亏。
-struct ShortcutDropDelegate: DropDelegate {
-
-    let item: ShortcutItem
-    @Binding var items: [ShortcutItem]
-    @Binding var dragging: ShortcutItem?
-    let onCommit: ([ShortcutItem]) -> Void
-
-    func dropEntered(info: DropInfo) {
-        guard let dragging,
-              dragging != item,
-              let from = items.firstIndex(of: dragging),
-              let to = items.firstIndex(of: item)
-        else { return }
-
-        if items[to] != dragging {
-            withAnimation(.easeInOut(duration: 0.18)) {
-                items.move(fromOffsets: IndexSet(integer: from),
-                           toOffset: to > from ? to + 1 : to)
-            }
-        }
-    }
-
-    func dropUpdated(info: DropInfo) -> DropProposal? {
-        DropProposal(operation: .move)
-    }
-
-    func performDrop(info: DropInfo) -> Bool {
-        dragging = nil
-        onCommit(items)
-        return true
-    }
-}
-
 // MARK: - 添加
+
+/// ⚠️ 0.1.13：`ShortcutDropDelegate`（onDrag/onDrop 那套）删了 ——
+///    0.1.10 写它时没条件真机验证，结果手柄能显示、顺序拖不动；排序改交给
+///    `ForEach.onMove`（长按+拖），结构简单一半。此段留个说明，别再写回来。
 
 struct AddShortcutView: View {
 
@@ -248,7 +212,31 @@ struct AddShortcutView: View {
 
     var body: some View {
         NavigationView {
-            List {
+            // ⚠️ 0.1.13（用户 2026-10-18 要求）：搜索框不再用 `.searchable`
+            //    （那个是塞在导航栏下面，位置不动，也不属于 App 列表）。
+            //    改法：**常驻顶部的固定一行**，就在 App 列表头上；
+            //    往下滑列表时它不动 —— 滑到「已安装的 App」再往上翻也能照常搜。
+            VStack(spacing: 0) {
+                HStack(spacing: 8) {
+                    Image(systemName: "magnifyingglass")
+                        .foregroundColor(.secondary)
+                    TextField("搜 App 名字", text: $query)
+                        .textFieldStyle(.roundedBorder)
+                        .autocapitalization(.none)
+                        .disableAutocorrection(true)
+                    if !query.isEmpty {
+                        Button {
+                            query = ""
+                        } label: {
+                            Image(systemName: "xmark.circle.fill")
+                                .foregroundColor(.secondary)
+                        }
+                    }
+                }
+                .padding(.horizontal)
+                .padding(.vertical, 8)
+                Divider()
+                List {
                 Section(header: Text("内置动作库")) {
                     ForEach(ShortcutAction.allCases.filter { $0 != .none }) { action in
                         optionRow(ShortcutItem.make(action: action),
@@ -277,8 +265,8 @@ struct AddShortcutView: View {
                 if !hint.isEmpty {
                     Section(footer: Text(hint)) { EmptyView() }
                 }
+                }
             }
-            .searchable(text: $query, prompt: "搜 App 名字")
             .navigationTitle("添加")
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {

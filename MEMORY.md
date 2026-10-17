@@ -347,10 +347,29 @@ App 侧（uid 501）                          HUD 侧（root）
   **不用 List 的编辑模式**，两个原因：(a) 编辑模式左边会多出删除圈，和「左滑删除」重复；
   (b) **编辑模式下点一行不会执行动作** —— 那样「点一下就执行」直接没了。
   拖动过程只在本地下标上动，松手（`performDrop`）才写盘。
+  ⚠️⚠️ **2026-10-18 真机证伪（用户 0.1.12 反馈）**：手柄显示出来了，**但顺序拖不动** ——
+  这套 onDrag/onDrop 是当时没条件上真机验证写的，第一手真机就翻车。
+  0.1.13 起整套删掉（`ShortcutDropDelegate` 也没了），换成 **`ForEach.onMove(perform:)`**：
+  SwiftUI List 自带「**长按一行拖着换位置**」（Apple 文档原文 by using a long press on a row，
+  不用进编辑模式），三条横线手柄照旧当示意；点一下执行、左滑删除都不受影响；
+  每换一次位置就写一次盘（plist 很小，写盘反而稳）。**别再写回 onDrag 那套**。
 - 行点击从 `Button` 改成 `.contentShape(Rectangle()) + .onTapGesture`：
-  `Button` 和 `.onDrag` 放一起手势会打架（而且 `.plain` 按钮的按下高亮也会和拖动抢）。
-- ⚠️ `onDrop` 用的是 **`[String]` 那个老重载**（`["public.text"]`）而不是 `[UTType]`：
-  本机没有 Xcode，编译只能靠 CI，能少一个「不确定存在与否的 API」就少一个。
+  `Button` 和 drag 类手势放一起容易打架（连按高亮都会抢）—— 保留这个改法。
+- ~~`onDrop` 用的是 **`[String]` 那个老重载**（`["public.text"]`）而不是 `[UTType]`~~
+  （0.1.13 起整段失效：不用 onDrop 了，此备注只留作历史）。
+
+**添加页的搜索框（0.1.13，用户 2026-10-18 追加）**：
+
+用户原话：搜索框应该放在「已安装 App」这个位置的顶行，并且上滑到 App 列表时
+顺势常驻在最上一行（首行固定）。
+
+- ⚠️ 0.1.12 及以前用 `.searchable` —— 那是塞在**导航栏**下面的，位置不动、
+  也不属于 App 列表（用户看了不满意的原因）。
+- 0.1.13 改法：去掉 `.searchable`，`AddShortcutView` 的 body 外面包一层
+  `VStack { 搜索行; Divider; List }` —— 搜索行是**普通固定视图**，不随列表滚；
+  里面是放大镜 + 圆角输入框 + 有字时的一键清空按钮。
+- 顺带记一条：搜索过滤**沿用** `filteredApps`（同时按名字和 bundle id 过滤，
+  已在菜单里的项隐藏）。
 
 - 新文件 `src/hud/FBSystemActions.{h,mm}`：`FBRefreshCellularSignal` / `FBOpenApplication`
   两个 C 函数，**HUD 和 App 共用一份实现**（同一个二进制、同一份 entitlements，只是 uid 不同）。
@@ -516,6 +535,14 @@ _CTServerConnectionResetModem(conn, CFSTR("UserTriggeredReload"))
          （TrollSpeed / UIDaemon / Helium / TheBall，链接全核过 200）。
       ⑤ 0.1.11 那批照旧要验：开关是不是松手即变、4 行自检读数（见上一条 0.1.11 待验）。
       ⚠️ ① 若超过 20 秒球还在：念 `/tmp/FloatingBall.log` 末尾几行（有没有「看门狗」）。
+- [ ] **0.1.13 待验（2026-10-18 这版：快捷菜单排序重做 + 添加页搜索框常驻顶行）**：
+      ① **拖动排序**（0.1.12 反馈「调不了顺序」的修复）：长按「菜单项」里任意一行
+         （尤其三条横线那头）→ 行有没有被「拿起来」→ 往上下拖，别的行让位吗？
+         松手定位置吗？杀掉 App 重开顺序还在吗（现在每换一次就写盘）？
+      ② 点一行照样直接执行吗（排序重做不该影响这个）？ 左滑删除还在吗？
+      ③ 添加页：搜索框是不是在**最顶上一行**（放大镜+输入框），滑进「已安装的 App」
+         往上翻时它**始终钉在顶上**？ 输入字后有一个一键清空的小 ✕ 吗？ 搜得到吗？
+      ④ 0.1.12 那批照旧要验：删 App 球自尽（5~11 秒）、球按下即震、4 行自检读数。
 - [ ] 顺带把 `E:\文档\默认项目\MEMORY.md` 里两条过时信息更正：
       ① 「persona root spawn 是线索未证实」→ Helium/TheBall 都在生产用；
       ② 它指向的 `E:\文档\Helium\MEMORY.md` **并不存在**。

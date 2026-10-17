@@ -16,12 +16,18 @@
 {
     _rootViewController = [[BallRootViewController alloc] init];
 
-    CGFloat side = [_rootViewController windowSide];
+    // ⚠️ 顺序有讲究：initialCenter 会先把共享设置读进来，
+    //    必须排在 windowSide 前面，否则球尺寸会一直是默认值。
     CGPoint center = [_rootViewController initialCenter];
+    CGFloat side = [_rootViewController windowSide];
 
     self.window = [[HUDMainWindow alloc] initWithFrame:CGRectMake(center.x - side / 2.0,
                                                                   center.y - side / 2.0,
                                                                   side, side)];
+    // 球周围留了一圈余量（给阴影和手指宽容区），那圈必须是透明的，
+    // 否则窗口不透明会把余量画成黑块。
+    [self.window setBackgroundColor:[UIColor clearColor]];
+    [self.window setOpaque:NO];
     [self.window setRootViewController:_rootViewController];
     [self.window setWindowLevel:10000010.0];
     [self.window setHidden:NO];

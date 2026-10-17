@@ -14,6 +14,9 @@
 #import "HUDHelper.h"
 
 #import <notify.h>
+#import <objc/runtime.h>
+#import <objc/message.h>
+#import <dlfcn.h>
 
 #import "../helpers/private_headers/LSApplicationWorkspace.h"
 
@@ -170,8 +173,50 @@ static void LightHaptic(void)
     [self refreshLabel];
     LightHaptic();
 
-    LSApplicationWorkspace *ws = [LSApplicationWorkspace defaultWorkspace];
-    [ws openApplicationWithBundleID:@"com.apple.Preferences"];
+    [self openApplication:@"com.apple.Preferences"];
+}
+
+#pragma mark - 打开别的 App
+
+- (BOOL)openApplication:(NSString *)bundleID
+{
+    // ⚠️ 这里**故意**不写 [LSApplicationWorkspace defaultWorkspace]。
+    //    直接写类名会让链接期要求解析私有 framework 的类符号；
+    //    用 objc_getClass 拿到的只是一个字符串查找，永远不会链接失败。
+    //    （Helium 访问这个类也是这么写的，照抄它。）
+    Class wsClass = objc_getClass("LSApplicationWorkspace");
+    if (wsClass) {
+        id ws = [(id)wsClass performSelector:@selector(defaultWorkspace)];
+        SEL openSel = NSSelectorFromString(@"openApplicationWithBundleID:");
+        if (ws && [ws respondsToSelector:openSel]) {
+            // ⚠️ 这里必须用 objc_msgSend + 显式函数指针，不能写 performSelector：
+            //    performSelector 的返回类型是 id，ARC 会把 BOOL 的 0x1 当对象去 retain → 崩。
+            BOOL (*openApp)(id, SEL, NSString *) = (BOOL (*)(id, SEL, NSString *))objc_msgSend;
+            if (openApp(ws, openSel, bundleID)) return YES;
+        }
+    }
+
+    // 兜底：SpringBoardServices 的 C 接口（TheBall 用的就是这条路）。
+    // ⚠️ 用 dlsym 在运行时查，**不要**直接调用 ——
+    //    直接调用会让链接期去 SDK 的私有 stub 里找符号，
+    //    找不到就是 undefined symbol 编译失败；dlsym 找不到只是返回 NULL。
+    typedef int (*SBSLaunchFn)(NSString *, NSDictionary *, NSDictionary *, BOOL);
+    static SBSLaunchFn launchFn = NULL;
+    static dispatch_once_t launchOnce;
+    dispatch_once(&launchOnce, ^{
+        launchFn = (SBSLaunchFn)dlsym(RTLD_DEFAULT, "SBSLaunchApplicationWithIdentifierAndLaunchOptions");
+    });
+
+    if (launchFn) {
+        int rc = launchFn(bundleID, @{}, @{}, NO);
+        if (rc != 0) {
+            os_log_error(OS_LOG_DEFAULT, "打开 %{public}@ 失败，rc=%d", bundleID, rc);
+        }
+        return rc == 0;
+    }
+
+    os_log_error(OS_LOG_DEFAULT, "两条路都走不通，打不开 %{public}@", bundleID);
+    return NO;
 }
 
 - (void)onDoubleTap:(UITapGestureRecognizer *)g

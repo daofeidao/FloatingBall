@@ -27,9 +27,35 @@ static const CGFloat kDefaultBallSize = 56.0;
 static const CGFloat kWindowPadding = 12.0;   // 窗口比球大一圈：给阴影和手指宽容区
 static NSString *const kDefaultBallStyle = @"BallDot";   // 贴图名（见 scripts/make_icon.py）
 
-static void LightHaptic(void)
+// ---- 震动反馈 ----
+//
+// 开关存在共享设置里（App 首页那个「震动反馈」开关，键 = HapticsEnabled，默认开）。
+// App 那边有一份等价实现（src/controllers/Haptics.swift）——
+// 改键名 / 默认值 / 震感，两边必须一起改。
+//
+// ⚠️ 手机上「设置 → 声音与触感 → 系统触感反馈」关掉的话，这里全部没感觉。
+//    那是系统总开关，绕不过去（App 界面上有提示）。
+typedef NS_ENUM(NSInteger, FBHapticKind) {
+    FBHapticTap = 0,   // 识别到点击 / 球落位                —— 轻
+    FBHapticAction,    // 动作真的执行了（移动模式、数字开关）—— 中
+    FBHapticNotice,    // 「交代出去一件事」（刷新信号）      —— 通知那种两下
+};
+
+static void FBHapticPlay(FBHapticKind kind)
 {
-    UIImpactFeedbackGenerator *g = [[UIImpactFeedbackGenerator alloc] initWithStyle:UIImpactFeedbackStyleLight];
+    // ⚠️ 不用单例生成器：两次手势之间可能隔很久，生成器会凉掉。
+    //    每次新建 + prepare 的响应最稳。
+    if (kind == FBHapticNotice) {
+        UINotificationFeedbackGenerator *g = [[UINotificationFeedbackGenerator alloc] init];
+        [g prepare];
+        [g notificationOccurred:UINotificationFeedbackTypeSuccess];
+        return;
+    }
+
+    UIImpactFeedbackStyle style = (kind == FBHapticAction)
+        ? UIImpactFeedbackStyleMedium
+        : UIImpactFeedbackStyleLight;
+    UIImpactFeedbackGenerator *g = [[UIImpactFeedbackGenerator alloc] initWithStyle:style];
     [g prepare];
     [g impactOccurred];
 }
@@ -66,6 +92,17 @@ static void LightHaptic(void)
     BOOL _showText;           // 是否显示球上的数字（存在 ShowLabel 键里）
     BOOL _fallbackBall;       // 贴图丢了、退化成纯色球时，要给它留一圈描边
     BOOL _moveMode;           // 「移动模式」：球高亮，拖一下就落位，点一下退出
+}
+
+#pragma mark - 震动
+
+/// 走开关的震动：设置里 `HapticsEnabled` 是 false 就什么都不做。
+/// ⚠️ 用「没设过 = 开」的语义：老版本升上来时这个键不存在，不该变成静音。
+- (void)haptic:(FBHapticKind)kind
+{
+    NSNumber *on = _prefs[@"HapticsEnabled"];
+    if ([on isKindOfClass:[NSNumber class]] && ![on boolValue]) return;
+    FBHapticPlay(kind);
 }
 
 #pragma mark - 设置（和 App 共享 /var/mobile/Library/Preferences 下同一个 plist）
@@ -230,7 +267,7 @@ static void LightHaptic(void)
     _prefs[@"TapCount"] = @(count);
     [self savePrefs];
     [self refreshLabel];
-    LightHaptic();
+    [self haptic:FBHapticTap];
 
     if (_moveMode) {
         // 移动模式下轻点 = 退出移动模式，**不**执行绑定动作
@@ -288,6 +325,8 @@ static void LightHaptic(void)
     if ([action isEqualToString:@"refreshSignal"]) {
         // ⚠️ 这个 API 没有结果：只是把请求交给 CommCenter。
         //    成没成只能看状态栏信号格，日志里看不出成败。
+        //    所以只用「通知」那种震感表示「已经交代出去了」，不表示真的成功。
+        [self haptic:FBHapticNotice];
         BOOL sent = FBRefreshCellularSignal();
         FBLog(@"绑定动作=刷新信号 -> %@", sent ? @"请求已发出（看信号格）" : @"发不出去");
         return;
@@ -333,6 +372,7 @@ static void LightHaptic(void)
     _prefs[@"ShowLabel"] = @(_showText);
     [self savePrefs];
     [self refreshLabel];
+    [self haptic:FBHapticAction];   // 状态变了，给个「中」的反馈
     FBLog(@"绑定动作=显示数字 -> %@", _showText ? @"开" : @"关");
 }
 
@@ -343,7 +383,7 @@ static void LightHaptic(void)
 {
     if (_moveMode == on) return;
     _moveMode = on;
-    LightHaptic();
+    [self haptic:FBHapticAction];
 
     if (on) {
         _ball.layer.borderWidth = 3.0;
@@ -375,7 +415,7 @@ static void LightHaptic(void)
 
     NSString *target = [self gestureTarget:@"GestureDoubleTap"];
     FBLog(@"双击：绑定=%@", target);
-    LightHaptic();
+    [self haptic:FBHapticTap];
     [self performTargetKey:target];
 }
 
@@ -386,7 +426,7 @@ static void LightHaptic(void)
 
     NSString *target = [self gestureTarget:@"GestureLongPress"];
     FBLog(@"长按：绑定=%@", target);
-    LightHaptic();
+    [self haptic:FBHapticTap];
     [self performTargetKey:target];
 }
 
@@ -410,6 +450,7 @@ static void LightHaptic(void)
     } else if (g.state == UIGestureRecognizerStateEnded || g.state == UIGestureRecognizerStateCancelled) {
         // 只在收尾时记一行：拖动过程中每个事件都记会把日志刷爆
         FBLog(@"拖动结束，落点 frame=%@", NSStringFromCGRect(window.frame));
+        [self haptic:FBHapticTap];   // 松手那一下轻震：告诉用户「落这儿了」
         [self snapToEdge];
         // 移动模式：拖完就自动退出，不用再点一下
         if (_moveMode) [self setMoveMode:NO];

@@ -15,6 +15,7 @@ struct LaunchTab: View {
     @State private var busy = false
     @State private var status = "未检测"
     @State private var tapCount = 0
+    @State private var hapticsOn = true
 
     // 图标设置
     @State private var shape: BallShape = .dot
@@ -31,7 +32,8 @@ struct LaunchTab: View {
     var body: some View {
         NavigationView {
             Form {
-                Section(header: Text("悬浮球")) {
+                Section(header: Text("悬浮球"),
+                        footer: Text("震动反馈：点球、执行动作、球落位时会震一下（屏幕上的球和这个 App 都会震）。关掉之后哪儿都不震。\n开着也没感觉的话，去「设置 → 声音与触感 → 系统触感反馈」看看是不是关的 —— 那个是系统总开关，绕不过去。")) {
                     Toggle("启动悬浮球", isOn: Binding(
                         get: { enabled },
                         set: { want in setEnabled(want) }
@@ -48,6 +50,15 @@ struct LaunchTab: View {
                         Spacer()
                         Text("\(tapCount)").foregroundColor(.secondary)
                     }
+
+                    Toggle("震动反馈", isOn: Binding(
+                        get: { hapticsOn },
+                        set: { want in setHaptics(want) }
+                    ))
+
+                    // 这按钮走的是同一个开关：关着就不震（不然用户会以为开关坏了）
+                    Button("试一下震动") { Haptics.fire(.action) }
+
                     Button("刷新") { refresh() }
                 }
 
@@ -141,6 +152,7 @@ struct LaunchTab: View {
                     Button("复位位置") {
                         BallSettings.resetPosition()
                         BallSettings.notifyReload()
+                        Haptics.fire(.action)
                     }
                 }
 
@@ -332,6 +344,17 @@ struct LaunchTab: View {
     private func setGesture(_ key: String, _ target: String) {
         gestures[key] = target
         ShortcutStore.setGestureTarget(key, target)
+        Haptics.fire(.tap)
+    }
+
+    /// 震动开关。写进共享设置（球进程也读这个键），并通知它重读。
+    private func setHaptics(_ want: Bool) {
+        hapticsOn = want
+        BallSettings.set(want, "HapticsEnabled")
+        BallSettings.notifyReload()
+        // 打开的那一下硬震一次：用户需要立刻感觉到「开了」
+        // （关的时候不震 —— 刚关掉还震会显得没生效）
+        if want { Haptics.fire(.action, force: true) }
     }
 
     // MARK: - 读写设置
@@ -339,6 +362,7 @@ struct LaunchTab: View {
     private func refresh() {        enabled = IsHUDEnabledBridger()
         status = enabled ? "运行中" : "未运行"
         tapCount = BallSettings.integer("TapCount", default: 0)
+        hapticsOn = BallSettings.bool("HapticsEnabled", default: true)
 
         shape = BallRenderer.loadShape()
         color = BallRenderer.loadColor()
@@ -356,6 +380,7 @@ struct LaunchTab: View {
         busy = true
         enabled = want
         status = want ? "正在启动…" : "正在关闭…"
+        Haptics.fire(.action)
         SetHUDEnabledBridger(want)
 
         // 球进程起来/退出需要一点时间，稍后再确认一次真实状态

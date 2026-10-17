@@ -91,6 +91,7 @@ struct AppsTab: View {
     private func run(_ item: ShortcutItem) {
         switch item.kind {
         case .app:
+            Haptics.fire(.tap)
             if !FBOpenApplication(item.id) {
                 say("打不开 \(item.title)（可能是没装，或者系统不让从这儿跳）")
             }
@@ -99,25 +100,31 @@ struct AppsTab: View {
             guard let action = item.action else { return }
             switch action {
             case .none:
-                break
+                Haptics.fire(.tap)
 
             case .refreshSignal:
                 // ⚠️ 这一步没有回执：请求交给 CommCenter 就结束了，成没成只能看信号格
+                //    所以用「通知」那种震感表示「交代出去了」，不表示成功
+                Haptics.fire(.notice)
                 let sent = FBRefreshCellularSignal()
                 say(sent
                     ? "已经让基带重新搜网。\n\n⚠️ 这一步没有回执，别等我告诉你成功——直接看状态栏信号格回没回来。"
                     : "这次发不出去：这台机器上缺权限，或者系统里没有这个接口。")
 
             case .openMainApp:
+                Haptics.fire(.tap)
                 TabRouter.shared.tab = 0
 
             case .openAppList:
+                Haptics.fire(.tap)
                 TabRouter.shared.tab = 1
 
             case .moveBall:
+                Haptics.fire(.tap)
                 say("「移动悬浮图标」得在屏幕上的球上触发才有意义——在 App 里挪不了球。")
 
             case .toggleLabel:
+                Haptics.fire(.action)
                 let now = BallSettings.bool("ShowLabel", default: true)
                 BallSettings.set(!now, "ShowLabel")
                 BallSettings.notifyReload()

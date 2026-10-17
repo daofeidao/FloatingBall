@@ -245,6 +245,7 @@ App 侧（uid 501）                          HUD 侧（root）
 | `Shortcuts` | 数组 `[{kind: "app"\|"action", id, title}]` |
 | `GestureTap` / `GestureDoubleTap` / `GestureLongPress` | 一条字符串：`app:<bundleID>` 或 `action:<动作名>` |
 | `ShowLabel` | 球上的数字显不显示（原来是内存态，现在持久化） |
+| `HapticsEnabled` | 震动反馈开关（Bool，**默认开**；「没设过」必须当开，见下「震动反馈」） |
 | `PendingTab` | HUD 写、App 读一次就清：`"apps"` / `"launch"` |
 
 - ⚠️ **手势绑定存 key，不存下标**（`app:xxx` / `action:xxx`）。
@@ -291,6 +292,24 @@ _CTServerConnectionResetModem(conn, CFSTR("UserTriggeredReload"))
   卡贴机真掉信号时通常还要配合：拨 `*` 取激活信号 / 重刷 IPCC / 切卡槽。
 - dlsym 取符号，`Makefile` 只是把公开的 `CoreTelephony` 链上（拿句柄用），私有符号仍然不链接。
 
+**震动反馈（0.1.4，用户 2026-10-17 追加）**：
+
+- 键 `HapticsEnabled`（Bool，**默认开**）。
+  ⚠️ **「没设过」必须当「开」**：Swift 侧 `BallSettings.bool(..., default: true)`，
+  HUD 侧判断 `_prefs[@"HapticsEnabled"]` 是不是 `NSNumber` 且为 false —— 升级上来的用户没这个键，
+  按 false 处理就会突然静音。
+- **两份实现**（两个进程，代码没法共用）：HUD 侧 `BallRootViewController.mm`
+  的 `FBHapticPlay()` + `- haptic:`；App 侧 `src/controllers/Haptics.swift` 的 `Haptics.fire()`。
+  改键名/默认值/震感要**两边一起改**。
+- 三档：`tap`（轻）= 识别到点击 / 球落位 / 选中选项；`action`（中）= 动作真的执行了
+  （移动模式、数字开关、开关悬浮球、复位位置）；`notice`（通知两下）= 刷新信号 ——
+  ⚠️ 只表示「交代出去了」，**不表示成功**（那个 API 没有回执，用 success 手感别解读成成功）。
+- 开关放 App 首页「启动」栏，旁边配一个「试一下震动」按钮（**走同一个开关**：
+  关着就不震 —— 如果它无视开关硬震，用户会以为开关坏了）。
+  打开开关那一下硬震一次（`force: true`）：要让用户立刻感觉到「开了」。
+- ⚠️ 手机上「设置 → 声音与触感 → 系统触感反馈」关掉的话全部没感觉。
+  那是系统总开关，绕不过去 → App 界面 footer 和交付邮件里都要提示用户去查这一条。
+
 ## 八、硬规则（不要重走）
 
 - **脚本/命令功能**：将来若要做，必须复用 TT 的 `DangerGuard`（硬拦截、无放行按钮、默认关闭）。
@@ -308,6 +327,9 @@ _CTServerConnectionResetModem(conn, CFSTR("UserTriggeredReload"))
 - [ ] **已知副作用待观察**：HID 回调不能吃掉事件 → 点在球上时球下面的 App 也会收到这一下。
       实机上体验到底有多烦（球吸在屏幕边上、下面多为壁纸/列表边缘），等用户反馈再决定要不要治。
 - [ ] 真机上顺带验外观：三种样式能否即时切换（不重启）、大小滑块是否即时生效、桌面图标是不是小圆点。
+- [ ] **0.1.4 震动反馈待验**：点球 / 球落位 / 执行动作各震一次；
+      「启动」页开关能关掉（关了连「试一下震动」按钮也不震）。
+      ⚠️ 如果整机都不震，先查「设置 → 声音与触感 → 系统触感反馈」是不是关的，别先怀疑代码。
 - [ ] 顺带把 `E:\文档\默认项目\MEMORY.md` 里两条过时信息更正：
       ① 「persona root spawn 是线索未证实」→ Helium/TheBall 都在生产用；
       ② 它指向的 `E:\文档\Helium\MEMORY.md` **并不存在**。

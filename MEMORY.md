@@ -380,7 +380,9 @@ _CTServerConnectionResetModem(conn, CFSTR("UserTriggeredReload"))
   包内 0.1.7 / build 8，二进制 **929,088 B** —— 比 0.1.6 大 53,952 B）。
   内容是**触摸换路（IOHIDEventSystemClient 监视客户端，两条路一起听）+ 震动跟手性**
   （见 §十一 末、「震动」那节）。正文落盘 `ref/mail_0.1.7_body.txt`。
-  远端 main 推到 `c2668821a1681e1f63bf59ba197224a776f5847e`（本地提交 `e93a590`）。
+  远端 main 推到 `c2668821a1681e1f63bf59ba197224a776f5847e`（本地提交 `e93a590`，
+  这就是 tag 指向的提交；打完 tag 后又推了一次文档提交 `6c9331e`
+  → 远端 main = `615e23f485163d3edfb224d748768bffe45c82b9`）。
 
   核对脚本落盘 **`ref/fetch_release.py`**（走 API 取 Release 附件 → 落 `E:\下载\` →
   验 sha256 / 包内版本 / 二进制大小 / 新字符串在不在，并跟上一版对照）。

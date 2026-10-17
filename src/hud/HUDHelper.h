@@ -7,6 +7,11 @@ OBJC_EXTERN BOOL IsHUDEnabled(void);
 OBJC_EXTERN void SetHUDEnabled(BOOL isEnabled);
 OBJC_EXTERN void waitForNotification(void (^onFinish)(), BOOL isEnabled);
 
+/// 球进程的 pid 文件路径 —— **App 和球共用的那一份**（`/tmp/FloatingBall.hud.pid`）。
+/// 0.1.11 起它同时是「球在不在跑」的唯一判据：球启动时写，退出/被杀时删，
+/// App 侧读出来 + kill(pid,0) 就能秒判，不用再 spawn 一个 -check 进程（那是开关慢的根因）。
+OBJC_EXTERN NSString *FBHUDPIDFilePath(void);
+
 /// 把「屏幕上的那个球」交给 HUD 的触摸回调。
 /// 触摸走的是「全局 HID 事件 → 自己喂给球视图」那条路（见 HUDApp.mm），
 /// 回调要靠这个视图算「这一下是不是按在球上」。
@@ -30,6 +35,11 @@ OBJC_EXTERN void FBProbeTouchHit(BOOL onBall);
 OBJC_EXTERN void FBProbeRealTapDidFire(void);
 
 /// 真触摸这条路通了没有（通了就不再喂合成的假触摸，免得一次点击走两遍）。
+///
+/// ⚠️ 0.1.11 收紧判据：只有**球自己的手势真的触发过**（真点击 > 0）才算通。
+///    0.1.8 用的判据是「窗口问到了 + 落在球上」，但「触摸进了窗口」不等于
+///    「手势认出来了」—— 真机上有窗口问 > 0 而真点击 = 0 的可能，
+///    那样 HID 这条备份路会被提前关掉，两边都不响应（球彻底没反应）。
 OBJC_EXTERN BOOL FBRealTouchWorks(void);
 
 NS_ASSUME_NONNULL_END

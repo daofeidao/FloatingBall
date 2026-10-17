@@ -12,9 +12,10 @@ private let kColorPresets = ["#000000", "#FFFFFF", "#FF3B30", "#0A84FF", "#34C75
 struct LaunchTab: View {
 
     @State private var enabled = false
-    @State private var busy = false
-    @State private var status = "未检测"
     @State private var tapCount = 0
+    /// ⚠️ 只在**出问题**时才有值：开关没生效时在开关下面显示一行提示。
+    /// 用户明确说过「未运行 / 运行中 / 正在关闭…」那一行是没用的东西 —— 常态一个字都不显示。
+    @State private var trouble: String?
     @State private var hapticsOn = true
 
     // 震动参数（0.1.9 起可调；键名与球进程共用，见 Haptics.swift 顶部）
@@ -46,12 +47,12 @@ struct LaunchTab: View {
     """
 
     private static let versionFooter = """
-    0.1.10：快捷菜单里去掉了右上角「编辑」——每行右边那三条横线直接就是拖动手柄（点一下照样执行、左滑照样删）；
-    「添加」页在「内置动作库」和「已安装的 App」中间多了一栏「添加」，里面有「系统快捷指令」和「URL 协议」
-    （内置微信扫一扫 / 支付宝扫一扫 / 微信收付款码，也能自己填一条），URL 项同样能绑到手势上。
-    0.1.9：内置动作库多了「截屏」；「快捷应用」改名「快捷菜单」；震动强度和时长可调（上面「悬浮球」一节）。
-    球浮在任何界面之上；轻点 / 双击 / 长按各自绑一个动作（见下面「手势」一栏），拖动一直是移动球。
-    点球没反应时，去「关于」页看「触摸自检」那一行。
+    0.1.11：① 开关快了 —— 以前每次问「球在跑吗」都要在后台悄悄启动一整个程序，所以点了要等一两秒；现在球把自己的进程号写在 /tmp，App 读一下就够，松手即响应（顺手去掉了「状态」那一行，它没用）。
+    ② 去掉「试一下震动」按钮：打开震动开关的那一下本身就会震，拖强度/时长滑块也会当场震。
+    ③ 触摸：真机自检显示「按下」这件事系统压根没告诉我们（30225 条事件里 0 次），老逻辑一直等它 —— 所以永远接不上。现在改成「手指第一次落在球上就算按下」。
+    0.1.10：快捷菜单去掉右上角「编辑」（每行右边三条横线就是拖动手柄）；「添加」页中间多一栏「添加」，里面是「系统快捷指令」和「URL 协议」（内置微信扫一扫 / 支付宝扫一扫 / 收付款码）。
+    0.1.9：内置动作库多了「截屏」；「快捷应用」改名「快捷菜单」；震动强度和时长可调。
+    点球没反应时，去「关于」页把「触摸自检」那几行念给我（0.1.11 起多了一行「底层」）。
     """
 
     var body: some View {
@@ -63,17 +64,17 @@ struct LaunchTab: View {
                         get: { enabled },
                         set: { want in setEnabled(want) }
                     ))
-                    .disabled(busy)
 
-                    HStack {
-                        Text("状态")
-                        Spacer()
-                        Text(status).foregroundColor(.secondary)
-                    }
                     HStack {
                         Text("轻点次数")
                         Spacer()
                         Text("\(tapCount)").foregroundColor(.secondary)
+                    }
+
+                    if let trouble = trouble {
+                        Text(trouble)
+                            .font(.footnote)
+                            .foregroundColor(.red)
                     }
 
                     Toggle("震动反馈", isOn: Binding(
@@ -110,13 +111,9 @@ struct LaunchTab: View {
                         }
                     }
 
-                    // 这按钮走的是同一个开关：关着就不震（不然用户会以为开关坏了）
-                    //
-                    // ⚠️ 用 hapticOnPress 而不是在 action 里震：Button 的 action 是**松开**
-                    //    才执行的，按下去那一瞬间没反应，用户就觉得「延迟、跟手性不够」。
-                    //    改成按下去就震 —— 这才是按键该有的手感。
-                    Button("试一下震动") {}.hapticOnPress(.action)
-
+                    // ⚠️ 2026-10-17 用户明确：不要「试一下震动」这个按钮 ——
+                    //    打开「震动反馈」开关的那一下**本身就会震**（见 setHaptics），
+                    //    拖强度 / 时长滑块时也会当场震，再放个按钮是重复的。
                     Button("刷新") { refresh() }.hapticOnPress(.tap)
                 }
 
@@ -443,8 +440,7 @@ struct LaunchTab: View {
     // MARK: - 读写设置
 
     private func refresh() {
-        enabled = IsHUDEnabledBridger()
-        status = enabled ? "运行中" : "未运行"
+        enabled = IsHUDEnabledBridger()   // 0.1.11 起这条是「读 pid 文件 + kill(pid,0)」，微秒级
         tapCount = BallSettings.integer("TapCount", default: 0)
         hapticsOn = BallSettings.bool("HapticsEnabled", default: true)
 
@@ -466,20 +462,40 @@ struct LaunchTab: View {
         }
     }
 
+    /// 启动 / 关闭悬浮球。
+    ///
+    /// ⚠️ 2026-10-17 重写（用户原话：「打开和关闭速度非常慢」「状态那一行没必要」）：
+    ///   · **乐观更新**：手指一松界面立刻动，不再等后台确认，也不再把开关 disable 掉
+    ///     （以前 busy 期间开关是灰的，等 1.5 秒才恢复 —— 那种「卡住」的感觉就是它）；
+    ///   · 慢的根因在 HUDHelper.mm / HUDApp.mm：原来每次问状态都要 spawn 一整个进程再 waitpid。
+    ///     现在球把 pid 写在 /tmp（两边都够得着），App 直接读 + kill(pid,0)，微秒级；
+    ///     关球也不再 sleep + waitpid。于是这里只需**便宜地**轮询几次看结果。
+    ///   · 只有「没生效」时才在开关下面显示一行红字（常态一个字都不显示）。
     private func setEnabled(_ want: Bool) {
-        busy = true
         enabled = want
-        status = want ? "正在启动…" : "正在关闭…"
-        Haptics.fire(.action)
+        trouble = nil
+        Haptics.fire(.action)             // 开 / 关都给一次触感回执
         SetHUDEnabledBridger(want)
 
-        // 球进程起来/退出需要一点时间，稍后再确认一次真实状态
-        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
+        // 起球要等它自己写 pid 文件；退球要等 -exit 那个小进程干完活。都是几十~几百毫秒。
+        var tries = 0
+        func poll() {
+            tries += 1
             let real = IsHUDEnabledBridger()
-            enabled = real
-            status = real ? "运行中" : (want ? "启动失败" : "未运行")
-            busy = false
+            if real == want {
+                enabled = real
+                return
+            }
+            if tries >= 12 {              // 12 × 0.15 ≈ 1.8 秒还没成 → 认为失败了
+                enabled = real
+                trouble = want
+                    ? "球没起来。把开关关一下再打开；还不行就去「关于」页把自检念给我。"
+                    : "球还在跑（没退干净）。再关一次；还不行就重启手机。"
+                return
+            }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) { poll() }
         }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) { poll() }
     }
 
     /// 把外观存进共享设置 + 让球进程重读。
@@ -495,7 +511,7 @@ struct LaunchTab: View {
         BallSettings.set(opacity, "BallOpacity")
 
         if redraw, let error = BallRenderer.regenerate() {
-            status = "贴图写入失败"
+            trouble = "贴图写入失败：\(error)"
             print("[FloatingBall] \(error)")
         }
         BallSettings.notifyReload()

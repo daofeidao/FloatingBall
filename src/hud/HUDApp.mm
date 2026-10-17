@@ -14,6 +14,8 @@
 #import <mach-o/dyld.h>
 #import <objc/runtime.h>
 #import <unistd.h>
+#import <sys/stat.h>
+#import <errno.h>
 #import <dlfcn.h>
 
 #import "HUDHelper.h"
@@ -44,6 +46,18 @@
 //
 //    ⚠️ 只有「按下」落在球上才接管；接管之后它的 move / up 全归我们，
 //       手指划出球的范围也不能丢，否则拖动会断在半路。
+//
+// --- 0.1.11 修正（2026-10-17 真机自检读数直接指向这里）---
+//
+//    自检（0.1.8 那版）：回调=30225（路A=0 路B=30225 匹配服务=1）、无rep=0、无路径=0、
+//    非本触点=29458、不在球=0、接管=0、喂球=0。
+//    → 事件**全部收到了**，但**一条「按下」都没被认出来**：`[rep isTouchDown]` 一直是 0。
+//      而老逻辑只有「按下」才接管，所以永远接管不了 —— 这就是「点球没反应」的正主。
+//
+//    改法（对着工作正常的 TheBall 反汇编对齐的）：**phase 由我们自己定**，
+//    起手落在球上就算 Began；AX 那几个标志只当补充，底层 IOHID 字段（Touch=0）判抬起。
+//    另外把「窗口问到了」不再当成「真触摸这条路通了」——只有球的手势真触发过（真点击>0）
+//    才停喂合成触摸，免得两边都关掉、球彻底没反应。
 // ============================================================================
 #define USE_HID_EVENT_CALLBACK 1
 
@@ -78,6 +92,14 @@ void FBHUDSetBallView(UIView *ballView)
 // 都是同一份代码，而它们的 HUD 只用来「显示」，所以这条路从来没被验证过）。
 // 0.1.7 起多了一条有据可查的路（IOHIDEventSystemClient 监视客户端，见下面
 // `_HUDMonitorRouteCallback` 的注释），两条路分别计数，谁生效看 路A= / 路B=。
+//
+// 0.1.8 真机读数：路B 收到 30225 条，却**一条「按下」都没有**（接管=0）——
+//   于是 0.1.11 把「谁来当按下」改成自己判（见文件顶部），并加了一行「底层」：
+//     底层：AX按下=A 在屏=B 离屏=C
+//   · AX按下 —— AXEventRepresentation 的 isTouchDown 说了几次「按下」（老逻辑唯一入口）
+//   · 在屏 / 离屏 —— 直接读 IOHID 事件字段（Touch=1 / Touch=0），注入工具 ZXTouch 用的同一套
+//   读法：在屏>0 说明「事件流里确实有手指」；这时候球还不响应，就看「最后」一行的
+//   点 / 球 / 窗口 三个矩形（判断坐标系）和 hid(x=…) 那几位。
 // ============================================================================
 #define FB_PROBE_PATH   @"/tmp/FloatingBall.probe"
 
@@ -88,11 +110,18 @@ static int    sProbeMatched   = -1;  // 监视客户端按 13/4 匹配到几个�
 static int    sProbeNoRep     = 0;   // ② rep 转不出来
 static int    sProbeNoPath    = 0;   // ③ 没有手指路径（按键 / 父事件都走这里）
 static int    sProbeZeroID    = 0;   // ③ pathIdentity<=0（当 1 用了）
-static int    sProbeNotOurs   = 0;   // ④ 不是我们接管的那个触点
-static int    sProbeOffBall   = 0;   // ④ 按下不在球上
+static int    sProbeNotOurs   = 0;   // ④ 无关的「抬起」（没拿着的时候收到的）
+static int    sProbeOffBall   = 0;   // ④ 起手不在球上（留给下面的 App）
 static int    sProbeOtherRoute = 0;  // 另一条路又送来的触摸（只记数，不喂，防重复）
-static int    sProbeTakeover  = 0;   // ⑤ 接管了
+static int    sProbeTakeover  = 0;   // ⑤ 接管了（起手落在球上）
 static int    sProbeFed       = 0;   // ⑤ 喂给球视图了
+// ---- 底层字段（0.1.11 加）：AX 那几个标志真机实测不响，得直接看 IOHID 的字段 ----
+static int    sProbeAXDown    = 0;   // AX 的 isTouchDown 说过几次「按下」
+static int    sProbeHidTouch  = 0;   // IOHID 字段说「手指在屏上」几次（Touch=1）
+static int    sProbeHidUp     = 0;   // IOHID 字段说「手指离屏」几次（Touch=0）
+static NSTimeInterval sLastFedAt = 0; // 最近一次喂球的时间（「抬起没送到」的兜底用）
+static CGPoint sLastFedPoint = CGPointZero;  // 最近一次喂球的窗口坐标（兜底补「抬起」要用同一个点）
+static int sUpStreak = 0;             // 底层连续几条事件说「没手指」（只在主线程上动）
 static NSString *sProbeLast   = @"（还没收到过任何 HID 事件）";
 static NSTimeInterval sProbeLastWrite = 0;
 
@@ -116,11 +145,13 @@ static void FBProbeWrite(BOOL force)
     NSString *text = [NSString stringWithFormat:
         @"回调=%d（路A=%d 路B=%d 匹配服务=%d） 无rep=%d 无路径=%d id<=0=%d "
         @"不在球=%d 非本触点=%d 另一条路=%d 接管=%d 喂球=%d\n"
-        @"真触摸：窗口问=%d 落在球=%d 真点击=%d\n最后：%@\n",
+        @"真触摸：窗口问=%d 落在球=%d 真点击=%d\n"
+        @"底层：AX按下=%d 在屏=%d 离屏=%d\n最后：%@\n",
         sProbeCallbacks, sProbeRouteA, sProbeRouteB, sProbeMatched,
         sProbeNoRep, sProbeNoPath, sProbeZeroID,
         sProbeOffBall, sProbeNotOurs, sProbeOtherRoute, sProbeTakeover, sProbeFed,
-        sProbeHitAsk, sProbeHitBall, sProbeRealTap, sProbeLast];
+        sProbeHitAsk, sProbeHitBall, sProbeRealTap,
+        sProbeAXDown, sProbeHidTouch, sProbeHidUp, sProbeLast];
     [text writeToFile:FB_PROBE_PATH atomically:YES encoding:NSUTF8StringEncoding error:NULL];
 }
 
@@ -148,9 +179,14 @@ void FBProbeRealTapDidFire(void)
 }
 
 /// 真触摸这条路是不是已经通了？通了就别再喂合成触摸（否则一次点击走两遍）。
+///
+/// ⚠️ 0.1.11 收紧：只看「球自己的手势真的触发过」（真点击 > 0）。
+///    0.1.8 用的判据是「窗口问到了 + 落在球上」，但「触摸进了窗口」不等于
+///    「手势认出来了」—— 万一只是进了窗口没触发手势，HID 这条备份路会被提前关掉，
+///    两条路都不响应，球就彻底没反应了。
 BOOL FBRealTouchWorks(void)
 {
-    return sProbeHitBall > 0 || sProbeRealTap > 0;
+    return sProbeRealTap > 0;
 }
 
 /// 两条路（BKS 回调 / 监视客户端）**共用**的处理函数。
@@ -242,21 +278,34 @@ static void FBHandleHIDEvent(int route, void *target, void *refcon, IOHIDService
         return;
     }
 
-    BOOL isDown = [rep isTouchDown];
-    CGPoint onScreen = [rep location];        // 全局（屏幕）坐标
+    // ---- 底层字段（0.1.11 新加）----
+    // ⚠️ 为什么不能只看 AX 的 isTouchDown：真机自检（0.1.10 及以前）30225 条事件里
+    //    它**一次都没为真** —— 而「按下」正是老逻辑接管的唯一入口，
+    //    所以球永远等不到那一下，表现就是「点球没反应」。
+    //    这一版改成：phase 由我们自己定 —— **起手落在球上就算 Began**（TheBall 也是这套）。
+    //    AX 的标志只当补充信号，底层 IOHID 字段（在屏 / 离屏）用来判「抬起」。
+    int hidTouch = FBHIDDigitizerTouchOf(event);   // 1 = 在屏，0 = 离屏，-1 = 取不到
+    int hidRange = FBHIDDigitizerRangeOf(event);   // 1 = 刚进入感应（按下那一下带），-1 = 取不到
+    int hidMask  = FBHIDDigitizerMaskOf(event);    // 原始 EventMask（只往自检里写）
+    BOOL axDown        = [rep isTouchDown];
+    BOOL axMove        = [rep isMove];
+    BOOL axLift        = [rep isLift];
+    BOOL axInRangeLift = [rep isInRangeLift];
+    BOOL axCancel      = [rep isCancel];
+    CGPoint location   = [rep location];           // 屏幕坐标？窗口坐标？两种都试，见下面
+
+    if (axDown) sProbeAXDown++;
+    if (hidTouch == 1) sProbeHidTouch++;
+    else if (hidTouch == 0) sProbeHidUp++;
 
     // 头 3 条事件原样记一笔：能看出「到底有没有触摸事件进来、长什么样」
     if (sProbeCallbacks <= 3) {
-        FBLog(@"HID#%d etype=%d paths=%lu id=%ld down=%d move=%d lift=%d 点=(%.0f,%.0f)",
+        FBLog(@"HID#%d etype=%d paths=%lu id=%ld ax(down=%d move=%d lift=%d) "
+              @"hid(touch=%d range=%d mask=0x%x) 点=(%.0f,%.0f)",
               sProbeCallbacks, FBHIDEventTypeOf(event), (unsigned long)paths.count, (long)pointerId,
-              (int)isDown, (int)[rep isMove], (int)[rep isLift], onScreen.x, onScreen.y);
+              (int)axDown, (int)axMove, (int)axLift, hidTouch, hidRange, hidMask,
+              location.x, location.y);
     }
-
-    UITouchPhase phase = UITouchPhaseEnded;
-    if (isDown)                  phase = UITouchPhaseBegan;
-    else if ([rep isMove])       phase = UITouchPhaseMoved;
-    else if ([rep isCancel])     phase = UITouchPhaseCancelled;
-    else if ([rep isLift] || [rep isInRange] || [rep isInRangeLift]) phase = UITouchPhaseEnded;
 
     dispatch_async(dispatch_get_main_queue(), ^(void) {
         UIView *ball = gFBBallView;
@@ -267,39 +316,94 @@ static void FBHandleHIDEvent(int route, void *target, void *refcon, IOHIDService
         }
 
         // 球在屏幕上的矩形（含 6pt 宽容区）。
-        // ⚠️ 这里刻意**不用 hitTest**：窗口的 _ignoresHitTest 是 YES（为了绝不吃掉系统触摸），
-        //    那样对窗口 hitTest 永远回 nil。直接量矩形，不依赖坐标系约定，最不容易出错。
+        // ⚠️ 这里刻意**不用 hitTest**：我们窗口只有球那么大，hitTest 要的是窗口坐标，
+        //    而 location 的坐标系本身就没定论（见下）。直接量矩形最不容易出错。
         CGRect inWindowRect = [ball convertRect:ball.bounds toView:window];
-        CGRect onScreenRect = CGRectOffset(inWindowRect, window.frame.origin.x, window.frame.origin.y);
-        BOOL onBall = CGRectContainsPoint(CGRectInset(onScreenRect, -6.0, -6.0), onScreen);
+        CGRect windowFrame  = window.frame;
+        CGRect onScreenRect = CGRectOffset(inWindowRect, windowFrame.origin.x, windowFrame.origin.y);
+        CGRect touchRect    = CGRectInset(onScreenRect, -6.0, -6.0);
 
-        if (isDown) {
-            if (!onBall) {
-                // 按在别处：不插手，完全留给下面的 App（这是设计如此，不是 bug）
-                sProbeOffBall++;
-                FBProbeNote([NSString stringWithFormat:@"④ 按在球外（点=(%.0f,%.0f) 球=%@）",
-                             onScreen.x, onScreen.y, NSStringFromCGRect(onScreenRect)]);
-                return;
-            }
-            sProbeTakeover++;
-            FBProbeNote([NSString stringWithFormat:@"⑤ 接管了（id=%ld 点=(%.0f,%.0f) 球=%@）",
-                         (long)pointerId, onScreen.x, onScreen.y, NSStringFromCGRect(onScreenRect)]);
-            gFBActivePointer = pointerId;
-            FBLog(@"触摸：按下落在球上（屏幕 %.0f,%.0f）→ 接管触点 %ld",
-                  onScreen.x, onScreen.y, (long)pointerId);
-        } else if (gFBActivePointer != pointerId) {
-            // 不是我们接管的触点，别插手。
-            // ⚠️ 如果「按下」那条从来没进到上面那个分支（比如 isTouchDown 一直是 0），
-            //    就会一直掉到这里 —— 所以也记一笔，别让它静默。
-            sProbeNotOurs++;
-            FBProbeNote([NSString stringWithFormat:@"④ 不是本触点（id=%ld down=%d move=%d lift=%d 点=(%.0f,%.0f)）",
-                         (long)pointerId, (int)isDown, (int)[rep isMove], (int)[rep isLift],
-                         onScreen.x, onScreen.y]);
-            return;
+        // ⚠️ `[rep location]` 到底是「屏幕坐标」还是「窗口坐标」？
+        //    Helium 分不出来 —— 它的窗口是全屏，两种解释结果一样。
+        //    我们的窗口只有球那么大，两种解释差一个窗口原点，赌错就是「永远不在球上」。
+        //    所以**两种都试**：命中任意一种就算在球上（最坏把邻球一个球宽度的点也算进来，
+        //    而它只影响「起手算不算在球上」，可以接受）。自检里的「最后」一行会同时打出
+        //    原始点、窗口、球矩形 —— 下次一看就知道该信哪种了。
+        BOOL asScreen = CGRectContainsPoint(touchRect, location);
+        CGPoint asWindowScreen = CGPointMake(location.x + windowFrame.origin.x,
+                                             location.y + windowFrame.origin.y);
+        BOOL asWindow = CGRectContainsPoint(touchRect, asWindowScreen);
+        BOOL onBall = asScreen || asWindow;
+        CGPoint onScreen = asScreen ? location : asWindowScreen;
+        CGPoint inWindow = CGPointMake(onScreen.x - windowFrame.origin.x,
+                                       onScreen.y - windowFrame.origin.y);
+
+        // 「抬起」的判据（0.1.11）：
+        //   · AX 自己明说 lift / cancel → 立刻认；
+        //   · 底层字段（Touch=0 且 Range=0，正是注入工具 ZXTouch 造「抬起」时填的值）要
+        //     **连续两条**都为「没手指」才认 —— 有的机型会在一条触摸中间夹着「没手指」的事件，
+        //     只认一条就会把一次点击拆成好几下（点一下算两下，比晚 16ms 判出来糟得多）。
+        BOOL upRaw = (hidTouch == 0 && hidRange == 0);
+        sUpStreak = upRaw ? (sUpStreak + 1) : 0;
+        BOOL upSignal = axLift || axCancel || axInRangeLift || (sUpStreak >= 2);
+
+        NSTimeInterval now = [NSDate timeIntervalSinceReferenceDate];
+
+        // 兜底：万一「抬起」那条事件根本没送到（hID 字段也失灵），
+        // 我们手里就会一直攥着上一轮触摸，下一次点击就永远被当「移动」。
+        // 超过 1.2 秒没有新事件 → 认定这一轮早就结束了，补一个 Ended 交还。
+        // ⚠️ 长按不受影响：长按在 0.5 秒就自己触发了，比这个兜底早。
+        if (gFBActivePointer != 0 && sLastFedAt > 0 && now - sLastFedAt > 1.2) {
+            FBLog(@"触摸：触点 %ld 超过 1.2 秒没消息，补一个「抬起」交还", (long)gFBActivePointer);
+            // ⚠️ 这个补的「抬起」必须用**上一次喂过的那个点**：
+            //    UITapGestureRecognizer 会因为「抬起时位置离按下时太远」而判失败，
+            //    而这里手上这条事件的坐标很可能已经是别处了。
+            [TSEventFetcher receiveAXEventID:gFBActivePointer
+                          atGlobalCoordinate:sLastFedPoint
+                              withTouchPhase:UITouchPhaseEnded
+                                    inWindow:window
+                                      onView:ball];
+            gFBActivePointer = 0;
         }
 
-        CGPoint inWindow = CGPointMake(onScreen.x - window.frame.origin.x,
-                                       onScreen.y - window.frame.origin.y);
+        // ⚠️ 起手接管还要一条「有手指」的证据：底层字段明说 Touch=0（没手指）时不接管。
+        //    （Touch = -1 表示这个字段取不到 → 不挡，否则字段一失灵球就彻底不动了。）
+        //    顺手把 (0,0) 这个点也挡掉：没有手指的事件常常带 (0,0)，
+        //    而按「窗口坐标」那种解释，(0,0) 换算出来正好落在球的左上角 —— 会误触发。
+        BOOL contactSignal = (hidTouch != 0) && !(location.x == 0 && location.y == 0);
+
+        UITouchPhase phase;
+        if (gFBActivePointer != 0 && upSignal) {
+            // 这一轮结束了：交还
+            phase = axCancel ? UITouchPhaseCancelled : UITouchPhaseEnded;
+        } else if (gFBActivePointer != 0) {
+            // 还在这一轮里：继续喂（手指划出球的范围也不能丢，否则拖动会断在半路）
+            phase = UITouchPhaseMoved;
+        } else if (onBall && contactSignal) {
+            // ⭐ 起手落在球上 —— 我们自己当「按下」，不再看 isTouchDown
+            phase = UITouchPhaseBegan;
+            sUpStreak = 0;
+            sProbeTakeover++;
+            FBProbeNote([NSString stringWithFormat:
+                @"⑤ 起手在球上→接管（id=%ld 点=(%.0f,%.0f) 球=%@ 窗口=%@ hid(t=%d r=%d x=0x%x)）",
+                (long)pointerId, location.x, location.y, NSStringFromCGRect(onScreenRect),
+                NSStringFromCGRect(windowFrame), hidTouch, hidRange, hidMask]);
+        } else {
+            // 没接管：点不在球上，或者系统明说没有手指。两种情况都**完全留给下面的 App**。
+            if (upSignal) {
+                sProbeNotOurs++;
+                FBProbeNote([NSString stringWithFormat:@"④ 无关的抬起（没拿着，id=%ld）", (long)pointerId]);
+            } else {
+                sProbeOffBall++;
+                FBProbeNote([NSString stringWithFormat:
+                    @"④ 没接管（id=%ld 点=(%.0f,%.0f) 球=%@ 窗口=%@ 在球上=%d 有手指=%d "
+                    @"ax(m=%d l=%d) hid(t=%d r=%d x=0x%x)）",
+                    (long)pointerId, location.x, location.y, NSStringFromCGRect(onScreenRect),
+                    NSStringFromCGRect(windowFrame), (int)onBall, (int)contactSignal,
+                    (int)axMove, (int)axLift, hidTouch, hidRange, hidMask]);
+            }
+            return;
+        }
 
         // ⚠️ atGlobalCoordinate 这个参数名是骗人的：TSEventFetcher 内部直接
         //    `setLocationInWindow:`，所以必须传**窗口坐标**，不能传屏幕坐标。
@@ -310,14 +414,20 @@ static void FBHandleHIDEvent(int route, void *target, void *refcon, IOHIDService
                                 inWindow:window
                                   onView:ball];
         sProbeFed++;
-        FBProbeWrite(NO);
+        sLastFedAt = now;
+        sLastFedPoint = inWindow;
 
         if (phase == UITouchPhaseEnded || phase == UITouchPhaseCancelled) {
-            if (gFBActivePointer == pointerId) {
-                gFBActivePointer = 0;
-                FBLog(@"触摸：触点 %ld 抬起/取消，交还", (long)pointerId);
+            FBLog(@"触摸：触点 %ld 抬起/取消，交还", (long)pointerId);
+            gFBActivePointer = 0;
+        } else {
+            if (sProbeFed == 1) {
+                FBLog(@"触摸：第一次把触摸喂给球了（phase=%ld 球在屏幕 %@）",
+                      (long)phase, NSStringFromCGRect(onScreenRect));
             }
+            gFBActivePointer = pointerId;
         }
+        FBProbeWrite(NO);
     });
 }
 
@@ -467,15 +577,15 @@ static void FBMaybeScheduleBKSRoute(void *client)
 
 #pragma mark -
 
-static NSString *_hudPIDFilePath = nil;
-static NSString *GetPIDFilePath(void)
+/// ⚠️ pid 文件路径统一走 FBHUDPIDFilePath()（/tmp/FloatingBall.hud.pid）。
+/// 0.1.11 之前这里用的是 NSCachesDirectory —— 球（uid 0）和 App（uid 501）两边
+/// 解出来的目录不一样，App 根本读不到，只能靠再 spawn 一个 -check 进程去读，
+/// 这就是「开关要等一两秒」的根因。现在两个进程读写同一份文件，App 直接读。
+
+/// 退出时把 pid 文件删掉（atexit / -exit 都调它）。
+static void FBHUDUnlinkPIDFile(void)
 {
-    static dispatch_once_t onceToken;
-    dispatch_once(&onceToken, ^{
-        NSString *caches = [NSSearchPathForDirectoriesInDomains(NSCachesDirectory, NSUserDomainMask, YES) firstObject];
-        _hudPIDFilePath = [caches stringByAppendingPathComponent:@"hud.pid"];
-    });
-    return _hudPIDFilePath;
+    unlink(FBHUDPIDFilePath().UTF8String);
 }
 
 #pragma mark -
@@ -496,8 +606,14 @@ int main(int argc, char *argv[])
             FBLog(@"=== HUD 进程启动 pid=%d uid=%u ===", getpid(), (unsigned int)getuid());
             pid_t pid = getpid();
             NSString *pidString = [NSString stringWithFormat:@"%d", pid];
-            [pidString writeToFile:GetPIDFilePath() atomically:YES encoding:NSUTF8StringEncoding error:nil];
-            FBLog(@"pid 文件写到 %@", GetPIDFilePath());
+            [pidString writeToFile:FBHUDPIDFilePath() atomically:YES encoding:NSUTF8StringEncoding error:nil];
+            // ⚠️ 显式给 0644：球是 root（umask 022 时本来也是 644），但万一 umask 是 077，
+            //    App（uid 501）就读不到这个文件了 —— 那开关会一直显示「没在跑」。
+            chmod(FBHUDPIDFilePath().UTF8String, 0644);
+            FBLog(@"pid 文件写到 %@", FBHUDPIDFilePath());
+            // 正常退出时把 pid 文件带走（App 就是靠「文件在 + 进程在」判断球在不在跑）。
+            // ⚠️ 被 SIGKILL 杀掉时 atexit 不会执行 —— 那种情况下由 -exit 自己 unlink（见下）。
+            atexit(FBHUDUnlinkPIDFile);
 
             // 不走 SpringBoard，自己把 UIKit 支起来
             [UIScreen initialize];
@@ -560,24 +676,36 @@ int main(int argc, char *argv[])
         }
         else if (strcmp(argv[1], "-exit") == 0)
         {
-            NSString *pidString = [NSString stringWithContentsOfFile:GetPIDFilePath() encoding:NSUTF8StringEncoding error:nil];
+            NSString *pidString = [NSString stringWithContentsOfFile:FBHUDPIDFilePath() encoding:NSUTF8StringEncoding error:nil];
             FBLog(@"-exit 收到，pid 文件内容 = %@", pidString);
             if (pidString)
             {
                 pid_t pid = (pid_t)[pidString intValue];
-                kill(pid, SIGKILL);
-                unlink(GetPIDFilePath().UTF8String);
+                if (pid > 0) kill(pid, SIGKILL);
+                // ⚠️ 只在「文件里记的还是这个 pid」时才删：用户关掉又马上打开时，
+                //    新的球可能已经把新 pid 写进去了 —— 那把文件删掉会让 App 以为球没跑。
+                NSString *now = [NSString stringWithContentsOfFile:FBHUDPIDFilePath()
+                                                          encoding:NSUTF8StringEncoding
+                                                             error:nil];
+                if (now && [now isEqualToString:pidString]) FBHUDUnlinkPIDFile();
+            }
+            else
+            {
+                // 读不到内容：文件可能是个空壳/过期了，直接删掉
+                FBHUDUnlinkPIDFile();
             }
             return EXIT_SUCCESS;
         }
         else if (strcmp(argv[1], "-check") == 0)
         {
-            NSString *pidString = [NSString stringWithContentsOfFile:GetPIDFilePath() encoding:NSUTF8StringEncoding error:nil];
+            // ⚠️ 0.1.11 起 App 不再 spawn 这个分支来判断状态了（太慢，见 HUDHelper.mm）。
+            //    留着只为手动排查用：`./FloatingBall -check`，退出码 0 = 没跑、非 0 = 在跑。
+            NSString *pidString = [NSString stringWithContentsOfFile:FBHUDPIDFilePath() encoding:NSUTF8StringEncoding error:nil];
             if (pidString)
             {
                 pid_t pid = (pid_t)[pidString intValue];
                 int killed = kill(pid, 0);
-                return (killed == 0 ? EXIT_FAILURE : EXIT_SUCCESS);
+                return (killed == 0 || errno == EPERM) ? EXIT_FAILURE : EXIT_SUCCESS;
             }
             else return EXIT_SUCCESS;  // 没有 pid 文件 = 球没在跑
         }

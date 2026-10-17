@@ -88,6 +88,18 @@ void FBPrepareHID(void);
 /// 给 HUD 的「触摸自检」用：能把「压根没收到触摸事件」和「收到了但没认出来」分开。
 int FBHIDEventTypeOf(void *hidEvent);
 
+// ---- 触摸自检：直接读底层数字字段（0.1.11）----
+// ⚠️ 为什么不看 AXEventRepresentation 的 isTouchDown：真机自检（0.1.10 之前）
+//    3 万条事件里它一次都没为真，「等按下」就等于永远等不到。
+//    这三个函数问的是 IOHID 事件自己的字段，注入工具（ZXTouch）用的就是这套：
+//      按下 = Range 1 + Touch 1；移动 = Touch 1；抬起 = Touch 0。
+// - Returns: 1 = 是，0 = 否，-1 = 取不到（不是触摸事件 / 符号没拿到）。
+
+int FBHIDDigitizerTouchOf(void *hidEvent);
+int FBHIDDigitizerRangeOf(void *hidEvent);
+int FBHIDDigitizerMaskOf(void *hidEvent);
+
+
 #ifdef __cplusplus
 }
 #endif

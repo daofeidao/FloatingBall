@@ -247,6 +247,7 @@ typedef void (*FBDispatchHIDEventFn)(IOHIDEventSystemClientRef, IOHIDEventRef);
 typedef void (*FBSetSenderIDFn)(IOHIDEventRef, uint64_t);
 typedef uint32_t (*FBGetEventTypeFn)(IOHIDEventRef);
 typedef uint64_t (*FBGetSenderIDFn)(IOHIDEventRef);
+typedef int (*FBGetIntValueFn)(IOHIDEventRef, uint32_t);
 
 static FBCreateDigitizerEventFn fbCreateDigitizerEvent = NULL;
 static FBCreateFingerEventFn    fbCreateFingerEvent    = NULL;
@@ -259,6 +260,7 @@ static FBDispatchHIDEventFn     fbDispatchHIDEvent     = NULL;
 static FBSetSenderIDFn          fbSetSenderID          = NULL;
 static FBGetEventTypeFn         fbGetEventType         = NULL;
 static FBGetSenderIDFn          fbGetSenderID          = NULL;
+static FBGetIntValueFn          fbGetIntegerValue      = NULL;   // 读事件字段（触摸自检要靠它）
 
 static IOHIDEventSystemClientRef fbHIDClient = NULL;
 
@@ -302,6 +304,9 @@ static BOOL FBLoadHID(void)
         fbSetSenderID          = (FBSetSenderIDFn)FBSymIn(handle, "IOHIDEventSetSenderID");
         fbGetEventType         = (FBGetEventTypeFn)FBSymIn(handle, "IOHIDEventGetType");
         fbGetSenderID          = (FBGetSenderIDFn)FBSymIn(handle, "IOHIDEventGetSenderID");
+        // ⚠️ 和按键事件一样**不放进下面的 ok 判断**：它取不到只影响「触摸自检」，
+        //    不该把「全局返回 / 截屏」一起拖死。
+        fbGetIntegerValue      = (FBGetIntValueFn)FBSymIn(handle, "IOHIDEventGetIntegerValue");
 
         BOOL ok = fbCreateDigitizerEvent && fbCreateFingerEvent && fbAppendEvent && fbSetInt &&
                   fbSetFloat && fbCreateHIDClient && fbDispatchHIDEvent && fbSetSenderID;
@@ -339,6 +344,41 @@ int FBHIDEventTypeOf(void *hidEvent)
 {
     if (!gFBHIDReady || hidEvent == NULL || !fbGetEventType) return 0;
     return (int)fbGetEventType((IOHIDEventRef)hidEvent);
+}
+
+/// 读一个数字字段。⚠️ 函数里**绝不加载**（HID 回调线程上不能 dlopen，见 FBHIDNoteRealEvent）。
+static int FBHIDIntField(void *hidEvent, uint32_t field)
+{
+    if (!gFBHIDReady || hidEvent == NULL || !fbGetIntegerValue) return -1;
+    if (!fbGetEventType || fbGetEventType((IOHIDEventRef)hidEvent) != FBHIDEventTypeDigitizer) return -1;
+    return fbGetIntegerValue((IOHIDEventRef)hidEvent, field);
+}
+
+// 下面三个是**触摸自检**用的（2026-10-17 加）：
+// 真机自检显示 AXEventRepresentation 的 isTouchDown 一直是 0（3 万条事件里一次都没「按下」），
+// 所以「这一下摸到了没有」不能再只听 AX 的，得直接问底层数字字段。
+// 字段含义、以及「按下 = Range+Touch / 抬起 = Touch 变 0」这套约定，
+// 来自真机在用的注入工具 ZXTouch（xuan32546/IOS13-SimulateTouch）的 pccontrol/Touch.xm：
+// 它造 down 事件时填 Range=1 Touch=1、move 填 Range=1 Touch=1、up 填 Range=0 Touch=0。
+
+/// 手指是否还在屏上：1 = 在屏，0 = 离屏，-1 = 取不到（不是触摸事件 / 符号没准备好）。
+int FBHIDDigitizerTouchOf(void *hidEvent)
+{
+    int v = FBHIDIntField(hidEvent, FBHIDFieldDigitizerTouch);
+    return (v < 0) ? -1 : (v & 1);
+}
+
+/// 手指是否刚进入感应范围（按下那一下就带这个）：1 / 0 / -1 同上。
+int FBHIDDigitizerRangeOf(void *hidEvent)
+{
+    int v = FBHIDIntField(hidEvent, FBHIDFieldDigitizerRange);
+    return (v < 0) ? -1 : (v & 1);
+}
+
+/// 原始 EventMask 位（1=Range 2=Touch 4=Position…），-1 = 取不到。只往自检里写。
+int FBHIDDigitizerMaskOf(void *hidEvent)
+{
+    return FBHIDIntField(hidEvent, FBHIDFieldDigitizerEventMask);
 }
 
 void FBHIDNoteRealEvent(void *hidEvent)

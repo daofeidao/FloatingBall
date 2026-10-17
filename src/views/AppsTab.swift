@@ -1,10 +1,10 @@
 import SwiftUI
 
-/// 第二栏：快捷列表
+/// 第二栏：快捷菜单
 ///
 /// 两种条目：
 ///   · 打开某个 App
-///   · 内置动作（刷新信号 / 移动悬浮图标 / 打开列表…）
+///   · 内置动作库里的动作（刷新信号 / 全局返回 / 截屏 / 移动悬浮图标 / 打开菜单…）
 ///
 /// 这一栏既是「手动点一下」的清单，也是手势绑定的候选池（见「启动」页的手势一节）。
 struct AppsTab: View {
@@ -17,7 +17,7 @@ struct AppsTab: View {
     var body: some View {
         NavigationView {
             List {
-                Section(header: Text("快捷列表"),
+                Section(header: Text("菜单项"),
                         footer: Text("点一行就执行。右上角「编辑」可以拖动排序、左滑删除。这里的每一项也能绑到手势上。")) {
                     if items.isEmpty {
                         Text("还是空的，点下面「添加」").foregroundColor(.secondary)
@@ -52,7 +52,7 @@ struct AppsTab: View {
                     }
                 }
             }
-            .navigationTitle("快捷应用")
+            .navigationTitle("快捷菜单")
             .toolbar { EditButton() }
         }
         .onAppear { items = ShortcutStore.load() }
@@ -75,7 +75,7 @@ struct AppsTab: View {
                 .frame(width: 26)
                 .foregroundColor(.accentColor)
             VStack(alignment: .leading, spacing: 2) {
-                Text(item.title)
+                Text(item.displayTitle)
                 Text(item.action?.detail ?? item.id)
                     .font(.caption)
                     .foregroundColor(.secondary)
@@ -126,6 +126,22 @@ struct AppsTab: View {
                 say("「全局返回」得在屏幕上的球上触发才有意义——在 App 自己里划「返回」没意义。\n\n"
                     + "绑到手势上：回「启动」页 →「手势」那一栏，点单击/双击/长按的右边，选「全局返回」。")
 
+            case .screenshot:
+                // 【截屏】在 App 里也能截（同一个二进制、同一份 entitlements）。
+                //   ① 优先走系统截图服务（ScreenshotServices）—— 不注入任何输入，最安全；
+                //   ② 那条路走不通才注入「音量加 + 电源」组合键。
+                Haptics.fire(.action)
+                let route = FBTakeScreenshot()
+                if route == 1 {
+                    say("截屏：走的是系统截图服务。画面会闪一下，图在「相册 → 截屏」。")
+                } else if route == 2 {
+                    say("截屏：走的是按键注入（音量加 + 电源）。画面闪一下、图进「相册 → 截屏」。\n\n"
+                        + "⚠️ 如果屏幕只是锁上了，说明这一下没被认成组合键 —— 解锁继续用就行，不丢东西。")
+                } else {
+                    say("这次没截成：① 系统截图服务那条路取不到，② 按键注入也没条件。\n\n"
+                        + "详情在 /tmp/FloatingBall.log（「截屏：…」那几行）。")
+                }
+
             case .moveBall:
                 Haptics.fire(.tap)
                 say("「移动悬浮图标」得在屏幕上的球上触发才有意义——在 App 里挪不了球。")
@@ -162,7 +178,7 @@ struct AddShortcutView: View {
     var body: some View {
         NavigationView {
             List {
-                Section(header: Text("内置动作")) {
+                Section(header: Text("内置动作库")) {
                     ForEach(ShortcutAction.allCases.filter { $0 != .none }) { action in
                         optionRow(ShortcutItem.make(action: action),
                                   detail: action.detail,

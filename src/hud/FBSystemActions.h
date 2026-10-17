@@ -44,6 +44,20 @@ BOOL FBOpenApplication(NSString *bundleID);
 ///   取不到 HID 符号 / 还没学到真机 sender ID / 0.6 秒内刚划过一次 → 返回 NO，**什么都没做**。
 BOOL FBGoBack(CGRect ballRectOnScreen);
 
+/// 【截屏】
+///
+/// 两条路，**先走安全的那条**：
+///   ① `ScreenshotServices`（系统自己的截图服务）：iOS 11 起截图这套能力就搬到
+///      这个私有 framework 里了（SpringBoard 的 `-takeScreenshotAndEdit:` 和辅助触控的
+///      「截屏」走的都是它）。**不注入任何输入**，最安全。
+///   ② 取不到它的类 → 注入一次「音量加 + 电源」组合键（iOS 的截图快捷键，
+///      用法号依据见 .mm 顶部）。和【全局返回】同一套注入机制、同样的三条保命写法。
+///      ⚠️ 万一没被认成「组合键」，结果只是把屏幕锁上（解锁继续用），不丢东西。
+///
+/// - Returns: 实际走的哪条路：0 = 都没走通（日志里会写卡在哪），
+///            1 = 系统截图服务，2 = 按键注入。
+int FBTakeScreenshot(void);
+
 /// 从一条真实的 HID 事件里记下 sender ID。
 /// 注入触摸时必须用**真机那一路**的 sender ID（配方来源里的工具为这个专门先监听一次真触摸，
 /// 取不到就拒绝注入）。HUD 的 `_HUDEventCallback` 每条事件调一次就够，内部自己判断类型。

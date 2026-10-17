@@ -177,6 +177,8 @@ typedef IOHIDEventRef (*FBCreateFingerEventFn)(CFAllocatorRef, uint64_t,
                                                uint32_t, uint32_t, uint32_t,
                                                double, double, double, double, double,
                                                Boolean, Boolean, uint32_t);
+typedef IOHIDEventRef (*FBCreateKeyboardEventFn)(CFAllocatorRef, uint64_t,
+                                                 uint32_t, uint32_t, Boolean, uint32_t);
 typedef void (*FBAppendEventFn)(IOHIDEventRef, IOHIDEventRef);
 typedef void (*FBSetIntFn)(IOHIDEventRef, uint32_t, int);
 typedef void (*FBSetFloatFn)(IOHIDEventRef, uint32_t, double);
@@ -188,6 +190,7 @@ typedef uint64_t (*FBGetSenderIDFn)(IOHIDEventRef);
 
 static FBCreateDigitizerEventFn fbCreateDigitizerEvent = NULL;
 static FBCreateFingerEventFn    fbCreateFingerEvent    = NULL;
+static FBCreateKeyboardEventFn  fbCreateKeyboardEvent  = NULL;   // 【截屏】注入按键要用
 static FBAppendEventFn          fbAppendEvent          = NULL;
 static FBSetIntFn               fbSetInt               = NULL;
 static FBSetFloatFn             fbSetFloat             = NULL;
@@ -228,6 +231,9 @@ static BOOL FBLoadHID(void)
 
         fbCreateDigitizerEvent = (FBCreateDigitizerEventFn)FBSymIn(handle, "IOHIDEventCreateDigitizerEvent");
         fbCreateFingerEvent    = (FBCreateFingerEventFn)FBSymIn(handle, "IOHIDEventCreateDigitizerFingerEvent");
+        // 按键事件（【截屏】那条兜底路要用）。⚠️ 不放进下面的 ok 判断：
+        // 它取不到只影响「截屏」，不该把「全局返回」一起拖死。
+        fbCreateKeyboardEvent  = (FBCreateKeyboardEventFn)FBSymIn(handle, "IOHIDEventCreateKeyboardEvent");
         fbAppendEvent          = (FBAppendEventFn)FBSymIn(handle, "IOHIDEventAppendEvent");
         fbSetInt               = (FBSetIntFn)FBSymIn(handle, "IOHIDEventSetIntegerValue");
         fbSetFloat             = (FBSetFloatFn)FBSymIn(handle, "IOHIDEventSetFloatValue");
@@ -437,4 +443,209 @@ BOOL FBGoBack(CGRect ballRectOnScreen)
         FBSendLoneUp(nx, ny);
     });
     return YES;
+}
+
+#pragma mark - 截屏（两条路，先安全的、再兜底的）
+// ============================================================================
+// 2026-10-17 用户追加要求。原来这条一直押着（旧结论：要么 dlopen SpringBoard
+// 的二进制调它的单例，后果不可控；要么模拟「电源 + 音量加」，网上没有一条
+// 「iOS 15.6.1 上确定可用」的配方）。这一版两条都做了，但**顺序和安全等级不同**：
+//
+// ① `ScreenshotServices` —— 系统自己的截图服务（**优先走这条**）
+//    iOS 11 起截图能力从 SpringBoard 搬进了这个私有 framework。SpringBoard 自己的
+//    `-takeScreenshotAndEdit:` 和辅助触控的「截屏」都是调它（Apple Wiki 上有反编译）：
+//      · `SSScreenCaptureAbilityCheck`        +isAbleToTakeScreenshots（能不能截）
+//      · `SSScreenCapturer`                   -takeScreenshotWithPresentationOptions:
+//      · `SSScreenCapturerPresentationOptions` -setPresentationMode:(BOOL)  （NO = 只保存）
+//    **不注入任何输入** → 没有「卡住一个按键/一根手指」的风险，所以优先走它。
+//    ⚠️ 私有类一律 dlopen + NSClassFromString 字符串取（和本文件其它地方一个规矩），
+//       取不到就退到 ②；整个过程包在 @try 里：真抛异常也只影响我们自己这个进程
+//       （球进程崩了 = 球消失，去 App 把开关关一下再打开就回来了，不动系统）。
+//
+// ② 注入「音量加 + 电源」组合键 —— iOS 的截图快捷键（兜底）
+//    用法号有权威依据（Apple Wiki 的 iPhone 按钮 HID 表：iPhoneOS 的按键就是键盘事件）：
+//      · 电源 / 锁屏 = consumer page 0x0C, usage 0x30
+//      · 音量加      = consumer page 0x0C, usage 0xE9
+//    和【全局返回】同一套注入机制（IOHIDEventSystemClientDispatchEvent + 真机 sender ID），
+//    同样遵守那三条保命写法（见本文件顶部）：
+//      · 四条事件**先全造出来再发**，造不全就一个都不发；
+//      · 用我们自己的「虚拟按键」身份，不碰真手指那一路；
+//      · 发完 600ms 再补两条「松开」，保证电源/音量没被一直按着。
+//    ⚠️ 电源只按 60ms（远短于长按出「滑动关机」的时间）；就算这一下没被认成
+//       组合键，结果也只是**把屏幕锁上**（解锁继续用），不丢东西。
+// ============================================================================
+
+#define FBHIDConsumerPage   0x0Cu
+#define FBHIDUsageLock      0x30u   // 电源 / 锁屏
+#define FBHIDUsageVolumeUp  0xE9u   // 音量加
+
+/// 这次注入之后多久内不再注入（防手抖连点 / 两个手势撞一起）
+static NSTimeInterval gFBShotCooldownUntil = 0;
+
+/// 探一下这些私有类在不在（既给日志留念，也给下一版指路）。
+static NSString *FBShotClassProbe(void)
+{
+    NSArray<NSString *> *names = @[ @"SSScreenCapturer",
+                                    @"SSScreenCapturerPresentationOptions",
+                                    @"SSScreenCaptureAbilityCheck",
+                                    @"SSMainScreenSnapshotter",
+                                    @"SSOtherScreenSnapshotter",
+                                    @"SBScreenShotter",
+                                    @"SBScreenFlash" ];
+    NSMutableArray<NSString *> *found = [NSMutableArray array];
+    for (NSString *name in names) {
+        if (NSClassFromString(name)) [found addObject:name];
+    }
+    return found.count ? [found componentsJoinedByString:@"、"] : @"（一个都没找到）";
+}
+
+/// ① 系统截图服务。YES = 请求已经交出去；NO = 这条路走不通，交给 ②。
+static BOOL FBScreenshotViaService(void)
+{
+    static void *handle = NULL;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        handle = dlopen("/System/Library/PrivateFrameworks/ScreenshotServices.framework/ScreenshotServices",
+                        RTLD_NOW);
+        if (!handle) {
+            FBLog(@"截屏：打不开 ScreenshotServices（%s）—— 走按键注入那条兜底", dlerror() ?: "?");
+        }
+    });
+    if (!handle) return NO;
+
+    // 能不能截：开了「屏幕使用时间」之类的限制时，系统自己会拒绝
+    Class ability = NSClassFromString(@"SSScreenCaptureAbilityCheck");
+    if (ability && [ability respondsToSelector:@selector(isAbleToTakeScreenshots)]) {
+        BOOL (*ableFn)(id, SEL) = (BOOL (*)(id, SEL))objc_msgSend;
+        if (!ableFn(ability, @selector(isAbleToTakeScreenshots))) {
+            FBLog(@"截屏：系统说现在不允许截屏（SSScreenCaptureAbilityCheck = NO，"
+                  @"常见原因是开了「屏幕使用时间」的限制）—— 不硬来");
+            return NO;
+        }
+    }
+
+    Class optionsCls = NSClassFromString(@"SSScreenCapturerPresentationOptions");
+    Class capturerCls = NSClassFromString(@"SSScreenCapturer");
+    if (!optionsCls || !capturerCls) {
+        FBLog(@"截屏：ScreenshotServices 里没找到 SSScreenCapturer / …Options（这套系统里实际有：%@）",
+              FBShotClassProbe());
+        return NO;
+    }
+
+    @try {
+        id options = [[optionsCls alloc] init];
+        SEL setMode = NSSelectorFromString(@"setPresentationMode:");
+        if ([options respondsToSelector:setMode]) {
+            // NO = 截完直接存相册，不弹编辑界面
+            ((void (*)(id, SEL, BOOL))objc_msgSend)(options, setMode, (BOOL)NO);
+        }
+
+        id capturer = [[capturerCls alloc] init];
+        SEL take = NSSelectorFromString(@"takeScreenshotWithPresentationOptions:");
+        if (![capturer respondsToSelector:take]) {
+            FBLog(@"截屏：SSScreenCapturer 不认 takeScreenshotWithPresentationOptions: —— 走按键注入");
+            return NO;
+        }
+        ((void (*)(id, SEL, id))objc_msgSend)(capturer, take, options);
+    } @catch (NSException *e) {
+        FBLog(@"⚠️ 截屏：系统截图服务抛异常（%@）—— 改走按键注入", e.reason);
+        return NO;
+    }
+
+    FBLog(@"截屏：走系统截图服务（ScreenshotServices）—— 画面会闪一下、图进「相册 → 截屏」");
+    return YES;
+}
+
+/// 造一条「按键」事件（down/up）。返回 NULL = 造不出来 → 调用方必须整体放弃。
+static IOHIDEventRef FBMakeKeyEvent(uint32_t usage, BOOL down)
+{
+    if (!fbCreateKeyboardEvent) return NULL;
+    return fbCreateKeyboardEvent(kCFAllocatorDefault, mach_absolute_time(),
+                                 FBHIDConsumerPage, usage, down ? (Boolean)1 : (Boolean)0, 0);
+}
+
+/// 补发两条「松开」（兜底，保证电源 / 音量没被一直按着）
+static void FBSendLoneKeyUp(void)
+{
+    if (!gFBHIDReady || !fbCreateKeyboardEvent || !fbHIDClient) return;
+
+    IOHIDEventRef evs[2] = { FBMakeKeyEvent(FBHIDUsageLock, NO),
+                             FBMakeKeyEvent(FBHIDUsageVolumeUp, NO) };
+    for (int i = 0; i < 2; i++) {
+        if (!evs[i]) continue;
+        fbSetSenderID(evs[i], gFBRealSenderID);
+        fbDispatchHIDEvent(fbHIDClient, evs[i]);
+        CFRelease(evs[i]);
+    }
+    FBLog(@"截屏：补发了两条「松开」（兜底，保证电源/音量键没被按着）");
+}
+
+/// ② 注入「音量加 + 电源」组合键。YES = 已经发出去。
+static BOOL FBScreenshotViaHID(void)
+{
+    // 这里在 HUD 主线程上（球的手势回调），做加载是安全的。
+    FBPrepareHID();
+    if (!gFBHIDReady) {
+        FBLog(@"截屏：HID 注入这条路不通（符号取不到），什么都没做");
+        return NO;
+    }
+    if (!fbCreateKeyboardEvent) {
+        FBLog(@"截屏：这台系统的 IOKit 里没有 IOHIDEventCreateKeyboardEvent —— 按键注入做不了");
+        return NO;
+    }
+    if (gFBRealSenderID == 0) {
+        FBLog(@"截屏：还没学到真机 sender ID（得先摸一下屏幕），这次不注入 —— 不冒险");
+        return NO;
+    }
+
+    NSTimeInterval now = [NSDate timeIntervalSinceReferenceDate];
+    if (now < gFBShotCooldownUntil) {
+        FBLog(@"截屏：%.2f 秒前刚截过一次，这次忽略（防手抖连点）", gFBShotCooldownUntil - now);
+        return NO;
+    }
+
+    // ---- ① 四条事件先全造出来（造不全就一个都不发）----
+    //      顺序：音量加↓ → 电源↓ → 电源↑ → 音量加↑
+    //      中间那 60ms 就是「两个键同时按住」的窗口，系统靠它认组合键。
+    IOHIDEventRef volDown  = FBMakeKeyEvent(FBHIDUsageVolumeUp, YES);
+    IOHIDEventRef lockDown = FBMakeKeyEvent(FBHIDUsageLock, YES);
+    IOHIDEventRef lockUp   = FBMakeKeyEvent(FBHIDUsageLock, NO);
+    IOHIDEventRef volUp    = FBMakeKeyEvent(FBHIDUsageVolumeUp, NO);
+    if (!volDown || !lockDown || !lockUp || !volUp) {
+        FBLog(@"⚠️ 截屏：按键事件造不全 → 一个都不发（避免留下按着不放的键）");
+        if (volDown)  CFRelease(volDown);
+        if (lockDown) CFRelease(lockDown);
+        if (lockUp)   CFRelease(lockUp);
+        if (volUp)    CFRelease(volUp);
+        return NO;
+    }
+
+    // ---- ② 按顺序发 ----
+    gFBShotCooldownUntil = now + 2.0;
+    IOHIDEventRef seq[4] = { volDown, lockDown, lockUp, volUp };
+    const char *labels[4] = { "音量加↓", "电源↓", "电源↑", "音量加↑" };
+
+    FBLog(@"截屏：开始注入按键组合（音量加 + 电源），共 4 条");
+    for (int i = 0; i < 4; i++) {
+        if (i > 0) usleep(60 * 1000);     // 60ms
+        fbSetSenderID(seq[i], gFBRealSenderID);
+        fbDispatchHIDEvent(fbHIDClient, seq[i]);
+        FBLog(@"截屏：注入 %s", labels[i]);
+    }
+    for (int i = 0; i < 4; i++) CFRelease(seq[i]);
+    FBLog(@"截屏：注入完了 —— 正常的话屏幕会闪一下、图进「相册 → 截屏」");
+
+    // ---- ③ 兜底：600ms 后再补两条「松开」----
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(600 * NSEC_PER_MSEC)),
+                   dispatch_get_main_queue(), ^{
+        FBSendLoneKeyUp();
+    });
+    return YES;
+}
+
+int FBTakeScreenshot(void)
+{
+    if (FBScreenshotViaService()) return 1;   // 系统截图服务
+    if (FBScreenshotViaHID())     return 2;   // 按键注入兜底
+    return 0;
 }

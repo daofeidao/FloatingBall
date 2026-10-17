@@ -26,3 +26,9 @@ OBJC_EXTERN BOOL FBOpenApplication(NSString *bundleID);
 /// 刷新蜂窝网络信号（卡贴机没信号 / 假信号时点一下）
 /// ⚠️ 没有结果可看：这个 API 只是把请求交给 CommCenter，成没成只能看状态栏
 OBJC_EXTERN BOOL FBRefreshCellularSignal(void);
+
+/// 【截屏】两条路：先试系统自己的截图服务（不注入输入，最安全），
+/// 取不到再注入一次「音量加 + 电源」组合键（iOS 的截图快捷键）。
+/// - Returns: 实际走的哪条路：0 = 都没走通，1 = 系统截图服务，2 = 按键注入。
+///            细节写在 /tmp/FloatingBall.log 里。
+OBJC_EXTERN int FBTakeScreenshot(void);

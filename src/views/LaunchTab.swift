@@ -17,6 +17,10 @@ struct LaunchTab: View {
     @State private var tapCount = 0
     @State private var hapticsOn = true
 
+    // 震动参数（0.1.9 起可调；键名与球进程共用，见 Haptics.swift 顶部）
+    @State private var hapticIntensity = Haptics.maxIntensity
+    @State private var hapticDurationMs = Haptics.defaultDurationMs
+
     // 图标设置
     @State private var shape: BallShape = .dot
     @State private var color: UIColor = .black
@@ -29,11 +33,29 @@ struct LaunchTab: View {
     @State private var gestures: [String: String] = [:]
     @State private var shortcutItems: [ShortcutItem] = []
 
+    // ⚠️ 长文案一律提成 static let：以前 Section(footer:) 里现拼长字符串，
+    //    CI 上的 Swift 编译器报过 `unable to type-check this expression in reasonable time`。
+    private static let ballFooter = """
+    震动反馈：点球、执行动作、球落位时会震一下（屏幕上的球和这个 App 都会震）。关掉之后哪儿都不震。
+
+    两个参数：
+    · 强度 —— 0.2 到 1.0。
+    · 时长（毫秒）—— iOS 不让第三方直接给毫秒级的振动波形（Taptic 引擎「敲一下」的长度是系统定死的），所以这里是连着敲几下拼出来的：每 40ms 一下，不到 40ms 算 1 下，300ms 大约 8 下。想精确到毫秒得用 CoreHaptics，那要求 App 在前台 + 有音频会话，球那个常驻进程里不靠谱 —— 所以用这个折中。
+
+    开了也没感觉的话，去「设置 → 声音与触感 → 系统触感反馈」看看是不是关的 —— 那个是系统总开关，绕不过去。
+    """
+
+    private static let versionFooter = """
+    0.1.9：内置动作库多了「截屏」；「快捷应用」改名「快捷菜单」；震动强度和时长可调（上面「悬浮球」一节）。
+    球浮在任何界面之上；轻点 / 双击 / 长按各自绑一个动作（见下面「手势」一栏），拖动一直是移动球。
+    点球没反应时，去「关于」页看「触摸自检」那一行。
+    """
+
     var body: some View {
         NavigationView {
             Form {
                 Section(header: Text("悬浮球"),
-                        footer: Text("震动反馈：点球、执行动作、球落位时会震一下（屏幕上的球和这个 App 都会震）。关掉之后哪儿都不震。\n开着也没感觉的话，去「设置 → 声音与触感 → 系统触感反馈」看看是不是关的 —— 那个是系统总开关，绕不过去。")) {
+                        footer: Text(Self.ballFooter)) {
                     Toggle("启动悬浮球", isOn: Binding(
                         get: { enabled },
                         set: { want in setEnabled(want) }
@@ -55,6 +77,35 @@ struct LaunchTab: View {
                         get: { hapticsOn },
                         set: { want in setHaptics(want) }
                     ))
+
+                    // 强度和时长（0.1.9 起）：关着的时候就别摆出来，少点干扰
+                    if hapticsOn {
+                        VStack(alignment: .leading) {
+                            HStack {
+                                Text("强度")
+                                Spacer()
+                                Text("\(Int((hapticIntensity * 100).rounded()))%")
+                                    .foregroundColor(.secondary)
+                            }
+                            Slider(value: $hapticIntensity, in: 0.2...1.0, step: 0.05)
+                                .onChange(of: hapticIntensity) { value in
+                                    setHapticIntensity(value)
+                                }
+                        }
+
+                        VStack(alignment: .leading) {
+                            HStack {
+                                Text("时长")
+                                Spacer()
+                                Text("\(Int(hapticDurationMs)) ms")
+                                    .foregroundColor(.secondary)
+                            }
+                            Slider(value: $hapticDurationMs, in: 10...300, step: 10)
+                                .onChange(of: hapticDurationMs) { value in
+                                    setHapticDuration(value)
+                                }
+                        }
+                    }
 
                     // 这按钮走的是同一个开关：关着就不震（不然用户会以为开关坏了）
                     //
@@ -184,7 +235,7 @@ struct LaunchTab: View {
                     }
                 }
 
-                Section(footer: Text("0.1.7：球浮在任何界面之上；轻点 / 双击 / 长按各自绑一个动作（见上面「手势」一栏），拖动一直是移动球。\n点球没反应时，去「关于」页看「触摸自检」那一行。")) {
+                Section(footer: Text(Self.versionFooter)) {
                     EmptyView()
                 }
             }
@@ -326,7 +377,7 @@ struct LaunchTab: View {
             if !appItems.isEmpty {
                 Divider()
                 ForEach(appItems) { item in
-                    Button("\(marked(item.key))\(item.title)") { setGesture(key, item.key) }
+                    Button("\(marked(item.key))\(item.displayTitle)") { setGesture(key, item.key) }
                 }
             }
         } label: {
@@ -363,6 +414,28 @@ struct LaunchTab: View {
         if want { Haptics.warmUp(); Haptics.fire(.action, force: true) }
     }
 
+    /// 震动强度（0.2~1.0）：存共享设置 + 更新缓存 + 通知球进程重读，
+    /// 并且**当场**用新强度震一下 —— 拖滑块时立刻能感觉出来。
+    private func setHapticIntensity(_ value: Double) {
+        let v = min(max(value, Haptics.minIntensity), Haptics.maxIntensity)
+        hapticIntensity = v
+        BallSettings.set(v, "HapticIntensity")
+        Haptics.setIntensity(v)
+        BallSettings.notifyReload()
+        Haptics.fire(.action, force: true)
+    }
+
+    /// 震动时长（毫秒）：同上。
+    /// ⚠️ 滑块是 10ms 一档，每动一下都震会太吵（也拖不动），所以只在 50 的整数倍上试震。
+    private func setHapticDuration(_ value: Double) {
+        let v = min(max(value, Haptics.minDurationMs), Haptics.maxDurationMs)
+        hapticDurationMs = v
+        BallSettings.set(v, "HapticDurationMs")
+        Haptics.setDurationMs(v)
+        BallSettings.notifyReload()
+        if Int(v.rounded()) % 50 == 0 { Haptics.fire(.action, force: true) }
+    }
+
     // MARK: - 读写设置
 
     private func refresh() {
@@ -371,8 +444,10 @@ struct LaunchTab: View {
         tapCount = BallSettings.integer("TapCount", default: 0)
         hapticsOn = BallSettings.bool("HapticsEnabled", default: true)
 
-        // 震动：重读开关缓存 + 提前预热引擎（这样按下去才是立刻有反馈）
+        // 震动：重读三个设置 + 提前预热引擎（这样按下去才是立刻有反馈）
         Haptics.refresh()
+        hapticIntensity = Haptics.intensity
+        hapticDurationMs = Haptics.durationMs
         Haptics.warmUp()
 
         shape = BallRenderer.loadShape()

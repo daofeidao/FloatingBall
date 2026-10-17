@@ -19,20 +19,25 @@ import Foundation
 enum ShortcutAction: String, CaseIterable, Identifiable {
     case refreshSignal      // 刷新蜂窝信号
     case goBack             // 全局返回（往系统注入一次「左缘往右划」）
+    case screenshot         // 截屏（优先走系统截图服务，不行才注入「音量加 + 电源」）
     case openMainApp        // 打开悬浮球主界面
-    case openAppList        // 打开快捷应用列表
+    case openAppList        // 打开快捷菜单（App 第 2 栏）
     case moveBall           // 移动悬浮图标
     case toggleLabel        // 显示 / 隐藏球上的数字
     case none               // 什么都不做
 
     var id: String { rawValue }
 
+    // ⚠️ 下面这些文案是**显示用**的：rawValue 一旦定了就不能改（用户的快捷列表和
+    //    手势绑定里存的就是它，改了老绑定全失效）。所以 2026-10-17 改名的
+    //    「快捷应用 → 快捷菜单」只动文案，不动 rawValue。
     var title: String {
         switch self {
         case .refreshSignal: return "刷新信号"
         case .goBack:        return "全局返回"
+        case .screenshot:    return "截屏"
         case .openMainApp:   return "打开悬浮球"
-        case .openAppList:   return "打开快捷列表"
+        case .openAppList:   return "打开快捷菜单"
         case .moveBall:      return "移动悬浮图标"
         case .toggleLabel:   return "显示/隐藏数字"
         case .none:          return "什么都不做"
@@ -44,8 +49,9 @@ enum ShortcutAction: String, CaseIterable, Identifiable {
         switch self {
         case .refreshSignal: return "卡贴机没信号 / 假信号时点一下，让基带重新搜网"
         case .goBack:        return "⚠️ 等于按「上一页」：往系统注入一次左缘右划。万一界面卡住点不动 → 强制重启即可恢复"
+        case .screenshot:    return "⚠️ 先走系统截图服务；不行就注入一次「音量加 + 电源」组合键。万一只把屏幕锁上 → 解锁继续用"
         case .openMainApp:   return "回到悬浮球 App 的「启动」页"
-        case .openAppList:   return "回到悬浮球 App 的「快捷应用」页"
+        case .openAppList:   return "回到悬浮球 App 的「快捷菜单」栏"
         case .moveBall:      return "球变成可拖动状态，拖着放到顺手的位置"
         case .toggleLabel:   return "球上那个数字显示 / 不显示"
         case .none:          return "不做事"
@@ -56,6 +62,7 @@ enum ShortcutAction: String, CaseIterable, Identifiable {
         switch self {
         case .refreshSignal: return "antenna.radiowaves.left.and.right"
         case .goBack:        return "arrow.uturn.backward"
+        case .screenshot:    return "camera.viewfinder"
         case .openMainApp:   return "app.badge"
         case .openAppList:   return "square.grid.2x2"
         case .moveBall:      return "hand.draw"
@@ -90,6 +97,14 @@ struct ShortcutItem: Identifiable, Equatable {
         case .app: return "app"
         case .action: return action?.symbol ?? "questionmark"
         }
+    }
+
+    /// 显示用的名字。
+    /// ⚠️ 内置动作**永远现算**（`action.title`），不用存在列表里的那份 ——
+    ///    这样改文案（比如 0.1.9 的「快捷应用 → 快捷菜单」）对**已经存过的老列表**也立刻生效。
+    var displayTitle: String {
+        if let action = action { return action.title }
+        return title
     }
 
     static func make(action: ShortcutAction) -> ShortcutItem {
@@ -173,7 +188,7 @@ enum ShortcutStore {
     /// 把一个 key 变成能显示的名字（找不到就原样返回，方便排障）
     static func title(forKey key: String, in items: [ShortcutItem]) -> String {
         if key.isEmpty { return "未设置" }
-        if let item = items.first(where: { $0.key == key }) { return item.title }
+        if let item = items.first(where: { $0.key == key }) { return item.displayTitle }
         if key.hasPrefix("action:"),
            let action = ShortcutAction(rawValue: String(key.dropFirst("action:".count))) {
             return action.title

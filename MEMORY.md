@@ -297,6 +297,22 @@ _CTServerConnectionResetModem(conn, CFSTR("UserTriggeredReload"))
       ① 「persona root spawn 是线索未证实」→ Helium/TheBall 都在生产用；
       ② 它指向的 `E:\文档\Helium\MEMORY.md` **并不存在**。
 
+### 交付记录
+
+| 版本 | 时间 | 交付文件 | 字节数 | sha256 前 8 位 |
+|---|---|---|---|---|
+| 0.1.0 | 2026-10-16 | `E:\下载\FloatingBall_0.1.0.tipa` | 151,343 | `fffe2cb6` |
+| 0.1.2 | 2026-10-17 | `E:\下载\FloatingBall_0.1.2.tipa` | 293,376 | `73ad077f` |
+
+- 0.1.1（外观可调）**只到 tag、没单独发**：它的 tag 轮挂在「发 Release 403」上，
+  而同一个 sha 的 main 轮是成功的（main 不走发 Release 那一步），所以当时容易看漏。
+  修法是 workflow 里加 `permissions: contents: write`。外观那批功能已经并进 0.1.2 一起发了。
+- 0.1.2 的 Release 由 tag 构建自动创建（`softprops/action-gh-release`），Release 里的 IPA 和交付副本是同一个文件。
+- 顺带记一条容易踩的：**`gh` 的 `--jq` / `--template` 参数会被 PowerShell 吃引号**
+  （`select(.head_branch=="v0.1.1")` 会变成 `==v0.1.1`，jq 直接报错；Go 模板还会被当成参数解析）。
+  查询改用 Python 调 `gh api` 再自己解析，脚本放在 `ref/`（该目录已 gitignore，不进公开仓库）：
+  `ref/ci_status.py`（看 runs + releases）、`ref/tag_rest.py`（REST 打 tag）、`ref/watch_tag.py`（盯 tag 构建）。
+
 ## 十、还没做的两个动作：系统级返回 / 截图（2026-10-17 决定押后）
 
 用户列的手势候选里有这两个，**这一版故意没做**，原因写在这里免得下次当成漏做：

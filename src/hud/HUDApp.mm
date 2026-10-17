@@ -124,7 +124,10 @@ static int    sProbeDeepNone   = 0;  // 深读什么都没读到（这条事件�
 static NSTimeInterval sLastFedAt = 0; // 最近一次喂球的时间（「抬起没送到」的兜底用）
 static CGPoint sLastFedPoint = CGPointZero;  // 最近一次喂球的窗口坐标（兜底补「抬起」要用同一个点）
 static BOOL   sHIDSawTouch    = NO;  // 本次运行里深读真见过「有手指」——之后才信它的「没手指」
-static BOOL   sSawLiftSignal  = NO;  // 收到过任何一种「抬起」信号（决定超时兜底用 1.2s 还是 0.6s）
+static BOOL   sSawInRange     = NO;  // 本次运行里 AX 的 isInRange 真为过 YES——之后才信它的 NO
+static BOOL   sSawLiftSignal  = NO;  // 收到过任何一种「抬起」信号（决定超时兜底用 1.2s 还是 0.55s）
+static NSString *sLastEndReason = @"（还没结束过）";   // 上一次触摸是怎么结束的（写进诊断）
+static NSUInteger sFeedGeneration = 0;   // 喂球代次：定时兜底只看最新一代（0.1.16）
 static NSTimeInterval sLastEventAt = 0;  // 上一条触摸事件的时间（判「新一轮第一下」）
 static NSString *sProbeLast   = @"（还没收到过任何 HID 事件）";
 static NSTimeInterval sProbeLastWrite = 0;
@@ -211,13 +214,14 @@ static void FBWriteTouchDiag(BOOL fed, BOOL onBall, BOOL tookOver,
         @"深读=%@\n"
         @"AX=按下%d 移动%d 抬起%d 范围抬%d 取消%d\n"
         @"盲喂=%d\n"
+        @"结束=%@\n"
         @"累计接管=%d 累计喂球=%d\n",
         now, (int)onBall, (int)tookOver, (int)fed,
         rawPt.x, rawPt.y, winPt.x, winPt.y,
         ballWin.origin.x, ballWin.origin.y, ballWin.size.width, ballWin.size.height,
         sb.size.width, sb.size.height, deep,
         (int)axDown, (int)axMove, (int)axLift, (int)axInRangeLift, (int)axCancel,
-        (int)gFBBlindFeed, sProbeTakeover, sProbeFed];
+        (int)gFBBlindFeed, sLastEndReason, sProbeTakeover, sProbeFed];
     [text writeToFile:@"/tmp/FloatingBall.touchdiag"
            atomically:YES encoding:NSUTF8StringEncoding error:NULL];
 }
@@ -420,6 +424,7 @@ static void FBHandleHIDEvent(int route, void *target, void *refcon, IOHIDService
     BOOL axDown        = [rep isTouchDown];
     BOOL axMove        = [rep isMove];
     BOOL axLift        = [rep isLift];
+    BOOL axInRange     = [rep isInRange];
     BOOL axInRangeLift = [rep isInRangeLift];
     BOOL axCancel      = [rep isCancel];
     CGPoint location   = [rep location];           // 屏幕坐标？（下面三种来源都试）
@@ -500,6 +505,23 @@ static void FBHandleHIDEvent(int route, void *target, void *refcon, IOHIDService
         // 「盲喂」= 不看坐标，任何一下都当点球（只在用户手动打开的测试模式下）
         BOOL takeOverArea = onBall || gFBBlindFeed;
 
+        // ---- 0.1.16：先处理「上一轮还没结束，但事件流已经断档」----
+        // 真机上「点一下之后球就卡死」的成因：抬起事件没送到 → 我们一直攥着假触点 →
+        // 后面的点击全被当成这一根的「移动」→ 不会再产生新的触摸 → 手势再也不触发。
+        // 断档 >120ms 就说明上一轮早结束了：先补一个「抬起」交还，再按新的一下处理。
+        if (gFBActivePointer != 0 && firstInBurst) {
+            [TSEventFetcher receiveAXEventID:gFBActivePointer
+                          atGlobalCoordinate:sLastFedPoint
+                              withTouchPhase:UITouchPhaseEnded
+                                    inWindow:window
+                                      onView:ball];
+            FBLog(@"触摸：断档 %.0fms，先把上一轮触点 %ld 结束掉（%.0f,%.0f）",
+                  sinceLast * 1000.0, (long)gFBActivePointer,
+                  sLastFedPoint.x, sLastFedPoint.y);
+            sLastEndReason = @"断档补抬起";
+            gFBActivePointer = 0;
+        }
+
         // 让 UIKit 自己回答「这一点属于谁」—— 和 TheBall 一样的做法。
         // 顺带喂出「窗口问」那个自检（pointInside 里记的），比手算矩形更可信。
         UIView *hit = nil;
@@ -515,19 +537,30 @@ static void FBHandleHIDEvent(int route, void *target, void *refcon, IOHIDService
         //    球就永远起不来 —— 起手不该被「抬起」信号否决。
         BOOL hidUp = hidOK && (hidTouch == 0 && hidRange == 0);
         if (hidOK && (hidTouch == 1 || hidRange == 1)) sHIDSawTouch = YES;
-        BOOL lifted = axLift || axCancel || axInRangeLift || (sHIDSawTouch && hidUp);
+        // AX 的 isInRange：手指在感应范围内。只有**真见过它变成 yes** 之后才敢用它的 no 当抬起。
+        if (axInRange) sSawInRange = YES;
+        BOOL lifted = axLift || axCancel || axInRangeLift
+                   || (sSawInRange && !axInRange)
+                   || (sHIDSawTouch && hidUp);
         if (lifted) sSawLiftSignal = YES;
+
+        // 没有任何手指数据的「空事件」：坐标是 (0,0) 且没落在球上。
+        // ⚠️ 这种事件如果当成「移动」喂进去，球会瞬间跳到左上角（用户报的那个 bug）。
+        BOOL bogusPoint = (location.x == 0.0 && location.y == 0.0) && !onBall;
 
         UITouchPhase phase;
         BOOL isNewTouch = NO;
         BOOL tookOver = NO;
 
         if (gFBActivePointer != 0) {
-            // 还攥着上一次的触点：抬起 / 超时 → 交还；否则继续当「移动」
-            NSTimeInterval limit = sSawLiftSignal ? 1.2 : 0.6;   // 没有抬起信号时短一点，点一下别等太久
+            // 还攥着上一次的触点：抬起 / 超时 / 空坐标 → 交还；否则继续当「移动」
+            // ⚠️ 没有可靠抬起信号时，0.55 秒就交还（长按 0.5 秒已经触发过了，不会误伤），
+            //    这样单击不用等到 1.2 秒，双击也不会被第一下吃掉。
+            NSTimeInterval limit = sSawLiftSignal ? 1.2 : 0.55;
             BOOL timeout = (sLastFedAt > 0 && now - sLastFedAt > limit);
-            if (lifted || timeout) {
+            if (lifted || timeout || bogusPoint) {
                 phase = axCancel ? UITouchPhaseCancelled : UITouchPhaseEnded;
+                sLastEndReason = lifted ? @"抬起信号" : (bogusPoint ? @"空坐标" : @"超时");
             } else {
                 phase = UITouchPhaseMoved;
             }
@@ -589,6 +622,29 @@ static void FBHandleHIDEvent(int route, void *target, void *refcon, IOHIDService
         sProbeFed++;
         sLastFedAt = now;
         sLastFedPoint = winPt;
+
+        // 0.1.16：**定时兜底**。抬起事件可能压根送不到（真机上表现就是「点一下之后卡死」）：
+        // 光靠「等下一条事件」永远等不到结束，于是一直攥着假触点、后面的点击全被吃掉。
+        // 0.42 秒（比长按的 0.5 秒短）没有新事件就自己交还 —— 单击不会变成长按，
+        // 双击也不会被第一下吞掉。手指一直按着时事件流不断，这个兜底不会误伤长按。
+        NSUInteger gen = ++sFeedGeneration;
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.42 * NSEC_PER_SEC)),
+                       dispatch_get_main_queue(), ^{
+            if (gen != sFeedGeneration) return;       // 期间又来事件了 → 交给最新那一代
+            if (gFBActivePointer == 0) return;
+            NSTimeInterval t = [NSDate timeIntervalSinceReferenceDate];
+            if (sLastFedAt > 0 && t - sLastFedAt < 0.40) return;
+            [TSEventFetcher receiveAXEventID:gFBActivePointer
+                          atGlobalCoordinate:sLastFedPoint
+                              withTouchPhase:UITouchPhaseEnded
+                                    inWindow:window
+                                      onView:ball];
+            FBLog(@"触摸：0.42 秒没新事件，自己交还触点 %ld（抬起事件没送到）",
+                  (long)gFBActivePointer);
+            sLastEndReason = @"定时器";
+            gFBActivePointer = 0;
+            FBProbeWrite(NO);
+        });
 
         FBWriteTouchDiag(YES, onBall, tookOver, location, winPt, ballWin,
                          hidOK, hidTouch, hidRange, axDown, axMove, axLift,

@@ -22,6 +22,14 @@
 
 #import "../helpers/private_headers/LSApplicationWorkspace.h"
 
+// 0.1.16：这些方法互相调用，先声明一遍，省得编译器报「找不到方法」
+@interface BallRootViewController ()
+- (void)applyBallStyle;
+- (void)applyLayout;
+- (void)refreshLabel;
+- (void)writeStyleDiag:(NSString *)source;
+@end
+
 // 默认值
 static const CGFloat kDefaultBallSize = 56.0;
 static const CGFloat kWindowPadding = 12.0;   // 窗口比球大一圈：给阴影和手指宽容区
@@ -164,6 +172,16 @@ static void FBHapticPlay(FBHapticKind kind, CGFloat intensity)
 {
     NSNumber *on = _prefs[@"HapticsEnabled"];
     if ([on isKindOfClass:[NSNumber class]] && ![on boolValue]) return;
+
+    // 0.1.16：诊断用 —— HUD 是后台进程，`UIImpactFeedbackGenerator` 的震动可能被系统吞掉。
+    // 只记一次，别刷日志。
+    static int sLoggedState = 0;
+    if (!sLoggedState) {
+        sLoggedState = 1;
+        FBLog(@"震动：applicationState=%ld（后台时系统可能吞掉震动；这是第 0.1.16 版新加的诊断）",
+              (long)[UIApplication sharedApplication].applicationState);
+    }
+
     FBHapticPlay(kind, [self hapticIntensity]);
 }
 
@@ -175,16 +193,105 @@ static void FBHapticPlay(FBHapticKind kind, CGFloat intensity)
 /// 后面的手势要不要再震一层（长按、动作执行）照旧 —— 那是「确认」，这里是「迎客」。
 void FBBallHapticTouchDown(void)
 {
+    // 0.1.16：真机结论是**球进程里震动被系统吞了**（自喂测试：手势触发、计数+1，但没有震感）。
+    // 所以再加一层**看得见**的反馈：球按下去缩一下 —— 这一层不依赖任何系统服务。
     [sBallVC haptic:FBHapticTap];
+    [sBallVC pressFeedback];
 }
 
 /// 定时保温（每 2 秒一次）：球会一直挂在屏幕上、可能隔很久才被点一下，
 /// 引擎一凉就变成「按下去半天才震」。走同一个开关：关掉震动就不保温。
 - (void)warmHaptics
 {
+    // 0.1.16：顺手检查外观文件有没有变（0.1.16 用户反馈：改形状/颜色/大小/透明度都没反应）。
+    // 通知有可能没送到（或送到时刚写了一半），所以每 2 秒比对一次文件修改时间 ——
+    // plist 或贴图变了就重新应用，**不依赖通知**。
+    [self pollAppearanceFiles];
+
     NSNumber *on = _prefs[@"HapticsEnabled"];
     if ([on isKindOfClass:[NSNumber class]] && ![on boolValue]) return;
     FBHapticWarmUp();
+}
+
+- (void)pollAppearanceFiles
+{
+    static NSTimeInterval lastCfg = -1, lastImg = -1;
+    NSFileManager *fm = [NSFileManager defaultManager];
+    NSDictionary *cfgAttrs = [fm attributesOfItemAtPath:USER_DEFAULTS_PATH error:NULL];
+    NSDictionary *imgAttrs = [fm attributesOfItemAtPath:BALL_IMAGE_PATH error:NULL];
+    NSTimeInterval cfg = [cfgAttrs[NSFileModificationDate] timeIntervalSince1970];
+    NSTimeInterval img = [imgAttrs[NSFileModificationDate] timeIntervalSince1970];
+
+    if (lastCfg < 0) {           // 第一次只记基准
+        lastCfg = cfg;
+        lastImg = img;
+        return;
+    }
+    if (cfg == lastCfg && img == lastImg) return;
+
+    FBLog(@"外观文件变了（plist %.0f→%.0f / 图 %.0f→%.0f），重新应用",
+          lastCfg, cfg, lastImg, img);
+    lastCfg = cfg;
+    lastImg = img;
+
+    [self loadPrefs];
+    [self applyBallStyle];
+    [self applyLayout];
+    [self refreshLabel];
+}
+
+/// 把「现在到底用了哪张图、球多大、透明度多少」写到 /tmp/FloatingBall.style，
+/// App 的「关于」页读出来显示（0.1.16 外观诊断）。
+- (void)writeStyleDiag:(NSString *)source
+{
+    UIWindow *window = self.view.window;
+    NSFileManager *fm = [NSFileManager defaultManager];
+    NSDictionary *cfgAttrs = [fm attributesOfItemAtPath:USER_DEFAULTS_PATH error:NULL];
+    NSDictionary *imgAttrs = [fm attributesOfItemAtPath:BALL_IMAGE_PATH error:NULL];
+    NSTimeInterval cfg = [cfgAttrs[NSFileModificationDate] timeIntervalSince1970];
+    NSTimeInterval img = [imgAttrs[NSFileModificationDate] timeIntervalSince1970];
+
+    NSString *text = [NSString stringWithFormat:
+        @"图=%@\n"
+        @"形状=%@\n"
+        @"颜色=%@\n"
+        @"球直径=%.1f\n"
+        @"窗口边长=%.1f\n"
+        @"球_alpha=%.2f\n"
+        @"窗口=%d,%d,%.1f,%.1f\n"
+        @"plist时间=%.0f\n"
+        @"贴图时间=%.0f\n"
+        @"贴图字节=%llu\n",
+        source,
+        _prefs[@"BallShape"] ?: @"(没设)",
+        _prefs[@"BallColor"] ?: @"(没设)",
+        [self ballSize], [self windowSide], _ball.alpha,
+        (int)window.frame.origin.x, (int)window.frame.origin.y,
+        window.frame.size.width, window.frame.size.height,
+        cfg, img,
+        (unsigned long long)[imgAttrs[NSFileSize] unsignedLongLongValue]];
+    [text writeToFile:@"/tmp/FloatingBall.style"
+           atomically:YES encoding:NSUTF8StringEncoding error:NULL];
+}
+
+/// 按下去的**可见**反馈：球缩一下再弹回。
+/// ⚠️ 0.1.16 加这个是因为真机确认：HUD 是后台进程，UIImpactFeedbackGenerator 的震动
+///    会被系统吞掉（自喂测试手势成功、计数+1，但一点震感都没有）。
+///    缩放只是改 transform，不依赖任何系统服务，一定能看见。
+- (void)pressFeedback
+{
+    if (!_ball) return;
+    [UIView animateWithDuration:0.07 delay:0.0
+                         options:UIViewAnimationOptionBeginFromCurrentState | UIViewAnimationOptionAllowUserInteraction
+                      animations:^{
+        self->_ball.transform = CGAffineTransformMakeScale(0.86, 0.86);
+    } completion:^(BOOL finished) {
+        [UIView animateWithDuration:0.12 delay:0.0
+                             options:UIViewAnimationOptionBeginFromCurrentState | UIViewAnimationOptionAllowUserInteraction
+                          animations:^{
+            self->_ball.transform = CGAffineTransformIdentity;
+        } completion:nil];
+    }];
 }
 
 #pragma mark - 设置（和 App 共享 /var/mobile/Library/Preferences 下同一个 plist）
@@ -591,6 +698,11 @@ void FBBallHapticTouchDown(void)
 
     // 窗口内坐标 -> 屏幕坐标（窗口跟着手指走，所以必须每帧换算，见文件头注释）
     CGPoint inWindow = [g locationInView:nil];
+
+    // ⚠️ 0.1.16：空坐标事件不能当「移动」——那会让球瞬间跳到左上角（用户报的 bug）。
+    if (g.state == UIGestureRecognizerStateChanged && inWindow.x == 0.0 && inWindow.y == 0.0) {
+        return;
+    }
     CGPoint onScreen = CGPointMake(window.frame.origin.x + inWindow.x,
                                    window.frame.origin.y + inWindow.y);
 
@@ -685,6 +797,7 @@ void FBBallHapticTouchDown(void)
     _ball.alpha = opacity;
 
     [self updateShadowPath];
+    [self writeStyleDiag:source];
 }
 
 - (void)updateShadowPath

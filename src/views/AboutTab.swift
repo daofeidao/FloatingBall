@@ -45,6 +45,36 @@ struct AboutTab: View {
         return Int(digits)
     }
 
+    // ---- 外观诊断（0.1.16）----
+    @State private var styleResult = ""
+
+    private static func readStyle() -> [String: String] {
+        guard let text = try? String(contentsOfFile: "/tmp/FloatingBall.style", encoding: .utf8) else {
+            return [:]
+        }
+        var out: [String: String] = [:]
+        for line in text.split(separator: "\n") {
+            if let idx = line.firstIndex(of: "=") {
+                out[String(line[..<idx])] = String(line[line.index(after: idx)...])
+            }
+        }
+        return out
+    }
+
+    private var styleDiag: [String: String] {
+        _ = diagTick
+        return Self.readStyle()
+    }
+
+    private func reapplyAppearance() {
+        if let error = BallRenderer.regenerate() {
+            styleResult = "重画失败：\(error)"
+        } else {
+            BallSettings.notifyReload()
+            styleResult = "已重画贴图并让球重读。等 1~2 秒再看球有没有变；没变就把上面几行一起发我。"
+        }
+    }
+
     // ---- 自喂测试（0.1.14）----
     @State private var selfTestRunning = false
     @State private var selfTestResult = ""
@@ -84,7 +114,8 @@ struct AboutTab: View {
         let win = d["窗口点"] ?? "?"
         let ball = d["球窗口"] ?? "?"
         if onBall && took {
-            return "这一下被认成「按在球上」并且已经接管（球应该震了）。"
+            let end = d["结束"] ?? "?"
+            return "这一下被认成「按在球上」并且已经接管（球应该缩一下）。上一次触摸结束方式：\(end)。"
         }
         if onBall {
             return "坐标是对的（这点确实在球上），但**没接管** —— 挡住的是起手判据，不是坐标。"
@@ -141,7 +172,7 @@ struct AboutTab: View {
                         .font(.footnote)
 
                     if !diag.isEmpty {
-                        Text("深读=\(diag["深读"] ?? "?")   AX: \(diag["AX"] ?? "?")")
+                        Text("深读=\(diag["深读"] ?? "?")   结束=\(diag["结束"] ?? "?")   AX: \(diag["AX"] ?? "?")")
                             .font(.system(.caption2, design: .monospaced))
                             .foregroundColor(.secondary)
                     }
@@ -154,6 +185,23 @@ struct AboutTab: View {
                             BallSettings.set(value, "BlindFeed")
                             BallSettings.notifyReload()
                         }
+                }
+
+                Section(header: Text("外观诊断（0.1.16）"),
+                        footer: Text("“图=包里的默认小圆点” 说明 App 画的贴图**没被球读到**（那就是写文件/通知那条链断了）；“图=App 画的贴图” 才是正常。点下面的按钮可以立刻重画一次并让球重读。")) {
+                    if styleDiag.isEmpty {
+                        Text("还没读到（球进程没起来？）").font(.footnote)
+                    } else {
+                        Text("球现在用的是：\(styleDiag["图"] ?? "?")；直径 \(styleDiag["球直径"] ?? "?")；透明度 \(styleDiag["球_alpha"] ?? "?")")
+                            .font(.footnote)
+                        Text("形状=\(styleDiag["形状"] ?? "?")  颜色=\(styleDiag["颜色"] ?? "?")  贴图时间=\(styleDiag["贴图时间"] ?? "?")")
+                            .font(.system(.caption2, design: .monospaced))
+                            .foregroundColor(.secondary)
+                    }
+                    Button("重新应用外观") { reapplyAppearance() }
+                    if !styleResult.isEmpty {
+                        Text(styleResult).font(.footnote).foregroundColor(.secondary)
+                    }
                 }
 
                 Section(header: Text("自喂测试（先点这个）"),

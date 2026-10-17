@@ -18,9 +18,8 @@ struct LaunchTab: View {
     @State private var trouble: String?
     @State private var hapticsOn = true
 
-    // 震动参数（0.1.9 起可调；键名与球进程共用，见 Haptics.swift 顶部）
+    // 震动参数（0.1.9 起强度可调；0.1.12 起时长去掉 —— 一律系统默认那一下 ≈40ms）
     @State private var hapticIntensity = Haptics.maxIntensity
-    @State private var hapticDurationMs = Haptics.defaultDurationMs
 
     // 图标设置
     @State private var shape: BallShape = .dot
@@ -39,19 +38,19 @@ struct LaunchTab: View {
     private static let ballFooter = """
     震动反馈：点球、执行动作、球落位时会震一下（屏幕上的球和这个 App 都会震）。关掉之后哪儿都不震。
 
-    两个参数：
-    · 强度 —— 0.2 到 1.0。
-    · 时长（毫秒）—— iOS 不让第三方直接给毫秒级的振动波形（Taptic 引擎「敲一下」的长度是系统定死的），所以这里是连着敲几下拼出来的：每 40ms 一下，不到 40ms 算 1 下，300ms 大约 8 下。想精确到毫秒得用 CoreHaptics，那要求 App 在前台 + 有音频会话，球那个常驻进程里不靠谱 —— 所以用这个折中。
+    · 强度 —— 0.2 到 1.0，拖滑块时当场就能感觉出来。
+    · 时长固定是**系统默认那一下**（约 40ms），不给调了：iOS 不让第三方直接给毫秒级的振动波形（Taptic 引擎「敲一下」的长度是系统定死的），0.1.9 的「连敲几下拼时长」实测效果一般，所以去掉。
 
     开了也没感觉的话，去「设置 → 声音与触感 → 系统触感反馈」看看是不是关的 —— 那个是系统总开关，绕不过去。
     """
 
     private static let versionFooter = """
+    0.1.12：① 震动只剩「强度」了 —— 「时长」滑块去掉（一律系统默认那一下，约 40 毫秒）。
+    ② 「关于」页「原理来自」里那几个项目名变成**蓝色可点**了，点一下用浏览器打开它的项目主页。
     0.1.11：① 开关快了 —— 以前每次问「球在跑吗」都要在后台悄悄启动一整个程序，所以点了要等一两秒；现在球把自己的进程号写在 /tmp，App 读一下就够，松手即响应（顺手去掉了「状态」那一行，它没用）。
-    ② 去掉「试一下震动」按钮：打开震动开关的那一下本身就会震，拖强度/时长滑块也会当场震。
+    ② 去掉「试一下震动」按钮：打开震动开关的那一下本身就会震，拖强度滑块也会当场震。
     ③ 触摸：真机自检显示「按下」这件事系统压根没告诉我们（30225 条事件里 0 次），老逻辑一直等它 —— 所以永远接不上。现在改成「手指第一次落在球上就算按下」。
-    0.1.10：快捷菜单去掉右上角「编辑」（每行右边三条横线就是拖动手柄）；「添加」页中间多一栏「添加」，里面是「系统快捷指令」和「URL 协议」（内置微信扫一扫 / 支付宝扫一扫 / 收付款码）。
-    0.1.9：内置动作库多了「截屏」；「快捷应用」改名「快捷菜单」；震动强度和时长可调。
+    0.1.10：快捷菜单去掉右上角「编辑」（每行右边三条横线就是拖动手柄）；「添加」页中间多一栏「添加」，里面是「系统快捷指令」和「URL 协议」。
     点球没反应时，去「关于」页把「触摸自检」那几行念给我（0.1.11 起多了一行「底层」）。
     """
 
@@ -82,7 +81,9 @@ struct LaunchTab: View {
                         set: { want in setHaptics(want) }
                     ))
 
-                    // 强度和时长（0.1.9 起）：关着的时候就别摆出来，少点干扰
+                    // 强度（0.1.9 起可调）：关着的时候就别摆出来，少点干扰
+                    // ⚠️ 0.1.12 起这里**只有强度**：时长去掉了（一律系统默认那一下 ≈40ms，
+                    //    用户 2026-10-17 明确说的「时长就用系统默认的 40 毫秒，再改效果一般」）。
                     if hapticsOn {
                         VStack(alignment: .leading) {
                             HStack {
@@ -96,24 +97,11 @@ struct LaunchTab: View {
                                     setHapticIntensity(value)
                                 }
                         }
-
-                        VStack(alignment: .leading) {
-                            HStack {
-                                Text("时长")
-                                Spacer()
-                                Text("\(Int(hapticDurationMs)) ms")
-                                    .foregroundColor(.secondary)
-                            }
-                            Slider(value: $hapticDurationMs, in: 10...300, step: 10)
-                                .onChange(of: hapticDurationMs) { value in
-                                    setHapticDuration(value)
-                                }
-                        }
                     }
 
                     // ⚠️ 2026-10-17 用户明确：不要「试一下震动」这个按钮 ——
                     //    打开「震动反馈」开关的那一下**本身就会震**（见 setHaptics），
-                    //    拖强度 / 时长滑块时也会当场震，再放个按钮是重复的。
+                    //    拖强度滑块时也会当场震，再放个按钮是重复的。
                     Button("刷新") { refresh() }.hapticOnPress(.tap)
                 }
 
@@ -426,17 +414,6 @@ struct LaunchTab: View {
         Haptics.fire(.action, force: true)
     }
 
-    /// 震动时长（毫秒）：同上。
-    /// ⚠️ 滑块是 10ms 一档，每动一下都震会太吵（也拖不动），所以只在 50 的整数倍上试震。
-    private func setHapticDuration(_ value: Double) {
-        let v = min(max(value, Haptics.minDurationMs), Haptics.maxDurationMs)
-        hapticDurationMs = v
-        BallSettings.set(v, "HapticDurationMs")
-        Haptics.setDurationMs(v)
-        BallSettings.notifyReload()
-        if Int(v.rounded()) % 50 == 0 { Haptics.fire(.action, force: true) }
-    }
-
     // MARK: - 读写设置
 
     private func refresh() {
@@ -444,10 +421,10 @@ struct LaunchTab: View {
         tapCount = BallSettings.integer("TapCount", default: 0)
         hapticsOn = BallSettings.bool("HapticsEnabled", default: true)
 
-        // 震动：重读三个设置 + 提前预热引擎（这样按下去才是立刻有反馈）
+        // 震动：重读强度 + 提前预热引擎（这样按下去才是立刻有反馈）
+        // ⚠️ 0.1.12 起时长不可调（一律系统默认那一下），所以这里只重读强度。
         Haptics.refresh()
         hapticIntensity = Haptics.intensity
-        hapticDurationMs = Haptics.durationMs
         Haptics.warmUp()
 
         shape = BallRenderer.loadShape()

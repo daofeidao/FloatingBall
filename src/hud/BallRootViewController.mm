@@ -41,15 +41,14 @@ typedef NS_ENUM(NSInteger, FBHapticKind) {
     FBHapticNotice,    // 「交代出去一件事」（刷新信号）      —— 两下
 };
 
-// 震动参数（0.1.9 起可调，键名与 Haptics.swift 共用）：
+// 震动参数（键名与 Haptics.swift 共用）：
 //   强度 `HapticIntensity`  0.2~1.0（默认 1.0）→ 走 impactOccurredWithIntensity:
-//   时长 `HapticDurationMs` 10~300ms（默认 30）→ iOS **不让第三方指定毫秒级的振动波形**
-//        （Taptic 引擎「敲一下」的长度是固定的），所以这里的「时长」是用
-//        「每 40ms 敲一下」拼出来的：不到 40ms = 1 下，300ms ≈ 8 下。
-//        想精确到毫秒得用 CoreHaptics，而它要求 App 在前台 + 有音频会话，
-//        在 HUD 这个常驻 root 进程里不靠谱 —— 所以用这个折中（App 界面上有说明）。
-#define FBHapticPulseSpacingMs  40    // 每下之间隔多少毫秒
-#define FBHapticMaxPulses       8     // 最多敲几下（≈320ms，够到 300ms 那档）
+//   ~~时长 `HapticDurationMs`~~ —— **0.1.12 起作废**：用户实测「连敲拼时长」效果一般，
+//        于是直接去掉，一律就系统默认那一下（≈40ms；Taptic 引擎敲一下的长度是系统定死的，
+//        想精确到毫秒得用 CoreHaptics，而它要求 App 在前台 + 有音频会话，HUD 里不靠谱）。
+//        ⚠️ 只有 `FBHapticNotice`（「交代出去一件事」）保留**两下** —— 那是信号，不是时长。
+//        ⚠️ 老版本写进设置的 `HapticDurationMs` 现在**没人读**了（不用清，不影响）。
+#define FBHapticPulseSpacingMs  40    // 两下之间隔多少毫秒（只给 notice 的两下用）
 
 static UIImpactFeedbackGenerator *sHapticLight  = nil;
 static UIImpactFeedbackGenerator *sHapticMedium = nil;
@@ -76,9 +75,11 @@ static void FBHapticPulse(FBHapticKind kind, CGFloat intensity)
 }
 
 /// - Parameters:
+///   - kind:      震感种类（决定用轻 / 中生成器，以及敲几下）
 ///   - intensity: 0.2~1.0（设置里的「强度」）
-///   - pulses:    敲几下（设置里的「时长」换算来的，见 FBHapticPulseSpacingMs）
-static void FBHapticPlay(FBHapticKind kind, CGFloat intensity, int pulses)
+///   ⚠️ 0.1.12 起没有「敲几下」这个入参了：时长不再可调，一律一下
+///      （只有 `FBHapticNotice` 例外，见下）。
+static void FBHapticPlay(FBHapticKind kind, CGFloat intensity)
 {
     // ⚠️ 以前是「每次新建生成器 + prepare + 立刻震」—— 临时抱佛脚没用：
     //    prepare() 是**异步**预热振动引擎的，跟 impactOccurred 挤在同一个 tick 里，
@@ -86,9 +87,9 @@ static void FBHapticPlay(FBHapticKind kind, CGFloat intensity, int pulses)
     //    正解：生成器常驻、提前 prepare 好，震完再补一次保温（见 FBHapticWarmUp）。
     FBHapticWarmUp();
 
-    // 「刷新信号」那种「交代出去一件事」= 两下；其余按设置敲
-    int n = (kind == FBHapticNotice) ? MAX(2, pulses) : MAX(1, pulses);
-    n = MIN(n, FBHapticMaxPulses);
+    // ⚠️ 一律「系统默认那一下」（≈40ms）；只有 FBHapticNotice（「交代出去一件事」）
+    //    敲两下 —— 那是一个**信号**，不是时长设置。
+    int n = (kind == FBHapticNotice) ? 2 : 1;
 
     for (int i = 0; i < n; i++) {
         if (i == 0) {
@@ -153,26 +154,14 @@ static void FBHapticPlay(FBHapticKind kind, CGFloat intensity, int pulses)
     return (CGFloat)MAX(0.2, MIN(v, 1.0));
 }
 
-/// 设置里的「时长（毫秒）」→ 敲几下。算法与 Haptics.swift 的 Haptics.pulses 一致。
-/// ⚠️ iOS 不给第三方毫秒级的振动波形，所以时长是「每 40ms 敲一下」拼出来的，
-///    见文件顶部 FBHapticPulseSpacingMs 的说明。
-- (int)hapticPulses
-{
-    NSNumber *n = _prefs[@"HapticDurationMs"];
-    double ms = n ? [n doubleValue] : 30.0;
-    ms = MAX(10.0, MIN(ms, 300.0));
-    // ⚠️ 不用 lround（math.h 在这个工程里的包含关系没验过，别为一个小函数冒编译风险）
-    int pulses = (int)((ms / (double)FBHapticPulseSpacingMs) + 0.5);
-    return MAX(1, MIN(pulses, FBHapticMaxPulses));
-}
-
 /// 走开关的震动：设置里 `HapticsEnabled` 是 false 就什么都不做。
 /// ⚠️ 用「没设过 = 开」的语义：老版本升上来时这个键不存在，不该变成静音。
+/// ⚠️ 0.1.12 起不再有「敲几下」——时长不可调（见文件顶部）。
 - (void)haptic:(FBHapticKind)kind
 {
     NSNumber *on = _prefs[@"HapticsEnabled"];
     if ([on isKindOfClass:[NSNumber class]] && ![on boolValue]) return;
-    FBHapticPlay(kind, [self hapticIntensity], [self hapticPulses]);
+    FBHapticPlay(kind, [self hapticIntensity]);
 }
 
 /// 定时保温（每 2 秒一次）：球会一直挂在屏幕上、可能隔很久才被点一下，

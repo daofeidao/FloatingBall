@@ -7,7 +7,7 @@
 //     里有一份等价实现 —— 两边用**同一批设置键**：
 //       HapticsEnabled    开关（默认开）
 //       HapticIntensity   强度 0.2~1.0（默认 1.0）   —— 0.1.9 起可调
-//       HapticDurationMs  时长 10~300ms（默认 30）   —— 0.1.9 起可调
+//       ~~HapticDurationMs~~  时长 —— **0.1.12 起作废**（见下），两边都不再读它
 //     改键名 / 默认值 / 分段算法，两边必须一起改。
 //
 //  三种震感，按「发生了什么」分：
@@ -18,12 +18,15 @@
 //  ⚠️ 手机上「设置 → 声音与触感 → 系统触感反馈」关掉的话，这里全部没感觉。
 //     这是系统开关，我们绕不过去，所以界面上要提示用户去查。
 //
-//  ⚠️ 「时长」为什么是拼接出来的：iOS **不让第三方指定毫秒级的振动波形**
-//     （Taptic 引擎「敲一下」的长度是系统定死的），想精确到毫秒得用 CoreHaptics，
-//     而 CoreHaptics 要求 App 在前台 + 有音频会话 —— HUD 那个常驻 root 进程里不靠谱。
-//     所以这里的「时长」= 连敲几下：每 pulseSpacingMs 毫秒一下，10~39ms = 1 下，
-//     300ms ≈ 8 下。听感上就是「短促」到「连绵」。
-//
+//  ⚠️ 为什么「时长」没了（0.1.12，用户 2026-10-17 定的）：
+//     iOS **不让第三方指定毫秒级的振动波形**（Taptic 引擎「敲一下」的长度是系统定死的，
+//     约 40ms），想精确到毫秒得用 CoreHaptics，而它要求 App 在前台 + 有音频会话 ——
+//     HUD 那个常驻 root 进程里不靠谱。
+//     我们原来把它折中成「每 40ms 敲一下」拼时长（10ms = 1 下，300ms ≈ 8 下），
+//     用户实测后说「再改的效果一般」，于是**直接去掉**：一律就系统默认那一下（≈40ms）。
+//     ⚠️ 只有「交代出去一件事」（notice）保留**两下** —— 那是一个**信号**，不是时长。
+//     ⚠️ 老版本写进设置的 `HapticDurationMs` 键现在**没人读了**（不用清，不影响）。
+
 
 import UIKit
 import SwiftUI
@@ -38,27 +41,22 @@ enum Haptics {
 
     // MARK: - 参数（⚠️ 与 HUD 侧 BallRootViewController.mm 保持一致）
 
-    /// 每下之间隔多少毫秒
+    /// 两下之间隔多少毫秒。
+    /// ⚠️ 0.1.12 起「时长」不再可调（一律系统默认那一下 ≈40ms），
+    ///    这个常量只用来给「两下」那种信号留间隔（notice）。
     static let pulseSpacingMs = 40
-    /// 最多敲几下（≈320ms，够到 300ms 那档）
-    static let maxPulses = 8
 
     static let minIntensity: Double = 0.2
     static let maxIntensity: Double = 1.0
-    static let minDurationMs: Double = 10
-    static let maxDurationMs: Double = 300
-    /// 「时长」滑块的默认值（键没设过时用它，也是 HUD 侧的默认值）
-    static let defaultDurationMs: Double = 30
 
-    // MARK: - 开关 + 两个参数
+    // MARK: - 开关 + 强度
     //
-    // ⚠️ 三个都缓存住：以前每震一次都要去读一遍 plist（BallSettings 会读两次盘），
+    // ⚠️ 两个都缓存住：以前每震一次都要去读一遍 plist（BallSettings 会读两次盘），
     //    「按下去立刻震」这种要求下，这点延迟也得省掉。
     //    App 里改滑块时用 setXxx() 直接更新缓存，球那边靠 Darwin 通知重读。
 
     private static var cachedEnabled: Bool?
     private static var cachedIntensity: Double?
-    private static var cachedDurationMs: Double?
 
     static var enabled: Bool {
         if let v = cachedEnabled { return v }
@@ -76,21 +74,6 @@ enum Haptics {
         return v
     }
 
-    /// 时长（毫秒）
-    static var durationMs: Double {
-        if let v = cachedDurationMs { return v }
-        let raw = BallSettings.double("HapticDurationMs", default: defaultDurationMs)
-        let v = min(max(raw, minDurationMs), maxDurationMs)
-        cachedDurationMs = v
-        return v
-    }
-
-    /// 时长换算成「敲几下」
-    static var pulses: Int {
-        let n = Int((durationMs / Double(pulseSpacingMs)).rounded())
-        return min(max(n, 1), maxPulses)
-    }
-
     /// 用户拨了开关 → 立刻更新缓存，别再读一遍盘。
     static func setEnabled(_ on: Bool) {
         cachedEnabled = on
@@ -100,18 +83,12 @@ enum Haptics {
         cachedIntensity = min(max(value, minIntensity), maxIntensity)
     }
 
-    static func setDurationMs(_ value: Double) {
-        cachedDurationMs = min(max(value, minDurationMs), maxDurationMs)
-    }
-
     /// 回前台 / 界面出现时从盘上重读一次（别的地方也可能改过）。
     static func refresh() {
         cachedEnabled = nil
         cachedIntensity = nil
-        cachedDurationMs = nil
         _ = enabled
         _ = intensity
-        _ = durationMs
     }
 
     // MARK: - 生成器：常驻 + 提前预热
@@ -156,8 +133,9 @@ enum Haptics {
         guard force || enabled else { return }
         prepareGenerators()
 
-        // 「刷新信号」那种「交代出去一件事」= 两下；其余按设置敲
-        let n = (kind == .notice) ? max(2, pulses) : max(1, pulses)
+        // ⚠️ 0.1.12：时长不再可调 —— 一律**系统默认那一下**（≈40ms）。
+        //    只有「交代出去一件事」（notice）保留两下：那是一个**信号**，不是时长。
+        let n = (kind == .notice) ? 2 : 1
 
         for i in 0..<n {
             if i == 0 {

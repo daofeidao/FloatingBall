@@ -61,24 +61,43 @@ struct AboutTab: View {
                         .font(.footnote)
                 }
 
-                Section(header: Text("原理来自")) {
-                    credit("Lessica / TrollSpeed", "最早证明 TrollStore 免越狱能画全局悬浮窗")
-                    credit("limneos / UIDaemon", "「一个能画在 SpringBoard 之上的 iOS 守护进程」")
-                    credit("leminlimez / Helium", "本项目直接沿用了它的 HUD 骨架（GPL-3.0）")
-                    credit("hhse / TheBall", "同类成品，本项目参考了它的交互设计")
-                }
-
-                Section(footer: Text("本项目基于 Helium 的骨架，沿用 GPL-3.0 授权。")) {
-                    EmptyView()
+                Section(header: Text("原理来自"),
+                        footer: Text("点项目名会用浏览器打开它的主页。本项目基于 Helium 的骨架，沿用 GPL-3.0 授权。")) {
+                    credit("Lessica / TrollSpeed", "最早证明 TrollStore 免越狱能画全局悬浮窗",
+                           "https://github.com/Lessica/TrollSpeed")
+                    credit("limneos / UIDaemon", "「一个能画在 SpringBoard 之上的 iOS 守护进程」",
+                           "https://github.com/limneos/UIDaemon")
+                    credit("leminlimez / Helium", "本项目直接沿用了它的 HUD 骨架（GPL-3.0）",
+                           "https://github.com/leminlimez/Helium")
+                    credit("hhse / TheBall", "同类成品，本项目参考了它的交互设计",
+                           "https://github.com/hhse/TheBall")
                 }
             }
             .navigationTitle("关于")
         }
     }
 
-    private func credit(_ title: String, _ detail: String) -> some View {
+    /// 一行「原理来自」：项目名是**蓝色可点的链接**，点了用系统浏览器打开项目主页。
+    ///
+    /// ⚠️ 用 `Link` 而不是 `Button` + `UIApplication.open`：
+    ///    它就是「打开一个 URL」的语义，SwiftUI 自己会按 tint 染蓝、还支持长按预览；
+    ///    而 `Button` 在 List 行里会多一层整行高亮，反而不好看。
+    ///    http(s) 走系统默认处理器 = **Safari**；这里不需要 `FBOpenURL`（那是给 scheme 用的）。
+    private func credit(_ title: String, _ detail: String, _ url: String) -> some View {
         VStack(alignment: .leading, spacing: 4) {
-            Text(title)
+            if let link = URL(string: url) {
+                Link(destination: link) {
+                    HStack(spacing: 5) {
+                        Text(title)
+                            .foregroundColor(.blue)
+                        Image(systemName: "arrow.up.right.square")
+                            .font(.caption2)
+                            .foregroundColor(.blue)
+                    }
+                }
+            } else {
+                Text(title)
+            }
             Text(detail).font(.caption).foregroundColor(.secondary)
         }
     }

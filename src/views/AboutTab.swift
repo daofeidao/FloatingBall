@@ -10,6 +10,15 @@ struct AboutTab: View {
         return v ?? "?"
     }
 
+    /// 自检那两行的读法说明。
+    /// ⚠️ 必须放在这里当成一个整体：直接写在 Section(footer:) 里拼接字符串，
+    ///    Swift 类型检查会超时（CI 报 "unable to type-check this expression in reasonable time"）。
+    private static let probeFooter = """
+    第一行是「全局 HID 事件」那条链（0.1.3 起）：① 回调（路A = 老 BKS 回调，路B = 监视客户端）→ ② AX 转换 → ③ 手指路径 / 身份号 → ④ 在不在球上 → ⑤ 接管并喂给球。
+    第二行是「真触摸」那条链（0.1.8 起，窗口直接收触摸）：窗口问 = 系统问过窗口几次；落在球 = 其中落在球上的；真点击 = 球的手势真的触发了。
+    哪个数不涨，断点就在哪。
+    """
+
     /// 触摸自检：悬浮球进程（root 那个）把「HID 回调这条链子走到哪一步」写在 /tmp 里，
     /// App 直接读出来显示 —— 这样点球没反应时，不用开终端也能把这一行念出来。
     private var probeText: String {
@@ -39,12 +48,7 @@ struct AboutTab: View {
                 }
 
                 Section(header: Text("触摸自检（点球没反应时看这里）"),
-                        footer: Text("这行字是悬浮球进程写的。\n"
-                                     + "第一行是「全局 HID 事件」那条链（0.1.3 起）：① 回调（路A = 老 BKS 回调，路B = 监视客户端）"
-                                     + "→ ② AX 转换 → ③ 手指路径 / 身份号 → ④ 在不在球上 → ⑤ 接管并喂给球。\n"
-                                     + "第二行是「真触摸」那条链（0.1.8 起，窗口直接收触摸）："
-                                     + "窗口问 = 系统问过窗口几次；落在球 = 其中落在球上的；真点击 = 球的手势真的触发了。\n"
-                                     + "哪个数不涨，断点就在哪。")) {
+                        footer: Text(Self.probeFooter)) {
                     Text(probeText)
                         .font(.system(.caption, design: .monospaced))
                     Button("刷新") { probeTick += 1 }

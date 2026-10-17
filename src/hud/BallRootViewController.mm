@@ -195,6 +195,10 @@ void FBBallHapticTouchDown(void)
     _prefs = onDisk ? [onDisk mutableCopy] : [NSMutableDictionary dictionary];
     if (!_prefs[@"BallSize"])  _prefs[@"BallSize"]  = @(kDefaultBallSize);
     if (!_prefs[@"TapCount"])  _prefs[@"TapCount"]  = @0;
+
+    // 0.1.15：「关于」页的盲喂开关（验证用，默认关）
+    NSNumber *blind = _prefs[@"BlindFeed"];
+    gFBBlindFeed = [blind isKindOfClass:[NSNumber class]] && [blind boolValue];
 }
 
 - (void)savePrefs

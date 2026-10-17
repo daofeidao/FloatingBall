@@ -42,6 +42,7 @@ OBJC_EXTERN void FBProbeRealTapDidFire(void);
 OBJC_EXTERN void FBSelfTestFeedTap(void);
 OBJC_EXTERN int  FBProbeRealTapCount(void);
 OBJC_EXTERN BOOL gFBSelfTestTapPending;
+OBJC_EXTERN BOOL gFBBlindFeed;
 
 /// 真触摸这条路通了没有（通了就不再喂合成的假触摸，免得一次点击走两遍）。
 ///

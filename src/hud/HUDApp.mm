@@ -143,6 +143,11 @@ static int sProbeSelfTest = 0;  // 「自喂一次点击」做了几次（0.1.14
 /// （否则「测试一下」会顺手打开设置/跑一个手势动作，太吓人）
 BOOL gFBSelfTestTapPending = NO;
 
+/// 盲喂模式（0.1.15，只在「关于」页手动打开）：不看坐标，任何一下触摸都当点球。
+/// 用途：验证「HID 事件流里到底有没有真手指」——如果盲喂时球能响应，
+/// 说明事件有、只是坐标对不上；如果盲喂也没反应，说明事件流里根本没有手指。
+BOOL gFBBlindFeed = NO;
+
 /// 活跃的触摸来源：0 = 还没定，1 = 路A（BKS 回调），2 = 路B（监视客户端）
 static int gHIDActiveRoute = 0;
 
@@ -168,6 +173,53 @@ static void FBProbeNote(NSString *reason)
 {
     sProbeLast = reason;
     FBProbeWrite(NO);
+}
+
+// ============================================================================
+// 0.1.15：给 App 看的「真实点球诊断」
+//
+// 自喂测试已经证明**喂球那条路是通的**（球会震、计数会加），所以剩下的问题
+// 只可能在「这一下算不算按在球上」。这个文件把每一步的**原始数字**写出来，
+// App 的「关于」页直接翻译成一句人话 —— 用户不用读数、不用开终端。
+// 只写 /tmp 下这一个文件，限速 0.4 秒 1 次（接管那一刻强制写）。
+// ============================================================================
+static NSTimeInterval sDiagLastWrite = 0;
+
+static void FBWriteTouchDiag(BOOL fed, BOOL onBall, BOOL tookOver,
+                             CGPoint rawPt, CGPoint winPt, CGRect ballWin,
+                             BOOL hidOK, int touch, int range,
+                             BOOL axDown, BOOL axMove, BOOL axLift,
+                             BOOL axInRangeLift, BOOL axCancel)
+{
+    NSTimeInterval now = [NSDate timeIntervalSinceReferenceDate];
+    if (!tookOver && now - sDiagLastWrite < 0.4) return;
+    sDiagLastWrite = now;
+
+    NSString *deep = @"读不到";
+    if (hidOK) deep = ((touch == 1 || range == 1) ? @"有手指" : @"没手指");
+
+    CGRect sb = [UIScreen mainScreen].bounds;
+    NSString *text = [NSString stringWithFormat:
+        @"当=%.2f\n"
+        @"在球上=%d\n"
+        @"接管=%d\n"
+        @"喂球=%d\n"
+        @"点=%.1f,%.1f\n"
+        @"窗口点=%.1f,%.1f\n"
+        @"球窗口=%.1f,%.1f,%.1f,%.1f\n"
+        @"屏幕=%.0f,%.0f\n"
+        @"深读=%@\n"
+        @"AX=按下%d 移动%d 抬起%d 范围抬%d 取消%d\n"
+        @"盲喂=%d\n"
+        @"累计接管=%d 累计喂球=%d\n",
+        now, (int)onBall, (int)tookOver, (int)fed,
+        rawPt.x, rawPt.y, winPt.x, winPt.y,
+        ballWin.origin.x, ballWin.origin.y, ballWin.size.width, ballWin.size.height,
+        sb.size.width, sb.size.height, deep,
+        (int)axDown, (int)axMove, (int)axLift, (int)axInRangeLift, (int)axCancel,
+        (int)gFBBlindFeed, sProbeTakeover, sProbeFed];
+    [text writeToFile:@"/tmp/FloatingBall.touchdiag"
+           atomically:YES encoding:NSUTF8StringEncoding error:NULL];
 }
 
 void FBProbeTouchHit(BOOL onBall)
@@ -401,42 +453,66 @@ static void FBHandleHIDEvent(int route, void *target, void *refcon, IOHIDService
             return;
         }
 
-        // ---- 坐标：三个来源都试 ----
-        //   ① AX 的 [rep location]（TheBall 用的就是它，按屏幕点算）
-        //   ② 底层归一化坐标 × 屏幕尺寸（子事件上读到的，最可信）
-        //   ③ 上面两种都被当成「窗口坐标」再试一次（老自检留下的可能性）
-        // 球在窗口里的矩形（含 6pt 宽容区）
+        // ---- 坐标：把所有能拿到的来源都试一遍（0.1.15）----
+        //   ① AX 的 [rep location]
+        //   ② 每条手指路径自己的 pathLocation（AXEventPathInfoRepresentation）
+        //   ③ 底层子事件的归一化 X/Y（×屏幕 = 点）/ 原样 / 除以 scale
+        // 每个候选点再分「屏幕坐标」「窗口坐标」两种解释各试一次。
         CGRect ballWin  = [ball convertRect:ball.bounds toView:window];
-        CGRect touchWin = CGRectInset(ballWin, -6.0, -6.0);
+        CGRect touchWin = CGRectInset(ballWin, -10.0, -10.0);   // 手指有宽度，放宽到 10pt
         CGRect screenRect = [UIScreen mainScreen].bounds;
 
-        CGPoint cands[4];
+        CGPoint cands[8];
         int candCount = 0;
-        cands[candCount++] = location;                       // ①
-        if (hidOK && (hidNX > 0.0 || hidNY > 0.0)) {         // ②
-            cands[candCount++] = CGPointMake(hidNX * screenRect.size.width,
-                                             hidNY * screenRect.size.height);
+        cands[candCount++] = location;                           // ①
+
+        SEL pathLocSel = NSSelectorFromString(@"pathLocation");  // ②
+        for (NSUInteger i = 0; i < paths.count && candCount < 6; i++) {
+            id p = paths[i];
+            if (![p respondsToSelector:pathLocSel]) break;
+            CGPoint pt = ((CGPoint (*)(id, SEL))[p methodForSelector:pathLocSel])(p, pathLocSel);
+            if (pt.x != 0.0 || pt.y != 0.0) cands[candCount++] = pt;
+        }
+
+        if (hidOK && (hidNX != 0.0 || hidNY != 0.0)) {           // ③
+            if (hidNX <= 1.5 && hidNY <= 1.5) {
+                cands[candCount++] = CGPointMake(hidNX * screenRect.size.width,
+                                                 hidNY * screenRect.size.height);
+            } else {
+                cands[candCount++] = CGPointMake(hidNX, hidNY);
+                CGFloat sc = [[UIScreen mainScreen] scale];
+                if (sc > 1.0 && candCount < 8) {
+                    cands[candCount++] = CGPointMake(hidNX / sc, hidNY / sc);
+                }
+            }
         }
 
         CGPoint winPt = [window convertPoint:location fromWindow:nil];
         BOOL onBall = NO;
-        for (int i = 0; i < candCount && !onBall; i++) {
+        int matched = -1;
+        for (int i = 0; i < candCount; i++) {
             if (cands[i].x == 0.0 && cands[i].y == 0.0) continue;   // 没手指的事件常带 (0,0)
             CGPoint asScreen = [window convertPoint:cands[i] fromWindow:nil];
-            if (CGRectContainsPoint(touchWin, asScreen)) { winPt = asScreen; onBall = YES; break; }
-            if (CGRectContainsPoint(touchWin, cands[i])) { winPt = cands[i]; onBall = YES; break; }
+            if (CGRectContainsPoint(touchWin, asScreen)) { winPt = asScreen; onBall = YES; matched = i; break; }
+            if (CGRectContainsPoint(touchWin, cands[i])) { winPt = cands[i]; onBall = YES; matched = i; break; }
         }
+
+        // 「盲喂」= 不看坐标，任何一下都当点球（只在用户手动打开的测试模式下）
+        BOOL takeOverArea = onBall || gFBBlindFeed;
 
         // 让 UIKit 自己回答「这一点属于谁」—— 和 TheBall 一样的做法。
         // 顺带喂出「窗口问」那个自检（pointInside 里记的），比手算矩形更可信。
         UIView *hit = nil;
-        if (onBall) hit = [window hitTest:winPt withEvent:nil];
+        if (takeOverArea) hit = [window hitTest:winPt withEvent:nil];
         UIView *feedView = (hit && hit != window) ? hit : ball;
 
         // ---- 「抬起」判据 ----
         //   · AX 明说 lift / cancel / inRangeLift → 认
         //   · 底层说 Touch=0 且 Range=0 → **只有本次运行里真见过 Touch=1** 才认
         //     （字段读不到时一直是 0，不能让「读不到」被当成「没手指」——0.1.11 的死法）
+        // ⚠️ 0.1.15：这两个只用来**结束**，不再用来阻止「起手」。
+        //    0.1.14 把它们也塞进起手条件后，只要 AX 的某个标志在真机上恒为真，
+        //    球就永远起不来 —— 起手不该被「抬起」信号否决。
         BOOL hidUp = hidOK && (hidTouch == 0 && hidRange == 0);
         if (hidOK && (hidTouch == 1 || hidRange == 1)) sHIDSawTouch = YES;
         BOOL lifted = axLift || axCancel || axInRangeLift || (sHIDSawTouch && hidUp);
@@ -444,6 +520,7 @@ static void FBHandleHIDEvent(int route, void *target, void *refcon, IOHIDService
 
         UITouchPhase phase;
         BOOL isNewTouch = NO;
+        BOOL tookOver = NO;
 
         if (gFBActivePointer != 0) {
             // 还攥着上一次的触点：抬起 / 超时 → 交还；否则继续当「移动」
@@ -455,34 +532,32 @@ static void FBHandleHIDEvent(int route, void *target, void *refcon, IOHIDService
                 phase = UITouchPhaseMoved;
             }
         } else {
-            // 没有在手上的触点：这一下必须「落在球上」
-            BOOL beganSignal = axDown || (hidOK && (hidTouch == 1 || hidRange == 1));
-            if (!onBall || lifted || !(beganSignal || firstInBurst)) {
-                if (lifted) {
-                    sProbeNotOurs++;
-                    FBProbeNote([NSString stringWithFormat:@"④ 无关的抬起（id=%ld 在球上=%d）",
-                                 (long)pointerId, (int)onBall]);
-                } else {
-                    sProbeOffBall++;
-                    FBProbeNote([NSString stringWithFormat:
-                        @"④ 没接管（id=%ld 点=(%.0f,%.0f) 窗口点=(%.0f,%.0f) 球(窗口)=%@ "
-                        @"在球上=%d 深读(ok=%d t=%d r=%d) ax(d=%d m=%d l=%d)）",
-                        (long)pointerId, location.x, location.y, winPt.x, winPt.y,
-                        NSStringFromCGRect(ballWin), (int)onBall,
-                        (int)hidOK, hidTouch, hidRange, (int)axDown, (int)axMove, (int)axLift]);
-                }
+            // 没有在手上的触点：这一下必须「落在球上」（盲喂模式下不看位置）
+            BOOL beganSignal = axDown || (hidOK && (hidTouch == 1 || hidRange == 1)) || gFBBlindFeed;
+            if (!takeOverArea || !(beganSignal || firstInBurst)) {
+                sProbeOffBall++;
+                FBProbeNote([NSString stringWithFormat:
+                    @"④ 没接管（id=%ld 点=(%.0f,%.0f) 窗口点=(%.0f,%.0f) 球(窗口)=%@ "
+                    @"在球上=%d 候选=%d 命中=%d 深读(ok=%d t=%d r=%d) ax(d=%d m=%d l=%d)）",
+                    (long)pointerId, location.x, location.y, winPt.x, winPt.y,
+                    NSStringFromCGRect(ballWin), (int)onBall, candCount, matched,
+                    (int)hidOK, hidTouch, hidRange, (int)axDown, (int)axMove, (int)axLift]);
+                FBWriteTouchDiag(NO, onBall, NO, location, winPt, ballWin,
+                                 hidOK, hidTouch, hidRange, axDown, axMove, axLift,
+                                 axInRangeLift, axCancel);
                 return;
             }
             phase = UITouchPhaseBegan;
             isNewTouch = YES;
+            tookOver = YES;
             sProbeTakeover++;
             FBProbeNote([NSString stringWithFormat:
                 @"⑤ 起手在球上→接管（id=%ld 点=(%.0f,%.0f) 窗口点=(%.0f,%.0f) 球(窗口)=%@ "
-                @"信号=%@ 深读(t=%d r=%d)）",
+                @"信号=%@ 候选=%d 命中=%d 深读(t=%d r=%d)）",
                 (long)pointerId, location.x, location.y, winPt.x, winPt.y,
                 NSStringFromCGRect(ballWin),
-                axDown ? @"AX按下" : (firstInBurst ? @"新一轮第一下" : @"底层"),
-                hidTouch, hidRange]);
+                gFBBlindFeed ? @"盲喂" : (axDown ? @"AX按下" : (firstInBurst ? @"新一轮第一下" : @"底层")),
+                candCount, matched, hidTouch, hidRange]);
         }
 
         // ⚠️ atGlobalCoordinate 这个参数名是骗人的：TSEventFetcher 内部直接
@@ -505,11 +580,19 @@ static void FBHandleHIDEvent(int route, void *target, void *refcon, IOHIDService
         // ⭐ 按下去就震（0.1.12）：最早、最不依赖手势的那一刻给一下「迎客」
         if (isNewTouch) {
             FBBallHapticTouchDown();
+            // 盲喂模式下每一次都可能是误触：只让它记账/震一下，不执行绑定动作
+            if (gFBBlindFeed) {
+                gFBSelfTestTapPending = YES;
+            }
         }
 
         sProbeFed++;
         sLastFedAt = now;
         sLastFedPoint = winPt;
+
+        FBWriteTouchDiag(YES, onBall, tookOver, location, winPt, ballWin,
+                         hidOK, hidTouch, hidRange, axDown, axMove, axLift,
+                         axInRangeLift, axCancel);
 
         if (phase == UITouchPhaseEnded || phase == UITouchPhaseCancelled) {
             if (sProbeFed == 1 || isNewTouch) {

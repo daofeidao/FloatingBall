@@ -1,4 +1,5 @@
 import SwiftUI
+import Combine
 
 struct AboutTab: View {
 
@@ -48,6 +49,49 @@ struct AboutTab: View {
     @State private var selfTestRunning = false
     @State private var selfTestResult = ""
 
+    // ---- 真实点球诊断（0.1.15）----
+    @State private var blindFeed = BallSettings.bool("BlindFeed", default: false)
+    @State private var diagTick = 0
+    private let diagTicker = Timer.publish(every: 1.0, on: .main, in: .common).autoconnect()
+
+    /// 每秒读一次诊断文件（diagTick 变了 body 才会重算）
+    private var diag: [String: String] {
+        _ = diagTick
+        return Self.readDiag()
+    }
+
+    private static func readDiag() -> [String: String] {
+        guard let text = try? String(contentsOfFile: "/tmp/FloatingBall.touchdiag", encoding: .utf8) else {
+            return [:]
+        }
+        var out: [String: String] = [:]
+        for line in text.split(separator: "\n") {
+            if let idx = line.firstIndex(of: "=") {
+                out[String(line[..<idx])] = String(line[line.index(after: idx)...])
+            }
+        }
+        return out
+    }
+
+    /// 把 diag 文件翻译成一句人话（不用用户读数）
+    private static func verdict(_ d: [String: String]) -> String {
+        guard !d.isEmpty else {
+            return "还没有收到任何真实触摸事件 —— 先在屏幕上点球附近点几下，再回来看这里。"
+        }
+        let onBall = d["在球上"] == "1"
+        let took = d["接管"] == "1"
+        let raw = d["点"] ?? "?"
+        let win = d["窗口点"] ?? "?"
+        let ball = d["球窗口"] ?? "?"
+        if onBall && took {
+            return "这一下被认成「按在球上」并且已经接管（球应该震了）。"
+        }
+        if onBall {
+            return "坐标是对的（这点确实在球上），但**没接管** —— 挡住的是起手判据，不是坐标。"
+        }
+        return "坐标没落在球上：点=(\(raw)) 窗口点=(\(win))，球在窗口里是 (\(ball))。"
+    }
+
     /// 绕过 HID 检测层，直接让球进程往球心喂一次点击。
     /// 结果只看一件事：球的单击手势有没有被认出来（自检里「真点击」+1）。
     private func runSelfTest() {
@@ -89,6 +133,27 @@ struct AboutTab: View {
                         Spacer()
                         Text("com.daofeidao.floatingball").foregroundColor(.secondary)
                     }
+                }
+
+                Section(header: Text("真实点球诊断（0.1.15）"),
+                        footer: Text("去屏幕上**点一下球**，然后回这里看结论 —— 不用读数。它显示的是球进程收到的最近一条真实触摸：点在哪儿、球在哪儿、有没有被认成「按在球上」。每秒自动刷新。")) {
+                    Text(Self.verdict(diag))
+                        .font(.footnote)
+
+                    if !diag.isEmpty {
+                        Text("深读=\(diag["深读"] ?? "?")   AX: \(diag["AX"] ?? "?")")
+                            .font(.system(.caption2, design: .monospaced))
+                            .foregroundColor(.secondary)
+                    }
+                }
+
+                Section(header: Text("盲喂（验证用，平时关掉）"),
+                        footer: Text("打开后：屏幕上**任何地方**的触摸都会被当成点球（只震动+计数，不执行绑定的动作）。\n用途：如果盲喂时球有反应 → 说明事件流里有真手指，只是坐标对不上；如果盲喂也没反应 → 说明事件流里根本没有手指，得换一条路。")) {
+                    Toggle("盲喂：任何触摸都当点球", isOn: $blindFeed)
+                        .onChange(of: blindFeed) { value in
+                            BallSettings.set(value, "BlindFeed")
+                            BallSettings.notifyReload()
+                        }
                 }
 
                 Section(header: Text("自喂测试（先点这个）"),
@@ -136,6 +201,9 @@ struct AboutTab: View {
                 }
             }
             .navigationTitle("关于")
+            .onReceive(diagTicker) { _ in
+                diagTick += 1
+            }
         }
     }
 

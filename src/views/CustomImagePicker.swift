@@ -9,6 +9,7 @@
 //
 
 import SwiftUI
+import UIKit
 import PhotosUI
 
 struct CustomImagePicker: UIViewControllerRepresentable {

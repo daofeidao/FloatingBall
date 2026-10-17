@@ -28,8 +28,9 @@ iPhone 上的**全局悬浮球**：浮在所有 App 之上，轻点/双击/滑�
 写代码 -> push -> GitHub Actions (macos-14 + Xcode 15.1 + theos) -> build/FloatingBall.tipa
 ```
 
-打 tag（`v0.1.0`）会发布 Release 并附带 `FloatingBall.tipa`。
-版本号唯一真源是 `layout/Applications/FloatingBall.app/Info.plist` 的 `CFBundleShortVersionString`。
+打 tag（`v0.1.1` 这样）会发布 Release 并附带 `FloatingBall.tipa`。
+版本号唯一真源是 `layout/Applications/FloatingBall.app/Info.plist` 的 `CFBundleShortVersionString`，
+⚠️ tag 必须和它一致，CI 里有断言。
 
 改图标 / 球的样子：`python scripts/make_icon.py`（自己画 PNG，不依赖 Pillow）。
 想先看效果：`python scripts/preview_styles.py` → `ref/style_preview.png`（不参与打包）。
@@ -117,4 +118,5 @@ iPhone 上的**全局悬浮球**：浮在所有 App 之上，轻点/双击/滑�
 
 | 版本 | 内容 |
 |---|---|
-| 0.1.0 | 验证版：球能浮在任何界面之上 + 能点 + 能拖吸边；轻点会打开「设置」并计数 +1 |
+| 0.1.0 | 验证版：球能浮在任何界面之上 + 能点 + 能拖吸边；轻点会打开「设置」并计数 +1；桌面图标长成系统小白点 |
+| 0.1.1 | 球的外观可调：形状（小圆点 / 纯色 / 白点 / 自定义图片）+ 颜色 + 大小 + 不透明度；贴图改由 App 按设置画好给 HUD 显示 |

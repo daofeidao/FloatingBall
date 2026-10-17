@@ -81,9 +81,8 @@ struct LaunchTab: View {
                     VStack(alignment: .leading, spacing: 8) {
                         HStack(spacing: 6) {
                             Text("颜色").font(.footnote).foregroundColor(.secondary)
-                            if colorLocked {
-                                Text("（\(shape.title)是预设，颜色固定）")
-                                    .font(.caption2).foregroundColor(.secondary)
+                            if let note = colorLockNote {
+                                Text(note).font(.caption2).foregroundColor(.secondary)
                             }
                         }
                         HStack(spacing: 8) {
@@ -172,6 +171,15 @@ struct LaunchTab: View {
     // MARK: - 小控件
 
     private var colorLocked: Bool { shape.isPreset || shape == .custom }
+
+    /// 颜色行被锁住时给一句解释（锁住的原因不一样，别混着说）
+    private var colorLockNote: String? {
+        switch shape {
+        case .white:  return "（白点是预设，颜色固定）"
+        case .custom: return "（自定义图片不用选颜色）"
+        default:      return nil
+        }
+    }
 
     /// 预览图：和球用同一个画图函数，所以看到的就是实际效果
     private var previewImage: UIImage {

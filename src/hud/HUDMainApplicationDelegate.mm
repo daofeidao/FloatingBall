@@ -3,6 +3,7 @@
 #import "HUDMainApplicationDelegate.h"
 #import "HUDMainWindow.h"
 #import "BallRootViewController.h"
+#import "FBLog.h"
 
 #import "../helpers/private_headers/SBSAccessibilityWindowHostingController.h"
 #import "../helpers/private_headers/UIWindow+Private.h"
@@ -20,6 +21,8 @@
     //    必须排在 windowSide 前面，否则球尺寸会一直是默认值。
     CGPoint center = [_rootViewController initialCenter];
     CGFloat side = [_rootViewController windowSide];
+    FBLog(@"准备建窗口：球尺寸=%.0f 窗口边长=%.0f 初始球心=(%.0f, %.0f)",
+          [_rootViewController ballSize], side, center.x, center.y);
 
     self.window = [[HUDMainWindow alloc] initWithFrame:CGRectMake(center.x - side / 2.0,
                                                                   center.y - side / 2.0,
@@ -49,6 +52,9 @@
     [invocation setArgument:&windowLevel atIndex:3];
     [invocation invoke];
 #pragma clang diagnostic pop
+
+    FBLog(@"窗口已建：frame=%@ level=%.0f contextId=%u，已向 SpringBoard 注册",
+          NSStringFromCGRect(self.window.frame), windowLevel, contextId);
 
     return YES;
 }

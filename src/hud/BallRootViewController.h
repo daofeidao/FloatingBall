@@ -8,6 +8,9 @@ NS_ASSUME_NONNULL_BEGIN
 /// 窗口边长 = 球直径 + 余量（余量给阴影和手指宽容区）
 - (CGFloat)windowSide;
 
+/// 球直径
+- (CGFloat)ballSize;
+
 /// 球心初始位置（读上次保存的，没有就给个默认）
 - (CGPoint)initialCenter;
 

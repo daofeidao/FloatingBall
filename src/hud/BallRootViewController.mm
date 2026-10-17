@@ -12,6 +12,7 @@
 
 #import "BallRootViewController.h"
 #import "HUDHelper.h"
+#import "FBLog.h"
 
 #import <notify.h>
 #import <objc/runtime.h>
@@ -151,13 +152,19 @@ static void LightHaptic(void)
     // 设置被改了 -> 重读
     int token;
     notify_register_dispatch(NOTIFY_RELOAD_HUD, &token, dispatch_get_main_queue(), ^(int t) {
+        FBLog(@"收到「设置变了」通知，重读");
         [self reloadSettings];
     });
+
+    FBLog(@"球建好了：直径=%.0f 窗口边长=%.0f view=%@ 自带手势=%lu 个",
+          ball, side, NSStringFromCGRect(self.view.bounds),
+          (unsigned long)[_ball.gestureRecognizers count]);
 }
 
 - (void)viewDidAppear:(BOOL)animated
 {
     [super viewDidAppear:animated];
+    FBLog(@"球露面了 window.frame=%@", NSStringFromCGRect(self.view.window.frame));
     notify_post(NOTIFY_LAUNCHED_HUD);
 }
 
@@ -173,7 +180,8 @@ static void LightHaptic(void)
     [self refreshLabel];
     LightHaptic();
 
-    [self openApplication:@"com.apple.Preferences"];
+    BOOL opened = [self openApplication:@"com.apple.Preferences"];
+    FBLog(@"轻点：计数=%ld，打开设置=%@", (long)count, opened ? @"成功" : @"失败");
 }
 
 #pragma mark - 打开别的 App
@@ -222,6 +230,7 @@ static void LightHaptic(void)
 - (void)onDoubleTap:(UITapGestureRecognizer *)g
 {
     // v0.1：双击先把计数清零（v0.2 起改成「用户自己绑定的动作」）
+    FBLog(@"双击");
     _prefs[@"TapCount"] = @0;
     [self savePrefs];
     [self refreshLabel];
@@ -231,6 +240,7 @@ static void LightHaptic(void)
 - (void)onLongPress:(UILongPressGestureRecognizer *)g
 {
     if (g.state != UIGestureRecognizerStateBegan) return;
+    FBLog(@"长按");
     _showText = !_showText;
     [self refreshLabel];
     LightHaptic();
@@ -254,6 +264,8 @@ static void LightHaptic(void)
         f.origin = CGPointMake(onScreen.x - _grabOffset.x, onScreen.y - _grabOffset.y);
         window.frame = f;
     } else if (g.state == UIGestureRecognizerStateEnded || g.state == UIGestureRecognizerStateCancelled) {
+        // 只在收尾时记一行：拖动过程中每个事件都记会把日志刷爆
+        FBLog(@"拖动结束，落点 frame=%@", NSStringFromCGRect(window.frame));
         [self snapToEdge];
     }
 }
@@ -284,6 +296,7 @@ static void LightHaptic(void)
     _prefs[@"BallX"] = @(CGRectGetMidX(window.frame));
     _prefs[@"BallY"] = @(CGRectGetMidY(window.frame));
     [self savePrefs];
+    FBLog(@"位置已存：球心=(%.0f, %.0f)", CGRectGetMidX(window.frame), CGRectGetMidY(window.frame));
 }
 
 #pragma mark - 视图刷新

@@ -48,6 +48,17 @@ struct LaunchTab: View {
                     }
                 }
 
+                Section(header: Text("排障")) {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("日志文件").font(.footnote)
+                        Text("/tmp/FloatingBall.log")
+                            .font(.system(size: 12, design: .monospaced))
+                        Text("球不出来时，用手机上的终端 cat 这个文件，能看到 HUD 进程走到哪一步了。")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                    }
+                }
+
                 Section(footer: Text("v0.1 是验证版，只验证一件事：悬浮球能不能浮在别的 App 上面，并且点得到、拖得动。轻点一次会打开「设置」并让计数 +1。")) {
                     EmptyView()
                 }

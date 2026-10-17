@@ -6,6 +6,7 @@
 
 #import "SwiftObjCPPBridger.h"
 #import <notify.h>
+#import "../hud/FBLog.h"
 
 #pragma mark - HUD Functions
 
@@ -20,6 +21,14 @@ BOOL IsHUDEnabledBridger(void)
 
 void SetHUDEnabledBridger(BOOL isEnabled)
 {
+    // 每次「开球」都重开一份日志：这一次尝试的全过程才是我们要看的
+    if (isEnabled) {
+        FBLogReset();
+        FBLog(@"=== App 请求启动悬浮球 ===");
+    } else {
+        FBLog(@"=== App 请求关闭悬浮球 ===");
+    }
+
     SetHUDEnabled(isEnabled);
 }
 

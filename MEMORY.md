@@ -125,6 +125,32 @@ git push
     `ent.plist`、`src/helpers/private_headers/*`（含 `LSApplicationWorkspace.h`、`SBSAccessibilityWindowHostingController.h`、
     `AXEventRepresentation.h`）、`src/helpers/ts/TSEventFetcher.*`、`.github/workflows/*`
 - **IPA 文件名必须纯 ASCII**；版本号单一源头 + 打包时断言（照 TT 的规矩）。
+
+### CI 实测记录（2026-10-17）
+
+- **`macos-13` 不能用了**：排队 10 分钟起不来（Helium 在 10-15 还是秒开）。
+  换 **`macos-14` 秒开**，而且该镜像自带 **Xcode 15.1**（15.0.1/15.1/15.2/15.3/15.4 都有），
+  工具链一个字都不用改。
+- ⚠️ **私有 framework 里的东西，一律走字符串，不走符号**（这轮唯一的编译错误就是踩了这条）：
+  - 私有类：`[LSApplicationWorkspace defaultWorkspace]` → `ld: Undefined symbols: _OBJC_CLASS_$_LSApplicationWorkspace`。
+    正确写法 `objc_getClass("LSApplicationWorkspace")`（Helium 也是这么写的）。
+  - 私有 C 函数：`SBSLaunchApplicationWithIdentifierAndLaunchOptions` 之类用 `dlsym(RTLD_DEFAULT, "...")`
+    运行时查，**别直接调用**（直接调用会把链接风险留在 SDK 的私有 stub 上）。
+- ⚠️ **BOOL 返回值别用 `performSelector`**：它的返回类型是 `id`，ARC 会把 BOOL 的 `0x1` 当对象 retain → 崩。
+  用 `objc_msgSend` + 显式函数指针转型。
+- 七个 Swift 文件在 Xcode 15.1 下一次过，`-swift-version` 不用调。
+- 一轮 CI 约 3～4 分钟（SDK 有缓存之后），迭代成本可以接受。
+
+### 实现上踩过的坑
+
+- **拖动不能用 `translationInView:`**：窗口本身跟着手指移动时，手指在窗口坐标系里的位置
+  会「跟着窗口一起走」，位移越算越小最后卡死（经典反馈环）。
+  正确做法：每个事件都把「窗口内坐标」换算回「屏幕坐标」再定位。
+  见 `src/hud/BallRootViewController.mm` 文件头注释。
+- **HUD 窗口不透明的话**，球周围那圈 12pt 余量会渲染成黑块，必须
+  `setOpaque:NO` + `setBackgroundColor:clearColor`。
+- **HUD delegate 里的调用顺序**：`initialCenter`（它会加载共享设置）必须排在 `windowSide` 前面，
+  否则球尺寸永远用默认值。
 - 新仓库：**`E:\文档\悬浮球`**，远端 **`https://github.com/daofeidao/FloatingBall`**（public，GPL-3.0）。
 - ⚠️ **首次推送走了 REST API**（`git push` 报 `Recv failure: Connection was reset`，就是 MEMORY 里那条 VPN 老毛病）。
   结果是**远端 main 与本地 main 分叉了**：

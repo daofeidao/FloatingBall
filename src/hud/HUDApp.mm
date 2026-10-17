@@ -13,8 +13,10 @@
 #import <notify.h>
 #import <mach-o/dyld.h>
 #import <objc/runtime.h>
+#import <unistd.h>
 
 #import "HUDHelper.h"
+#import "FBLog.h"
 
 #import "../helpers/ts/TSEventFetcher.h"
 #import "../helpers/private_headers/AXEventRepresentation.h"
@@ -120,9 +122,11 @@ int main(int argc, char *argv[])
 
         if (strcmp(argv[1], "-hud") == 0)
         {
+            FBLog(@"=== HUD 进程启动 pid=%d uid=%u ===", getpid(), (unsigned int)getuid());
             pid_t pid = getpid();
             NSString *pidString = [NSString stringWithFormat:@"%d", pid];
             [pidString writeToFile:GetPIDFilePath() atomically:YES encoding:NSUTF8StringEncoding error:nil];
+            FBLog(@"pid 文件写到 %@", GetPIDFilePath());
 
             // 不走 SpringBoard，自己把 UIKit 支起来
             [UIScreen initialize];
@@ -163,11 +167,13 @@ int main(int argc, char *argv[])
             });
 
             CFRunLoopRun();
+            FBLog(@"HUD runloop 已退出（不该发生）");
             return EXIT_SUCCESS;
         }
         else if (strcmp(argv[1], "-exit") == 0)
         {
             NSString *pidString = [NSString stringWithContentsOfFile:GetPIDFilePath() encoding:NSUTF8StringEncoding error:nil];
+            FBLog(@"-exit 收到，pid 文件内容 = %@", pidString);
             if (pidString)
             {
                 pid_t pid = (pid_t)[pidString intValue];

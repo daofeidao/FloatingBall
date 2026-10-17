@@ -3,6 +3,7 @@
 #import <mach-o/dyld.h>
 
 #import "HUDHelper.h"
+#import "FBLog.h"
 
 extern "C" char **environ;
 
@@ -72,10 +73,15 @@ void SetHUDEnabled(BOOL isEnabled)
         posix_spawnattr_setpgroup(&attr, 0);
         posix_spawnattr_setflags(&attr, POSIX_SPAWN_SETPGROUP);
 
-        pid_t task_pid;
+        pid_t task_pid = 0;
         const char *args[] = { executablePath, "-hud", NULL };
-        posix_spawn(&task_pid, executablePath, NULL, &attr, (char **)args, environ);
+        int rc = posix_spawn(&task_pid, executablePath, NULL, &attr, (char **)args, environ);
         posix_spawnattr_destroy(&attr);
+
+        // ⚠️ 这个返回值是「球起不来的第一种可能」，一定要记下来
+        //    EPERM(1) = persona/root 那条路被拒；ENOENT(2) = 可执行文件路径不对
+        FBLog(@"spawn -hud：rc=%d pid=%d 可执行文件=%@", rc, task_pid,
+              [NSString stringWithUTF8String:executablePath]);
 
 #if DEBUG
         os_log_debug(OS_LOG_DEFAULT, "spawned %{public}s -hud pid = %{public}d", executablePath, task_pid);
@@ -85,10 +91,11 @@ void SetHUDEnabled(BOOL isEnabled)
     {
         [NSThread sleepForTimeInterval:0.25];
 
-        pid_t task_pid;
+        pid_t task_pid = 0;
         const char *args[] = { executablePath, "-exit", NULL };
-        posix_spawn(&task_pid, executablePath, NULL, &attr, (char **)args, environ);
+        int rc = posix_spawn(&task_pid, executablePath, NULL, &attr, (char **)args, environ);
         posix_spawnattr_destroy(&attr);
+        FBLog(@"spawn -exit：rc=%d pid=%d", rc, task_pid);
 
 #if DEBUG
         os_log_debug(OS_LOG_DEFAULT, "spawned %{public}s -exit pid = %{public}d", executablePath, task_pid);

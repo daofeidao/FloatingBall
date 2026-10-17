@@ -98,7 +98,11 @@ static void FBHapticPlay(FBHapticKind kind)
     }
     // 球本身再往外放 6pt，手指没那么准
     CGRect touchable = CGRectInset(self.interactiveSubview.frame, -6.0, -6.0);
-    return CGRectContainsPoint(touchable, point);
+    BOOL inside = CGRectContainsPoint(touchable, point);
+    // 自检：窗口重新参与命中测试之后（0.1.8），这里每被问一次就说明
+    //「**真有触摸问进这个窗口**」—— 这是判断这条路通没通的第一手证据。
+    FBProbeTouchHit(inside);
+    return inside;
 }
 
 @end
@@ -299,6 +303,9 @@ static void FBHapticPlay(FBHapticKind kind)
 
 - (void)onSingleTap:(UITapGestureRecognizer *)g
 {
+    // 自检：这是「触摸真的落到球上、手势也认出来了」的证据（0.1.8）
+    FBProbeRealTapDidFire();
+
     // 计数 +1 是「点到了」的证据：球浮在别的 App 上面时，这是唯一看得见的回执。
     // 真正干什么由设置里的「单击」绑定决定（默认 = 打开设置）。
     NSInteger count = [_prefs[@"TapCount"] integerValue] + 1;

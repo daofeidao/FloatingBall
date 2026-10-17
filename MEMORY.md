@@ -42,21 +42,31 @@ iPhone 上的**全局悬浮球**（类似系统「辅助触控」小白点，但
   `IOHIDEventCreateDigitizerEvent`、`SBSLaunchApplicationWithIdentifierAndLaunchOptions`、
   `SBSSpringBoardServerPort`、`SBGetScreenLockStatus`、`posix_spawn` + `posix_spawnattr_*`。
 
-### ⚠️ 触摸这一条：当年判断错了，2026-10-17 真机改正
+### ⚠️ 触摸这一条：绕了两圈，2026-10-17 靠反汇编定案
 
-这里的原文是「HUD 窗口能收到触摸，这是被成品证明的」—— **这个推论是错的**，
-0.1.0~0.1.2 就是被它带偏的。TheBall 的球确实可点可拖，用的是标准手势识别器
-（`UITapGestureRecognizer` / `UISwipeGestureRecognizer` / `UILongPressGestureRecognizer` /
-`UIPanGestureRecognizer`，外加 `handleCapturedPan:`、`snapToEdge`、`autoHidePosition`、
-`gestureRecognizer:shouldReceiveEvent:` 这几个覆盖点），
+- **第一版推论（错）**：「HUD 窗口能收到触摸，这是被成品证明的」 → 0.1.0~0.1.2 被它带偏。
+- **第二版推论（也错）**：真机点球没反应 → 断定「SpringBoard 托管的窗口根本收不到触摸」，
+  连 `_ignoresHitTest` 改 `NO` 都没用 → 0.1.3~0.1.7 改去听全局 HID 事件自己喂球。
+  ⚠️ 误判的原因：**那时候球上还没有手势识别器** —— 触摸就算送进来也没人接。
+- **第三版（对，0.1.8）**：把 `ref/TheBall2.7.ipa` 的主二进制反汇编（工具 `ref/armdis.py`，
+  capstone + 自己解 Mach-O 符号表 / stub / `__objc_selrefs`）逐条比 `HUDMainWindow`：
 
-**但它能点 ≠ 窗口能收触摸。** 真机结果是：SpringBoard 托管的窗口**只负责显示**，
-触摸一个都送不进来。回头再看 TheBall 的私有 API 清单，
-里面**有 `BKSHIDEventRegisterEventCallback`** —— 它八成是靠那条路自己喂触摸的，
-只是当时我们只盯着「它有手势识别器」这一半。
+  | 覆盖的方法 | TheBall | 我们 |
+  |---|---|---|
+  | `-_ignoresHitTest` | **NO** | 原来是 YES → 0.1.8 改 NO |
+  | `-_isWindowServerHostingManaged` | NO | NO（一直对的） |
+  | `+_isSystemWindow` | YES | YES（一直对的） |
+  | `-_isSecure` / `-_shouldCreateContextAsSecure` | YES | 没抄（跟输入无关，一次只改一条） |
+  | `_shouldAutorotate` / `supportedInterfaceOrientations` | YES / 全方向 | 没抄 |
 
-→ 结论：手势识别器照抄没问题（那是「收到触摸之后」的事），
-但「触摸怎么进来」必须自己解决，见第十一节。
+  它的窗口注册代码和**我们 v0.1.0 起就有的那份一模一样**
+  （`SBSAccessibilityWindowHostingController` + `NSInvocation` + 类型编码 `v@:Id` +
+  `atLevel:window.windowLevel`，取 `_contextId` 失败就退化成 `windowScene.session.persistentIdentifier.hash`）。
+
+→ 结论：**窗口注册给 SpringBoard 之后，窗口自己必须参与命中测试**（`_ignoresHitTest = NO`），
+触摸才会被送进这个进程。它的球可点可拖，用的就是标准手势识别器
+（`UITap`/`UISwipe`/`UILongPress`/`UIPan`，外加 `handleCapturedPan:`、`snapToEdge`、
+`gestureRecognizer:shouldReceiveEvent:`），我们的手势照抄没问题。
 
 ### 它怎么做跨进程同步 / 持久化（我们**不照抄**，太乱）
 
@@ -87,9 +97,12 @@ iPhone 上的**全局悬浮球**（类似系统「辅助触控」小白点，但
 3. 它向 SpringBoard 注册一个**全局窗口**：
    `SBSAccessibilityWindowHostingController -registerWindowWithContextID:atLevel:`（Helium 用 10000010.0）。
    ⚠️ 这一步只解决**显示**。
-4. **触摸要单独想办法**（2026-10-17 真机推翻「窗口能收触摸」的假设）：
-   那个窗口收到的是 0 个触摸事件（`_ignoresHitTest` 改 NO 也没用）。
-   现在用「全局 HID 事件回调 + 自己喂 UITouch」，见第十一节。
+4. **触摸靠窗口参与命中测试**（0.1.8 定案，靠反汇编 TheBall 修正，见第三节）：
+   `HUDMainWindow._ignoresHitTest` 必须返回 **NO**，系统才会把落在球上的触摸送进这个进程，
+   球自己的手势识别器才接得住。
+   老路「全局 HID 事件回调 + 自己喂 UITouch」（`BKSHIDEventRegisterEventCallback` /
+   `IOHIDEventSystemClient` 监视客户端）保留为**备用**，见第十一节：
+   真机上那两条都收不到事件（0.1.6 自检 `回调=0`），而且喂假触摸那条路有「一次点击走两遍」的隐患。
 
 > ⚠️ **PPL 禁项绝对不能加**（iOS 15 + A12 以上必崩）：
 > `com.apple.private.cs.debugger`、`dynamic-codesigning`、`com.apple.private.skip-library-validation`。
@@ -321,23 +334,21 @@ _CTServerConnectionResetModem(conn, CFSTR("UserTriggeredReload"))
 ## 九、待办 / 待验证
 
 - [x] 球**全局显示**：2026-10-17 真机确认**正常**（每个界面都在，切 App、回桌面都在）。
-- [ ] 球**能点 / 能拖**：0.1.0~0.1.2 一直不通，原因是窗口收不到触摸（见第十一节）。
-      0.1.3 改走「全局 HID 事件回调」这条路，**仍没通**：
-      2026-10-17 用户反馈「点球**直接穿透**了，没点到球的面板，球下面的屏幕（也收到了）」——
-      即**球一个触摸都没接管**（数字不涨、动作不触发）。
-      0.1.6 加的「触摸自检」（见第十一节末）已经**给出结论**：`回调=0`、按音量键也不涨
-      → 老那条 `BKSHIDEventRegisterEventCallback` 在 15.6.1 上**一条事件都收不到**。
-      0.1.7 换了另一条路（`IOHIDEventSystemClient` 监视客户端，见第十一节末），**待真机验证**。
-- [ ] **0.1.7 待验（本轮最想要的两条数）**：
-      ① 「关于」页 `匹配服务=` 是几（正常 1；**0 = 新路连触摸屏都没匹配上**）；
-      ② 点球之后 `路A=` / `路B=` 涨不涨、`最后：` 写什么。
-      三种走向：`匹配服务=0` → 匹配写法错；`=1` 但 `路B=0` → 权限/投递问题；
-      `路B` 涨而 `接管=0` → 看 `最后：` 的坐标与球矩形（坐标口径）。
-      因为 0.1.6 的 `回调=0`（按音量键也不涨）已经证明**路A 在 15.6.1 上收不到任何事件**。见 §十一 末。
-- [ ] **0.1.7 震动待验**：按「试一下震动」应该是**手指按下去**就震（不是松开），
-      「复位位置」「刷新」「换一张图片」同理；球的震感是否比 0.1.6 利索。
-- [ ] **已知副作用待观察**：HID 回调不能吃掉事件 → 点在球上时球下面的 App 也会收到这一下。
-      实机上体验到底有多烦（球吸在屏幕边上、下面多为壁纸/列表边缘），等用户反馈再决定要不要治。
+- [ ] 球**能点 / 能拖**（本轮最想要的东西，0.1.8 第三次尝试）：
+      0.1.0~0.1.2 摸不到 → 0.1.3~0.1.7 改走全局 HID 事件，`回调=0`（一条事件都收不到）
+      → **0.1.8 回到窗口本身**：`_ignoresHitTest = NO`（依据 = 反汇编 TheBall 2.7，
+      它的 `HUDMainWindow` 就是 NO），触摸直接走球自己的手势识别器。**待真机验证**。
+      ⚠️ 前两版误判的根因记在第三节/第十一节：当年改 NO 时**球上还没有手势识别器**。
+- [ ] **0.1.8 待验（「关于」页第二行，本轮最想要的三个数）**：
+      `真触摸：窗口问=? 落在球=? 真点击=?`
+      ① `真点击>0` → **通了**（点球数字涨、动作触发、震一下）。
+      ② `窗口问=0` → 触摸还是没进这个窗口（下一步候选：抄 TheBall 的
+         `_isSecure` / `_shouldCreateContextAsSecure = YES`，以及窗口 level 对齐）。
+      ③ `窗口问>0` 但 `落在球=0` → 球的位置 / 坐标系对不上（看 `最后：` 里的点和球矩形）。
+      ④ `落在球>0` 但 `真点击=0` → 落到球上了手势不认（换成 `touchesBegan/Ended` 直接处理）。
+- [ ] **0.1.8 顺带验两件老事**：① 点球时**球下面的 App 还会不会被点到**
+      （真触摸路应该不会了 —— 这是它比喂假触摸好的地方）；
+      ② 按「试一下震动」是不是**手指按下去**就震（0.1.7 改的，还没回报）。
 - [ ] 真机上顺带验外观：三种样式能否即时切换（不重启）、大小滑块是否即时生效、桌面图标是不是小圆点。
 - [ ] **0.1.4 震动反馈待验**：点球 / 球落位 / 执行动作各震一次；
       「启动」页开关能关掉（关了连「试一下震动」按钮也不震）。
@@ -494,24 +505,33 @@ _CTServerConnectionResetModem(conn, CFSTR("UserTriggeredReload"))
 够用了」—— 那要用户自己划；0.1.5 起可以把手势绑成「全局返回」，让球替用户划。
 
 
-## 十一、触摸是怎么进来的（2026-10-17 真机定案，别再改回去）
+## 十一、触摸是怎么进来的（2026-10-17 定案，别再改回去）
 
-### 结论一句话
+### 结论一句话（0.1.8 版本）
 
-**SpringBoard 托管的那个全局窗口只会「显示」，不会收到触摸。**
+**窗口必须自己参与命中测试**：`HUDMainWindow._ignoresHitTest` 返回 **NO**，
+系统才会把落在球上的触摸送进这个进程，球自己的手势识别器就接住了。
+（依据：反汇编 TheBall 2.7 的 `HUDMainWindow`，见第三节。）
 
-「窗口能显示 → 窗口也能被点中」这个假设是错的，0.1.0~0.1.2 就卡在这：
-球浮在每个界面都正常，但点它**数字一个都不涨**（= 一个触摸事件都没进我们进程），
-把 `HUDMainWindow` 的 `_ignoresHitTest` 从 `YES` 改成 `NO` 也一样。
+前两版的判断都是错的：
 
-### 现在的做法：全局 HID 事件 → 自己喂给球视图
+- 0.1.0~0.1.2：`_ignoresHitTest = YES`（抄 Helium）→ 摸不到。
+- 中途改成 `NO` → 还是摸不到 → **误判成「SpringBoard 托管的窗口根本收不到触摸」**。
+  ⚠️ 真正的原因是**那时候球上还没有手势识别器**：触摸送进来也没人接，
+  「没人接」被读成了「收不到」。
+- 0.1.3~0.1.7：改去听全局 HID 事件、自己喂假触摸（下面这一大段），
+  0.1.6 自检证明那两个 API 在 15.6.1 上**一条事件都收不到**。
 
-代码位置：`src/hud/HUDApp.mm` 的 `_HUDEventCallback`（`USE_HID_EVENT_CALLBACK = 1`）。
+### 备用路：全局 HID 事件 → 自己喂给球视图（0.1.3~0.1.7 用过，现在只留作备份）
+
+代码位置：`src/hud/HUDApp.mm` 的 `_HUDEventCallback` / `_HUDMonitorRouteCallback`
+（`USE_HID_EVENT_CALLBACK = 1`）。
 
 1. `BKSHIDEventRegisterEventCallback(_HUDEventCallback)` 注册全局 HID 回调
    （`BackBoardServices` 已经在 Makefile 里链着）；
-   ⚠️ **这条路 0.1.7 起只当备用**：0.1.6 真机自检证明它在 15.6.1 上收不到任何事件，
-   新的主路是 `IOHIDEventSystemClient` 监视客户端（见本节末「0.1.7」）。
+   0.1.7 又加了一条 `IOHIDEventSystemClient` 监视客户端（`CreateWithType(1)` +
+   `SetMatching(13/4)` + `RegisterEventCallback` + `ScheduleWithRunLoop`）。
+   ⚠️ **两条在 0.1.6/0.1.7 真机自检里都是 `回调=0`**。
 2. 每个 HID 事件用 `AXEventRepresentation` 翻成「坐标 + 阶段 + 触点 id」；
 3. 判断「这一下是不是按在球上」：拿球视图的 `bounds` → `convertRect:toView:window`
    → 加上 `window.frame.origin` 得到**屏幕坐标**矩形，再往外放 6pt；
@@ -525,14 +545,21 @@ _CTServerConnectionResetModem(conn, CFSTR("UserTriggeredReload"))
 - 只有「按下」落在球上才接管；接管之后该触点的 move / up **全归我们**
   （手指划出球的范围也不能丢，否则拖动断在半路、还会留下半截触摸）。
 - 我们**只能看、不能吃掉**事件：点在球上时，球下面的 App **也会**收到这一下。
-  这是 HID 回调本身的限制。真要治，得走「往系统里发取消事件」那套（`IOHIDEventCreateDigitizerEvent`），
-  风险和第十节那两个动作同级，另开一轮做。
+  ⚠️ 0.1.8 的**真触摸路没这个问题**（球上的那一下我们自己吃掉），
+  这也是「真触摸 > 喂假触摸」的一条理由。
+- 0.1.8 起：只要真触摸通了一次（`落在球>0`），就**不再**喂假触摸
+  （`FBRealTouchWorks()`），否则一次点击走两遍。
 
-### 安全上的收获（顺手把一个风险去掉了）
+### 安全阀（0.1.8 换了地方，别丢）
 
-既然触摸不靠窗口，`HUDMainWindow._ignoresHitTest` 就改回 **`YES`**（和 Helium 一样）：
-窗口**绝不参与命中测试** → 从根上不可能吞掉屏幕触摸。
-窗口尺寸仍然只有球那么大，算第二层保险。这比 0.1.2 更安全。
+`_ignoresHitTest = NO` 就是说「窗口参与命中测试」，所以必须靠下面两层保证不吃掉别人的触摸：
+
+1. 窗口尺寸**只有球那么大**（`HUDMainApplicationDelegate`，`球尺寸 + 12pt`）；
+2. 根视图 `FBPassThroughView.pointInside:` —— 球（含 6pt 宽容区）以外一律返回 `NO`，
+   漏给下面的 App。
+
+代价：球边上那 6pt 宽容区会吃掉「落在球边但没点中球」的一下（设计如此：手指没那么准）。
+真出事了（屏幕点不动）→ **长按「电源 + 音量减」强制重启**；球不是守护进程，重启后不会自己回来。
 
 ### 排查触摸问题看这几行日志
 
@@ -568,6 +595,17 @@ _CTServerConnectionResetModem(conn, CFSTR("UserTriggeredReload"))
 | ⑤ | `接管=` `喂球=` | 接管了、喂给 `TSEventFetcher` 了 |
 | —— | `另一条路=` | 两条路都活着时，**非活跃**那条又送来的触摸（只计数，不喂，防同一根手指喂两遍） |
 | —— | `最后：` | 最后停在哪一段（带坐标） |
+
+**第二行（0.1.8 加，现在的主路）**：`真触摸：窗口问=N 落在球=N 真点击=N`
+
+| 计数 | 断了说明什么 |
+|---|---|
+| `窗口问=` | 系统问过窗口几次「这个点是不是你的」= **真有触摸问进这个进程**。⚠️ 这个数是 0，说明窗口那道闸（`_ignoresHitTest`）还是没开对 |
+| `落在球=` | 其中落在球（含 6pt 宽容区）上的次数 |
+| `真点击=` | 球自己的单击手势真的触发了多少次（>0 就是**这条路通了**） |
+
+读法：`真点击>0` = 通了；`窗口问=0` = 触摸没进来；`窗口问>0` 但 `落在球=0` = 球位置/坐标对不上；
+`落在球>0` 但 `真点击=0` = 手势没认出来（手势本身的问题）。
 
 同时启动时先写一份「全是 0」的，好区分「回调从来没被调过」和「球进程根本没起来」。
 另外**头 3 条**事件会原样进日志：`HID#n etype=… paths=… id=… down=… 点=(x,y)`

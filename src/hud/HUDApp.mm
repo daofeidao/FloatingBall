@@ -96,6 +96,15 @@ static int    sProbeFed       = 0;   // ⑤ 喂给球视图了
 static NSString *sProbeLast   = @"（还没收到过任何 HID 事件）";
 static NSTimeInterval sProbeLastWrite = 0;
 
+// ---- 真触摸那条路（0.1.8 新加：窗口重新参与命中测试之后）----
+// 这三个数是判断「路通没通」的关键，读法：
+//   窗口问=0            → 触摸根本没送进这个窗口（窗口那道闸还是没开对）
+//   窗口问>0 落在球=0    → 触摸进来了，但没落在球上（球的位置 / 坐标系对不上）
+//   落在球>0 真点击=0    → 触摸喂到球上了，手势却没认出来（手势本身的问题）
+static int sProbeHitAsk  = 0;   // 根视图被问到「这个点是不是你的」的次数
+static int sProbeHitBall = 0;   // 其中落在球（含 6pt 宽容区）上的
+static int sProbeRealTap = 0;   // 球自己的单击手势真的触发了
+
 /// 活跃的触摸来源：0 = 还没定，1 = 路A（BKS 回调），2 = 路B（监视客户端）
 static int gHIDActiveRoute = 0;
 
@@ -106,10 +115,12 @@ static void FBProbeWrite(BOOL force)
     sProbeLastWrite = now;
     NSString *text = [NSString stringWithFormat:
         @"回调=%d（路A=%d 路B=%d 匹配服务=%d） 无rep=%d 无路径=%d id<=0=%d "
-        @"不在球=%d 非本触点=%d 另一条路=%d 接管=%d 喂球=%d\n最后：%@\n",
+        @"不在球=%d 非本触点=%d 另一条路=%d 接管=%d 喂球=%d\n"
+        @"真触摸：窗口问=%d 落在球=%d 真点击=%d\n最后：%@\n",
         sProbeCallbacks, sProbeRouteA, sProbeRouteB, sProbeMatched,
         sProbeNoRep, sProbeNoPath, sProbeZeroID,
-        sProbeOffBall, sProbeNotOurs, sProbeOtherRoute, sProbeTakeover, sProbeFed, sProbeLast];
+        sProbeOffBall, sProbeNotOurs, sProbeOtherRoute, sProbeTakeover, sProbeFed,
+        sProbeHitAsk, sProbeHitBall, sProbeRealTap, sProbeLast];
     [text writeToFile:FB_PROBE_PATH atomically:YES encoding:NSUTF8StringEncoding error:NULL];
 }
 
@@ -117,6 +128,29 @@ static void FBProbeNote(NSString *reason)
 {
     sProbeLast = reason;
     FBProbeWrite(NO);
+}
+
+void FBProbeTouchHit(BOOL onBall)
+{
+    sProbeHitAsk++;
+    if (onBall) {
+        sProbeHitBall++;
+        if (sProbeHitBall == 1) FBLog(@"真触摸：窗口问到了，而且落在球上（这条路通了）");
+    }
+    FBProbeWrite(NO);
+}
+
+void FBProbeRealTapDidFire(void)
+{
+    sProbeRealTap++;
+    if (sProbeRealTap == 1) FBLog(@"真触摸：球自己的单击手势触发了");
+    FBProbeWrite(NO);
+}
+
+/// 真触摸这条路是不是已经通了？通了就别再喂合成触摸（否则一次点击走两遍）。
+BOOL FBRealTouchWorks(void)
+{
+    return sProbeHitBall > 0 || sProbeRealTap > 0;
 }
 
 /// 两条路（BKS 回调 / 监视客户端）**共用**的处理函数。
@@ -135,6 +169,11 @@ static void FBHandleHIDEvent(int route, void *target, void *refcon, IOHIDService
     // 放在最前面 —— 下面有好几条早退分支，不管走哪条都先把这条记下来。
     // ⚠️ 这里不会做任何加载（预热在启动时做过了），见 FBSystemActions.mm。
     FBHIDNoteRealEvent(event);
+
+    // 0.1.8：如果「真触摸」那条路（窗口参与命中测试）已经通了，
+    // 就**不再**喂合成触摸 —— 否则一次点击会被处理两遍（手势 + 假触摸），
+    // 表现就是「点一下算两下」。这两条路是二选一的备份关系。
+    if (FBRealTouchWorks()) return;
 
     // iOS 15.1+ 用 AXRuntime 那条路处理 HID 事件
     if (@available(iOS 15.1, *)) {}

@@ -4,6 +4,10 @@
 <dict>
 	<key>com.apple.AXMediaUtilitiesService-access</key>
 	<true/>
+	<key>com.apple.CommCenter.fine-grained</key>
+	<array>
+		<string>spi</string>
+	</array>
 	<key>com.apple.DragUI.accessibility</key>
 	<true/>
 	<key>com.apple.QuartzCore.displayable-context</key>

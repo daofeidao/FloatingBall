@@ -35,6 +35,19 @@ enum BallSettings {
         return (dict[key] as? String) ?? fallback
     }
 
+    /// 这个键到底存过没有。
+    /// ⚠️ 为什么需要它：`integer()` 对「没设过」和「设成 0」返回的都是 0，
+    ///    布尔型的键用 integer 读就分不清这两种情况。
+    static func hasKey(_ key: String) -> Bool {
+        let dict = UserDefaults().loadUserDefaults(forPath: path)
+        return dict[key] != nil
+    }
+
+    static func bool(_ key: String, `default` fallback: Bool) -> Bool {
+        guard hasKey(key) else { return fallback }
+        return UserDefaults().bool(forKey: key, forPath: path)
+    }
+
     // MARK: - 写
 
     static func set(_ value: Any?, _ key: String) {

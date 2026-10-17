@@ -13,6 +13,7 @@
 #import "BallRootViewController.h"
 #import "HUDHelper.h"
 #import "FBLog.h"
+#import "FBSystemActions.h"
 
 #import <notify.h>
 #import <objc/runtime.h>
@@ -62,7 +63,9 @@ static void LightHaptic(void)
     UILabel *_label;
     NSMutableDictionary *_prefs;
     CGPoint _grabOffset;      // 手指按下时，落在窗口内的位置
-    BOOL _showText;           // 长按切换：显示计数 / 只显示一个点
+    BOOL _showText;           // 是否显示球上的数字（存在 ShowLabel 键里）
+    BOOL _fallbackBall;       // 贴图丢了、退化成纯色球时，要给它留一圈描边
+    BOOL _moveMode;           // 「移动模式」：球高亮，拖一下就落位，点一下退出
 }
 
 #pragma mark - 设置（和 App 共享 /var/mobile/Library/Preferences 下同一个 plist）
@@ -138,7 +141,10 @@ static void LightHaptic(void)
 {
     [super viewDidLoad];
     [self loadPrefs];
-    _showText = YES;
+
+    // 数字显示不显示，存在共享设置里（App 那边的「显示/隐藏数字」动作也改这个键）
+    NSNumber *showLabel = _prefs[@"ShowLabel"];
+    _showText = showLabel ? [showLabel boolValue] : YES;
 
     self.view.backgroundColor = [UIColor clearColor];
 
@@ -215,78 +221,170 @@ static void LightHaptic(void)
 
 - (void)onSingleTap:(UITapGestureRecognizer *)g
 {
-    // v0.1 的验收点：能点中就说明触摸进来了。
-    // 计数 +1 是「点到了」的证据，同时顺手打开「设置」当动作示例。
+    // 计数 +1 是「点到了」的证据：球浮在别的 App 上面时，这是唯一看得见的回执。
+    // 真正干什么由设置里的「单击」绑定决定（默认 = 打开设置）。
     NSInteger count = [_prefs[@"TapCount"] integerValue] + 1;
     _prefs[@"TapCount"] = @(count);
     [self savePrefs];
     [self refreshLabel];
     LightHaptic();
 
-    BOOL opened = [self openApplication:@"com.apple.Preferences"];
-    FBLog(@"轻点：计数=%ld，打开设置=%@", (long)count, opened ? @"成功" : @"失败");
+    if (_moveMode) {
+        // 移动模式下轻点 = 退出移动模式，**不**执行绑定动作
+        // （否则想挪球、结果顺手打开了别的 App）
+        FBLog(@"轻点：退出移动模式");
+        [self setMoveMode:NO];
+        return;
+    }
+
+    NSString *target = [self gestureTarget:@"GestureTap"];
+    FBLog(@"轻点：计数=%ld 绑定=%@", (long)count, target);
+    [self performTargetKey:target];
+}
+
+#pragma mark - 绑定动作
+
+/// 读某个手势绑的是什么；没设过就用默认值（和 ShortcutStore.swift 的 gestureDefaults 一致）
+- (NSString *)gestureTarget:(NSString *)key
+{
+    NSString *value = _prefs[key];
+    if ([value isKindOfClass:[NSString class]] && value.length > 0) return value;
+
+    NSDictionary *defaults = @{ @"GestureTap":       @"app:com.apple.Preferences",
+                                @"GestureDoubleTap": @"action:none",
+                                @"GestureLongPress": @"action:moveBall" };
+    return defaults[key] ?: @"action:none";
+}
+
+/// 绑定只存两种写法："app:bundleID" / "action:动作名"
+- (void)performTargetKey:(NSString *)key
+{
+    if (key.length == 0) return;
+
+    if ([key hasPrefix:@"app:"]) {
+        NSString *bundleID = [key substringFromIndex:4];
+        BOOL ok = FBOpenApplication(bundleID);
+        FBLog(@"绑定动作=打开 App %@ -> %@", bundleID, ok ? @"成功" : @"失败");
+        return;
+    }
+
+    if ([key hasPrefix:@"action:"]) {
+        [self performAction:[key substringFromIndex:@"action:".length]];
+        return;
+    }
+
+    FBLog(@"⚠️ 认不出的绑定写法：%@", key);
+}
+
+- (void)performAction:(NSString *)action
+{
+    if ([action isEqualToString:@"none"]) {
+        return;
+    }
+
+    if ([action isEqualToString:@"refreshSignal"]) {
+        // ⚠️ 这个 API 没有结果：只是把请求交给 CommCenter。
+        //    成没成只能看状态栏信号格，日志里看不出成败。
+        BOOL sent = FBRefreshCellularSignal();
+        FBLog(@"绑定动作=刷新信号 -> %@", sent ? @"请求已发出（看信号格）" : @"发不出去");
+        return;
+    }
+
+    if ([action isEqualToString:@"openMainApp"] || [action isEqualToString:@"openAppList"]) {
+        [self requestAppTab:[action isEqualToString:@"openAppList"]];
+        return;
+    }
+
+    if ([action isEqualToString:@"moveBall"]) {
+        [self setMoveMode:!_moveMode];
+        return;
+    }
+
+    if ([action isEqualToString:@"toggleLabel"]) {
+        [self toggleLabel];
+        return;
+    }
+
+    FBLog(@"⚠️ 认不出的动作：%@", action);
+}
+
+/// 「打开悬浮球 App」和「打开快捷列表」共用：
+/// 先往共享设置里写一个「App 起来后落在哪一栏」，再把 App 拉起来。
+///
+/// 为什么不用 URL scheme：这样不用往 Info.plist 加东西，
+/// 而且 App **没在跑**时也生效（App 启动时会读这个键，读完就清掉）。
+/// App 正在后台跑时，它回到前台会再读一次 —— 两条路都覆盖到了。
+- (void)requestAppTab:(BOOL)showAppList
+{
+    _prefs[@"PendingTab"] = showAppList ? @"apps" : @"launch";
+    [self savePrefs];
+
+    BOOL ok = FBOpenApplication(OWN_BUNDLE_ID);
+    FBLog(@"绑定动作=打开悬浮球（落点=%@）-> %@",
+          showAppList ? @"快捷列表" : @"启动页", ok ? @"成功" : @"失败");
+}
+
+- (void)toggleLabel
+{
+    _showText = !_showText;
+    _prefs[@"ShowLabel"] = @(_showText);
+    [self savePrefs];
+    [self refreshLabel];
+    FBLog(@"绑定动作=显示数字 -> %@", _showText ? @"开" : @"关");
+}
+
+/// 移动模式：球高亮一圈，拖一下就落位，点一下退出。
+/// （拖动本来就一直能用，这个模式是给「怕误触」的人用的：
+///   进入后轻点不会触发绑定动作，只会退出。）
+- (void)setMoveMode:(BOOL)on
+{
+    if (_moveMode == on) return;
+    _moveMode = on;
+    LightHaptic();
+
+    if (on) {
+        _ball.layer.borderWidth = 3.0;
+        _ball.layer.borderColor = [UIColor colorWithRed:0.0 green:0.48 blue:1.0 alpha:0.95].CGColor;
+        FBLog(@"进入移动模式（拖球落位；点一下 = 退出）");
+    } else {
+        // 还原成「该有的样子」：正常贴图没有描边，退化成纯色球时才留一圈
+        _ball.layer.borderWidth = _fallbackBall ? 1.0 : 0.0;
+        _ball.layer.borderColor = _fallbackBall
+            ? [UIColor colorWithWhite:1.0 alpha:0.35].CGColor
+            : nil;
+        FBLog(@"退出移动模式");
+    }
+    [self refreshLabel];
 }
 
 #pragma mark - 打开别的 App
 
 - (BOOL)openApplication:(NSString *)bundleID
 {
-    // ⚠️ 这里**故意**不写 [LSApplicationWorkspace defaultWorkspace]。
-    //    直接写类名会让链接期要求解析私有 framework 的类符号；
-    //    用 objc_getClass 拿到的只是一个字符串查找，永远不会链接失败。
-    //    （Helium 访问这个类也是这么写的，照抄它。）
-    Class wsClass = objc_getClass("LSApplicationWorkspace");
-    if (wsClass) {
-        id ws = [(id)wsClass performSelector:@selector(defaultWorkspace)];
-        SEL openSel = NSSelectorFromString(@"openApplicationWithBundleID:");
-        if (ws && [ws respondsToSelector:openSel]) {
-            // ⚠️ 这里必须用 objc_msgSend + 显式函数指针，不能写 performSelector：
-            //    performSelector 的返回类型是 id，ARC 会把 BOOL 的 0x1 当对象去 retain → 崩。
-            BOOL (*openApp)(id, SEL, NSString *) = (BOOL (*)(id, SEL, NSString *))objc_msgSend;
-            if (openApp(ws, openSel, bundleID)) return YES;
-        }
-    }
-
-    // 兜底：SpringBoardServices 的 C 接口（TheBall 用的就是这条路）。
-    // ⚠️ 用 dlsym 在运行时查，**不要**直接调用 ——
-    //    直接调用会让链接期去 SDK 的私有 stub 里找符号，
-    //    找不到就是 undefined symbol 编译失败；dlsym 找不到只是返回 NULL。
-    typedef int (*SBSLaunchFn)(NSString *, NSDictionary *, NSDictionary *, BOOL);
-    static SBSLaunchFn launchFn = NULL;
-    static dispatch_once_t launchOnce;
-    dispatch_once(&launchOnce, ^{
-        launchFn = (SBSLaunchFn)dlsym(RTLD_DEFAULT, "SBSLaunchApplicationWithIdentifierAndLaunchOptions");
-    });
-
-    if (launchFn) {
-        int rc = launchFn(bundleID, @{}, @{}, NO);
-        if (rc != 0) {
-            os_log_error(OS_LOG_DEFAULT, "打开 %{public}@ 失败，rc=%d", bundleID, rc);
-        }
-        return rc == 0;
-    }
-
-    os_log_error(OS_LOG_DEFAULT, "两条路都走不通，打不开 %{public}@", bundleID);
-    return NO;
+    // 实现搬到 FBSystemActions.mm 了：App 侧（快捷列表里点一行）也要用同一份。
+    // 那边是 dlsym + objc_getClass 的写法，不链接任何私有符号。
+    return FBOpenApplication(bundleID);
 }
 
 - (void)onDoubleTap:(UITapGestureRecognizer *)g
 {
-    // v0.1：双击先把计数清零（v0.2 起改成「用户自己绑定的动作」）
-    FBLog(@"双击");
-    _prefs[@"TapCount"] = @0;
-    [self savePrefs];
-    [self refreshLabel];
+    if (_moveMode) { [self setMoveMode:NO]; return; }
+
+    NSString *target = [self gestureTarget:@"GestureDoubleTap"];
+    FBLog(@"双击：绑定=%@", target);
     LightHaptic();
+    [self performTargetKey:target];
 }
 
 - (void)onLongPress:(UILongPressGestureRecognizer *)g
 {
     if (g.state != UIGestureRecognizerStateBegan) return;
-    FBLog(@"长按");
-    _showText = !_showText;
-    [self refreshLabel];
+    if (_moveMode) { [self setMoveMode:NO]; return; }
+
+    NSString *target = [self gestureTarget:@"GestureLongPress"];
+    FBLog(@"长按：绑定=%@", target);
     LightHaptic();
+    [self performTargetKey:target];
 }
 
 - (void)onPan:(UIPanGestureRecognizer *)g
@@ -310,6 +408,8 @@ static void LightHaptic(void)
         // 只在收尾时记一行：拖动过程中每个事件都记会把日志刷爆
         FBLog(@"拖动结束，落点 frame=%@", NSStringFromCGRect(window.frame));
         [self snapToEdge];
+        // 移动模式：拖完就自动退出，不用再点一下
+        if (_moveMode) [self setMoveMode:NO];
     }
 }
 
@@ -360,6 +460,7 @@ static void LightHaptic(void)
         _ball.image = image;
         _ball.backgroundColor = [UIColor clearColor];
         _ball.layer.borderWidth = 0.0;
+        _fallbackBall = NO;
         FBLog(@"球贴图=%@（%.0fx%.0f）", source, image.size.width, image.size.height);
     } else {
         // 两条路都拿不到图也得有个球，否则「球没出来」和「贴图丢了」分不清
@@ -367,7 +468,14 @@ static void LightHaptic(void)
         _ball.backgroundColor = [UIColor colorWithWhite:0.0 alpha:0.55];
         _ball.layer.borderWidth = 1.0;
         _ball.layer.borderColor = [UIColor colorWithWhite:1.0 alpha:0.35].CGColor;
+        _fallbackBall = YES;
         FBLog(@"⚠️ 没有任何贴图（%@ 和包里的默认图都不在），退化成纯色球", BALL_IMAGE_PATH);
+    }
+
+    // 移动模式的高亮圈不能被「重设样式」抹掉
+    if (_moveMode) {
+        _ball.layer.borderWidth = 3.0;
+        _ball.layer.borderColor = [UIColor colorWithRed:0.0 green:0.48 blue:1.0 alpha:0.95].CGColor;
     }
 
     // 不透明度：夹在 0.3~1.0，手改 plist 也不至于把球调成看不见
@@ -389,7 +497,8 @@ static void LightHaptic(void)
 
 - (void)refreshLabel
 {
-    _label.hidden = !_showText;
+    // 移动模式下先不显示数字：让用户知道「现在拖得动」
+    _label.hidden = !_showText || _moveMode;
     _label.text = [NSString stringWithFormat:@"%ld", (long)[_prefs[@"TapCount"] integerValue]];
 }
 
@@ -432,6 +541,11 @@ static void LightHaptic(void)
         f.origin = CGPointMake(center.x - f.size.width / 2.0, center.y - f.size.height / 2.0);
         window.frame = f;
     }
+
+    // 数字显不显示也可能被改了（App 那边的「显示/隐藏数字」动作）
+    NSNumber *showLabel = _prefs[@"ShowLabel"];
+    if (showLabel) _showText = [showLabel boolValue];
+
     [self refreshLabel];
 }
 

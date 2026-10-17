@@ -24,6 +24,10 @@ struct LaunchTab: View {
     @State private var customImage: UIImage?
     @State private var showPicker = false
 
+    // 手势绑定
+    @State private var gestures: [String: String] = [:]
+    @State private var shortcutItems: [ShortcutItem] = []
+
     var body: some View {
         NavigationView {
             Form {
@@ -140,6 +144,18 @@ struct LaunchTab: View {
                     }
                 }
 
+                Section(header: Text("手势"),
+                        footer: Text("每条手势可以绑「内置动作」，也可以绑「快捷应用」里加过的任意一项。球上一直记着轻点次数，那是用来确认「点到了」的回执。")) {
+                    ForEach(ShortcutStore.gestureKeys) { entry in
+                        gestureRow(title: entry.title, key: entry.id)
+                    }
+                    HStack {
+                        Text("拖动")
+                        Spacer()
+                        Text("移动球，松手吸边").foregroundColor(.secondary)
+                    }
+                }
+
                 Section(header: Text("排障")) {
                     VStack(alignment: .leading, spacing: 4) {
                         Text("日志文件").font(.footnote)
@@ -151,7 +167,7 @@ struct LaunchTab: View {
                     }
                 }
 
-                Section(footer: Text("v0.1 是验证版，只验证一件事：悬浮球能不能浮在别的 App 上面，并且点得到、拖得动。轻点一次会打开「设置」并让计数 +1。")) {
+                Section(footer: Text("0.1.1：球浮在任何界面之上；轻点 / 双击 / 长按各自绑一个动作（见上面「手势」一栏），拖动一直是移动球。")) {
                     EmptyView()
                 }
             }
@@ -267,10 +283,38 @@ struct LaunchTab: View {
         .buttonStyle(.plain)
     }
 
+    /// 一条手势的绑定行：点开是个菜单，里面是「内置动作 + 快捷列表里的 App」
+    private func gestureRow(title: String, key: String) -> some View {
+        let binding = Binding<String>(
+            get: { gestures[key] ?? ShortcutStore.gestureTarget(key) },
+            set: { newValue in
+                gestures[key] = newValue
+                ShortcutStore.setGestureTarget(key, newValue)
+            }
+        )
+
+        // ⚠️ 这里只列「App」类的快捷项：内置动作上面已经单列了，
+        //    而 ShortcutItem 的 key 和各动作的 tag 是同一个字符串，
+        //    同一份菜单里出现两个一样的 tag，Picker 会分不清选中的是哪一个。
+        let appItems = shortcutItems.filter { $0.kind == .app }
+
+        return Picker(selection: binding) {
+            Text("未设置").tag("")
+            ForEach(ShortcutAction.allCases) { action in
+                Text(action.title).tag("action:\(action.rawValue)")
+            }
+            ForEach(appItems) { item in
+                Text(item.title).tag(item.key)
+            }
+        } label: {
+            Text(title)
+        }
+        .pickerStyle(.menu)
+    }
+
     // MARK: - 读写设置
 
-    private func refresh() {
-        enabled = IsHUDEnabledBridger()
+    private func refresh() {        enabled = IsHUDEnabledBridger()
         status = enabled ? "运行中" : "未运行"
         tapCount = BallSettings.integer("TapCount", default: 0)
 
@@ -279,6 +323,11 @@ struct LaunchTab: View {
         size = BallSettings.double("BallSize", default: 56)
         opacity = min(1.0, max(0.3, BallSettings.double("BallOpacity", default: 1.0)))
         customImage = BallRenderer.loadCustomImage()
+
+        shortcutItems = ShortcutStore.load()
+        for entry in ShortcutStore.gestureKeys {
+            gestures[entry.id] = ShortcutStore.gestureTarget(entry.id)
+        }
     }
 
     private func setEnabled(_ want: Bool) {

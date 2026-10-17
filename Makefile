@@ -34,7 +34,7 @@ $(APPLICATION_NAME)_CFLAGS += -fobjc-arc
 $(APPLICATION_NAME)_CFLAGS += -include hud-prefix.pch -Wno-deprecated-declarations
 $(APPLICATION_NAME)_SWIFTFLAGS += -import-objc-header src/bridging/FloatingBall-Bridging-Header.h
 
-$(APPLICATION_NAME)_FRAMEWORKS += CoreGraphics QuartzCore UIKit Foundation PhotosUI
+$(APPLICATION_NAME)_FRAMEWORKS += CoreGraphics QuartzCore UIKit Foundation PhotosUI CoreTelephony
 $(APPLICATION_NAME)_PRIVATE_FRAMEWORKS += BackBoardServices GraphicsServices IOKit SpringBoardServices
 
 ifeq ($(TARGET_CODESIGN),ldid)

@@ -202,6 +202,9 @@ static IOHIDEventSystemClientRef fbHIDClient = NULL;
 /// 真机那一路的 sender ID（学到才敢注入；见 FBHIDNoteRealEvent）
 static uint64_t gFBRealSenderID = 0;
 
+/// HID 这一套符号有没有准备好（由 FBPrepareHID 置位；回调里只看这个，不做加载）
+static BOOL gFBHIDReady = NO;
+
 /// 冷却：这个时刻之前不再注入（防手抖连点 / 两个手势撞一起）
 static NSTimeInterval gFBInjectCooldownUntil = 0;
 
@@ -258,10 +261,27 @@ static BOOL FBLoadHID(void)
     return loaded;
 }
 
+void FBPrepareHID(void)
+{
+    if (gFBHIDReady) return;
+    gFBHIDReady = FBLoadHID();
+    FBLog(@"HID 预热：%@（学 sender ID、注入触摸都要它，必须在 HID 回调之外做）",
+          gFBHIDReady ? @"好" : @"失败 —— 注入那条路不可用");
+}
+
+int FBHIDEventTypeOf(void *hidEvent)
+{
+    if (!gFBHIDReady || hidEvent == NULL || !fbGetEventType) return 0;
+    return (int)fbGetEventType((IOHIDEventRef)hidEvent);
+}
+
 void FBHIDNoteRealEvent(void *hidEvent)
 {
-    if (hidEvent == NULL || gFBRealSenderID != 0) return;
-    if (!FBLoadHID()) return;
+    // ⚠️ 这里**绝对不能**做 dlopen（不要再调 FBLoadHID）：
+    //    本函数是从 HID 回调里调的，那是 backboardd 的事件线程，
+    //    在那儿做加载有可能把回调卡住 —— 表现就是「点球直接穿透、球再也不响应」。
+    //    预热放在 FBPrepareHID()（HUD 启动时调一次）。
+    if (!gFBHIDReady || hidEvent == NULL || gFBRealSenderID != 0) return;
     if (!fbGetEventType || !fbGetSenderID) return;
     if (fbGetEventType((IOHIDEventRef)hidEvent) != FBHIDEventTypeDigitizer) return;
 
@@ -344,7 +364,9 @@ static double FBPickSwipeY(CGRect ballRect, double screenHeight)
 
 BOOL FBGoBack(CGRect ballRectOnScreen)
 {
-    if (!FBLoadHID()) {
+    // 这里在 HUD 主线程上（球的手势回调 → dispatch 到主队列），做加载是安全的。
+    FBPrepareHID();
+    if (!gFBHIDReady) {
         FBLog(@"全局返回：HID 注入这条路不通（符号取不到），什么都没做");
         return NO;
     }

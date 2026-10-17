@@ -48,7 +48,18 @@ BOOL FBGoBack(CGRect ballRectOnScreen);
 /// 注入触摸时必须用**真机那一路**的 sender ID（配方来源里的工具为这个专门先监听一次真触摸，
 /// 取不到就拒绝注入）。HUD 的 `_HUDEventCallback` 每条事件调一次就够，内部自己判断类型。
 /// ⚠️ 参数写成 void * 是为了让 Swift 桥接头不用认识 IOHIDEventRef。
+/// ⚠️ **这个函数里不做任何加载**（不 dlopen）：它跑在 backboardd 的事件线程上，
+///    在那儿做加载有把 HID 回调卡死的风险（2026-10-17 的教训）。预热走 `FBPrepareHID()`。
 void FBHIDNoteRealEvent(void *hidEvent);
+
+/// 预热 HID 这一套（dlopen + dlsym + 建 client）。
+/// ⚠️ **HUD 启动时先调一次**，别等到回调里才加载（见上一条的说明）。
+/// 注入（全局返回）在动手前也会再调一次（那时在 HUD 主线程上，安全）。
+void FBPrepareHID(void);
+
+/// 这条 HID 事件的类型号（触摸 = `kIOHIDEventTypeDigitizer` = 11；0 = 拿不到）。
+/// 给 HUD 的「触摸自检」用：能把「压根没收到触摸事件」和「收到了但没认出来」分开。
+int FBHIDEventTypeOf(void *hidEvent);
 
 #ifdef __cplusplus
 }

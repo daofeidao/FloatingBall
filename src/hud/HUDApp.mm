@@ -61,16 +61,60 @@ void FBHUDSetBallView(UIView *ballView)
           ballView.window ? @"有" : @"无");
 }
 
+// ============================================================================
+// 触摸自检（2026-10-17 加：用户报「点球直接穿透、球没反应」）
+//
+// 这条链子是**一路静默**的，断在哪一段表现都一模一样（球不动）：
+//   ① 回调被调了吗 → ② AXEventRepresentation 转出来了吗 → ③ 有没有手指路径 / 身份号
+//   → ④ 这一下落在球的矩形里吗 → ⑤ 接管 + 喂给球视图了吗
+//
+// 所以这里把每段的计数和「最后停在哪」写一份到 /tmp/FloatingBall.probe，
+// App 的「关于」页会把它读出来显示 —— 用户在手机上不开终端也能把这一行念给我。
+// ⚠️ 只写这一个文件（限速 1 秒 1 次），**绝不碰设置那份 plist**，免得把用户的设置写坏。
+// ============================================================================
+#define FB_PROBE_PATH   @"/tmp/FloatingBall.probe"
+
+static int    sProbeCallbacks = 0;   // ① 回调进来了几次
+static int    sProbeNoRep     = 0;   // ② rep 转不出来
+static int    sProbeNoPath    = 0;   // ③ 没有手指路径（按键 / 父事件都走这里）
+static int    sProbeZeroID    = 0;   // ③ pathIdentity<=0（当 1 用了）
+static int    sProbeNotOurs   = 0;   // ④ 不是我们接管的那个触点
+static int    sProbeOffBall   = 0;   // ④ 按下不在球上
+static int    sProbeTakeover  = 0;   // ⑤ 接管了
+static int    sProbeFed       = 0;   // ⑤ 喂给球视图了
+static NSString *sProbeLast   = @"（还没收到过任何 HID 事件）";
+static NSTimeInterval sProbeLastWrite = 0;
+
+static void FBProbeWrite(BOOL force)
+{
+    NSTimeInterval now = [NSDate timeIntervalSinceReferenceDate];
+    if (!force && now - sProbeLastWrite < 1.0) return;
+    sProbeLastWrite = now;
+    NSString *text = [NSString stringWithFormat:
+        @"回调=%d 无rep=%d 无路径=%d id<=0=%d 不在球=%d 非本触点=%d 接管=%d 喂球=%d\n最后：%@\n",
+        sProbeCallbacks, sProbeNoRep, sProbeNoPath, sProbeZeroID,
+        sProbeOffBall, sProbeNotOurs, sProbeTakeover, sProbeFed, sProbeLast];
+    [text writeToFile:FB_PROBE_PATH atomically:YES encoding:NSUTF8StringEncoding error:NULL];
+}
+
+static void FBProbeNote(NSString *reason)
+{
+    sProbeLast = reason;
+    FBProbeWrite(NO);
+}
+
 static __used
 void _HUDEventCallback(void *target, void *refcon, IOHIDServiceRef service, IOHIDEventRef event)
 {
     static UIApplication *app = [UIApplication sharedApplication];
+    sProbeCallbacks++;
 #if DEBUG
     os_log_debug(OS_LOG_DEFAULT, "_HUDEventCallback => %{public}@", event);
 #endif
 
     // 顺手把真机的 sender ID 学下来：注入触摸（全局返回）必须用它。
     // 放在最前面 —— 下面有好几条早退分支，不管走哪条都先把这条记下来。
+    // ⚠️ 这里不会做任何加载（预热在启动时做过了），见 FBSystemActions.mm。
     FBHIDNoteRealEvent(event);
 
     // iOS 15.1+ 用 AXRuntime 那条路处理 HID 事件
@@ -103,14 +147,40 @@ void _HUDEventCallback(void *target, void *refcon, IOHIDServiceRef service, IOHI
 
     AXEventRepresentation *rep = [AXEventRepresentationCls representationWithHIDEvent:event
                                                                     hidStreamIdentifier:@"UIApplicationEvents"];
-    if (!rep) return;
+    if (!rep) {
+        sProbeNoRep++;
+        FBProbeNote([NSString stringWithFormat:@"② AXEventRepresentation 转不出来（etype=%d）",
+                     FBHIDEventTypeOf(event)]);
+        return;
+    }
 
-    NSInteger pointerId = [[[[rep handInfo] paths] firstObject] pathIdentity];
-    if (pointerId <= 0) return;
+    NSArray *paths = [[rep handInfo] paths];
+    if (paths.count == 0) {
+        // 非触摸事件（按键、手势门……）和「只有父事件、没有手指」的情况都走这里
+        sProbeNoPath++;
+        FBProbeNote([NSString stringWithFormat:@"③ 没有手指路径（etype=%d）", FBHIDEventTypeOf(event)]);
+        return;
+    }
+
+    NSInteger pointerId = [[paths firstObject] pathIdentity];
+    if (pointerId <= 0) {
+        // ⚠️ 以前这里直接 return：万一这台机器上真手指的 pathIdentity 就是 0，
+        //    所有触摸都会被丢掉 —— 表现正好是「点球直接穿透、球没反应」。
+        //    现在改成「当 1 用」并记一笔，宁可多喂一次也不整条路哑掉。
+        sProbeZeroID++;
+        pointerId = 1;
+    }
     pointerId = MIN(MAX(pointerId, 1), 98);   // TSEventFetcher 一共 100 个槽位
 
     BOOL isDown = [rep isTouchDown];
     CGPoint onScreen = [rep location];        // 全局（屏幕）坐标
+
+    // 头 3 条事件原样记一笔：能看出「到底有没有触摸事件进来、长什么样」
+    if (sProbeCallbacks <= 3) {
+        FBLog(@"HID#%d etype=%d paths=%lu id=%ld down=%d move=%d lift=%d 点=(%.0f,%.0f)",
+              sProbeCallbacks, FBHIDEventTypeOf(event), (unsigned long)paths.count, (long)pointerId,
+              (int)isDown, (int)[rep isMove], (int)[rep isLift], onScreen.x, onScreen.y);
+    }
 
     UITouchPhase phase = UITouchPhaseEnded;
     if (isDown)                  phase = UITouchPhaseBegan;
@@ -121,7 +191,10 @@ void _HUDEventCallback(void *target, void *refcon, IOHIDServiceRef service, IOHI
     dispatch_async(dispatch_get_main_queue(), ^(void) {
         UIView *ball = gFBBallView;
         UIWindow *window = ball.window;
-        if (!ball || !window) return;
+        if (!ball || !window) {
+            FBProbeNote(@"⑤ 球视图还没就绪（ball / window 是空的）");
+            return;
+        }
 
         // 球在屏幕上的矩形（含 6pt 宽容区）。
         // ⚠️ 这里刻意**不用 hitTest**：窗口的 _ignoresHitTest 是 YES（为了绝不吃掉系统触摸），
@@ -131,12 +204,28 @@ void _HUDEventCallback(void *target, void *refcon, IOHIDServiceRef service, IOHI
         BOOL onBall = CGRectContainsPoint(CGRectInset(onScreenRect, -6.0, -6.0), onScreen);
 
         if (isDown) {
-            if (!onBall) return;     // 按在别处：不插手，完全留给下面的 App
+            if (!onBall) {
+                // 按在别处：不插手，完全留给下面的 App（这是设计如此，不是 bug）
+                sProbeOffBall++;
+                FBProbeNote([NSString stringWithFormat:@"④ 按在球外（点=(%.0f,%.0f) 球=%@）",
+                             onScreen.x, onScreen.y, NSStringFromCGRect(onScreenRect)]);
+                return;
+            }
+            sProbeTakeover++;
+            FBProbeNote([NSString stringWithFormat:@"⑤ 接管了（id=%ld 点=(%.0f,%.0f) 球=%@）",
+                         (long)pointerId, onScreen.x, onScreen.y, NSStringFromCGRect(onScreenRect)]);
             gFBActivePointer = pointerId;
             FBLog(@"触摸：按下落在球上（屏幕 %.0f,%.0f）→ 接管触点 %ld",
                   onScreen.x, onScreen.y, (long)pointerId);
         } else if (gFBActivePointer != pointerId) {
-            return;                  // 不是我们接管的触点，别插手
+            // 不是我们接管的触点，别插手。
+            // ⚠️ 如果「按下」那条从来没进到上面那个分支（比如 isTouchDown 一直是 0），
+            //    就会一直掉到这里 —— 所以也记一笔，别让它静默。
+            sProbeNotOurs++;
+            FBProbeNote([NSString stringWithFormat:@"④ 不是本触点（id=%ld down=%d move=%d lift=%d 点=(%.0f,%.0f)）",
+                         (long)pointerId, (int)isDown, (int)[rep isMove], (int)[rep isLift],
+                         onScreen.x, onScreen.y]);
+            return;
         }
 
         CGPoint inWindow = CGPointMake(onScreen.x - window.frame.origin.x,
@@ -150,6 +239,8 @@ void _HUDEventCallback(void *target, void *refcon, IOHIDServiceRef service, IOHI
                           withTouchPhase:phase
                                 inWindow:window
                                   onView:ball];
+        sProbeFed++;
+        FBProbeWrite(NO);
 
         if (phase == UITouchPhaseEnded || phase == UITouchPhaseCancelled) {
             if (gFBActivePointer == pointerId) {
@@ -210,7 +301,13 @@ int main(int argc, char *argv[])
             [NSRunLoop currentRunLoop];
 
 #if USE_HID_EVENT_CALLBACK
+            // ⚠️ 顺序要紧：**先把 HID 那套符号加载好，再注册回调**。
+            //    dlopen 绝不能出现在回调里 —— 那是 backboardd 的事件线程，
+            //    在那儿做加载有把回调卡死的风险（0.1.5 的教训：球直接穿透、不响应）。
+            FBPrepareHID();
             BKSHIDEventRegisterEventCallback(_HUDEventCallback);
+            FBProbeWrite(YES);   // 先落一份「全是 0」的，好区分「回调没来过」和「球进程没起来」
+            FBLog(@"触摸自检文件：%@（App 的「关于」页会读它）", FB_PROBE_PATH);
 #endif
 
             if (@available(iOS 15.0, *)) {

@@ -2,9 +2,24 @@ import SwiftUI
 
 struct AboutTab: View {
 
+    /// 只是用来戳一下刷新（值变了 body 就重算）
+    @State private var probeTick = 0
+
     private var version: String {
         let v = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String
         return v ?? "?"
+    }
+
+    /// 触摸自检：悬浮球进程（root 那个）把「HID 回调这条链子走到哪一步」写在 /tmp 里，
+    /// App 直接读出来显示 —— 这样点球没反应时，不用开终端也能把这一行念出来。
+    private var probeText: String {
+        _ = probeTick
+        let path = "/tmp/FloatingBall.probe"
+        guard let text = try? String(contentsOfFile: path, encoding: .utf8),
+              !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            return "（读不到 /tmp/FloatingBall.probe）\n球进程可能没起来 —— 回「启动」页把开关关一下再打开。"
+        }
+        return text.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     var body: some View {
@@ -21,6 +36,15 @@ struct AboutTab: View {
                         Spacer()
                         Text("com.daofeidao.floatingball").foregroundColor(.secondary)
                     }
+                }
+
+                Section(header: Text("触摸自检（点球没反应时看这里）"),
+                        footer: Text("这行字是悬浮球进程写的。链子顺序：① 回调（有没有收到 HID 事件）"
+                                     + "→ ② AX 转换 → ③ 手指路径 / 身份号 → ④ 在不在球上 → ⑤ 接管并喂给球。"
+                                     + "哪一段不涨，断点就在哪。")) {
+                    Text(probeText)
+                        .font(.system(.caption, design: .monospaced))
+                    Button("刷新") { probeTick += 1 }
                 }
 
                 Section(header: Text("这个 App 怎么工作")) {

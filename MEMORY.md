@@ -485,6 +485,27 @@ _CTServerConnectionResetModem(conn, CFSTR("UserTriggeredReload"))
 | 0.1.7 | 2026-10-17 | `E:\下载\FloatingBall_0.1.7.tipa` | 326,684 | `4d8303bf` |
 | 0.1.8 | 2026-10-17 | `E:\下载\FloatingBall_0.1.8.tipa` | 327,798 | `44de69f7` |
 | 0.1.9 | 2026-10-17 | `E:\下载\FloatingBall_0.1.9.tipa` | 342,536 | `c74e9165` |
+| 0.1.10 | 2026-10-17 | `E:\下载\FloatingBall_0.1.10.tipa` | 373,892 | `c056d248` |
+
+- 0.1.10：tag `v0.1.10` → CI run `39041870769` **success** → 交付邮件 **22:47 发出**
+  （带抄送 `lion.2026.10@proton.me`；附件已在 126 收件箱核验：
+  `FloatingBall_0.1.10.tipa` 365.1 KB = 373,892 字节，整封 509.9 KB；
+  sha256 `c056d248018bf3065facb9429afa53baa9633e59a02f0eb275ce6cde9aaee1a1`，
+  包内 0.1.10 / build 11，二进制 **1,033,936 B** —— 比 0.1.9 大 71,376 B）。
+  内容是**快捷菜单去「编辑」+ 常驻拖动排序 + 添加页新增「系统快捷指令 / URL 协议」**
+  （见 §七 那两节、§十 打开 URL 那节）。正文落盘 `ref/mail_0.1.10_body.txt`；
+  本地提交 `d4f185f`（代码 + 文档一起提的），远端 main 推到
+  `d03a9e6c5c3f156c37af276ba524d66939798a84`。
+  核对脚本 **`ref/verify_0.1.10.py`**：14 项全绿（三条 URL、`shortcuts://run-shortcut?name=`、
+  「系统快捷指令」「URL 协议」、`qrcode.viewfinder`、`line.3.horizontal`、
+  `openURL:withOptions:error:`、`openSensitiveURL:withOptions:`、`绑定动作=打开 URL`…）。
+
+  ⚠️ **新坑：≤15 字节的 Swift 字面量在二进制里搜不到**（2026-10-17 实测）：
+  短字符串走**小字符串优化**，字节被 `movz/movk` 拼进指令立即数（每 2 字节一条指令），
+  在文件里**不成块** —— `creditcard`(10) / `sparkles`(8) / `public.text`(11) 搜 utf8、utf16、
+  连「前 8 字节」都是 0 命中；而 `qrcode.viewfinder`(17) / `line.3.horizontal`(17) 一找一个准。
+  **结论：核对脚本只挑够长的串，短串别当成「改动没进包」。**
+  （ObjC 的 `@"中文"` 是 UTF-16-LE、Swift 中文是 UTF-8 那条老规矩不变。）
 
 - 0.1.9：tag `v0.1.9` → CI run `39039879844` **success** → 交付邮件 **22:24 发出**
   （**首次按新规矩抄送 `lion.2026.10@proton.me`**；附件已在 126 收件箱核验：

@@ -210,6 +210,12 @@ struct AddShortcutView: View {
 
     private var usedKeys: Set<String> { Set(existing.map { $0.key }) }
 
+    /// 搜索框里有字 → 只显示「已安装的 App」这一块（内置动作库/添加两块先收起来）。
+    /// 用户搜的是 App 名字，把动作库顶在前面纯属挡路（2026-10-18 反馈）。
+    private var isSearching: Bool {
+        !query.trimmingCharacters(in: .whitespaces).isEmpty
+    }
+
     var body: some View {
         NavigationView {
             // ⚠️ 0.1.13（用户 2026-10-18 要求）：搜索框不再用 `.searchable`
@@ -237,23 +243,28 @@ struct AddShortcutView: View {
                 .padding(.vertical, 8)
                 Divider()
                 List {
-                Section(header: Text("内置动作库")) {
-                    ForEach(ShortcutAction.allCases.filter { $0 != .none }) { action in
-                        optionRow(ShortcutItem.make(action: action),
-                                  detail: action.detail,
-                                  symbol: action.symbol)
+                // ⚠️ 0.1.15（用户 2026-10-18 反馈）：一开始搜索，结果最前面却是「内置动作库」，
+                //    而用户搜的是 **App 名字**。所以只要搜索框里有字，就把上面两块先收起来，
+                //    让「已安装的 App」直接顶到第一条 —— 搜什么就只看什么。
+                if !isSearching {
+                    Section(header: Text("内置动作库")) {
+                        ForEach(ShortcutAction.allCases.filter { $0 != .none }) { action in
+                            optionRow(ShortcutItem.make(action: action),
+                                      detail: action.detail,
+                                      symbol: action.symbol)
+                        }
                     }
-                }
 
-                // ---- 新增的一栏（2026-10-17 用户要求）----
-                // 位置就在「内置动作库」和「已安装的 App」之间；
-                // 两块内容**都在这一页里**：不做二级页面、不做折叠页。
-                Section(header: Text("添加"),
-                        footer: Text("系统快捷指令 = 「快捷指令」App 里那条指令，名字要写一样（中文、空格都算）。\n"
-                                     + "URL 协议 = 别的 App 留的口子：下面三条是内置的，也可以自己填一条。\n"
-                                     + "⚠️ 只能知道「系统收下了这个请求」；名字写错时是「快捷指令」App 自己提示找不到。")) {
-                    systemShortcutRows
-                    urlRows
+                    // ---- 新增的一栏（2026-10-17 用户要求）----
+                    // 位置就在「内置动作库」和「已安装的 App」之间；
+                    // 两块内容**都在这一页里**：不做二级页面、不做折叠页。
+                    Section(header: Text("添加"),
+                            footer: Text("系统快捷指令 = 「快捷指令」App 里那条指令，名字要写一样（中文、空格都算）。\n"
+                                         + "URL 协议 = 别的 App 留的口子：下面三条是内置的，也可以自己填一条。\n"
+                                         + "⚠️ 只能知道「系统收下了这个请求」；名字写错时是「快捷指令」App 自己提示找不到。")) {
+                        systemShortcutRows
+                        urlRows
+                    }
                 }
 
                 Section(header: Text("已安装的 App（\(apps.count)）")) {

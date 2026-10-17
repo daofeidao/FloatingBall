@@ -358,6 +358,22 @@ _CTServerConnectionResetModem(conn, CFSTR("UserTriggeredReload"))
 | 0.1.2 | 2026-10-17 | `E:\下载\FloatingBall_0.1.2.tipa` | 293,376 | `73ad077f` |
 | 0.1.3 | 2026-10-17 | `E:\下载\FloatingBall_0.1.3.tipa` | 299,643 | `f0e1e092` |
 | 0.1.4 | 2026-10-17 | `E:\下载\FloatingBall_0.1.4.tipa` | 303,232 | `056a29c9` |
+| 0.1.5 | 2026-10-17 | `E:\下载\FloatingBall_0.1.5.tipa` | 309,304 | `6711a8d2` |
+
+- 0.1.5：tag `v0.1.5` → CI run `39015911490` **success** → 交付邮件 16:12 发出
+  （附件已在 126 收件箱核验：`FloatingBall_0.1.5.tipa` 302.1 KB ≈ 309,304 字节，
+  sha256 `6711a8d2b2155da1dd6a9f095a8d1d8d466e8c1543f59e9123e5f04cf61f52a6`，
+  包内核对 0.1.5 / build 6、二进制 841,360 B、新符号
+  `IOHIDEventSystemClientDispatchEvent` / `IOHIDEventCreateDigitizerFingerEvent` 在）。
+  内容是**全局返回**（见第十节）。正文落盘 `ref/mail_0.1.5_body.txt`。
+
+  ⚠️ **下载踩的坑（下次直接用）**：这轮 `github.com` 连不上（连接被重置），
+  但 `api.github.com` 和 `objects.githubusercontent.com` 都通 ——
+  所以下载 Release 附件要走 API：
+  `GET https://api.github.com/repos/daofeidao/FloatingBall/releases/tags/v0.1.5`
+  取 `assets[0].url`，再带 `Accept: application/octet-stream` 请求那个 url
+  （302 会跳到 `release-assets.githubusercontent.com`，那个域名能连）。
+  直接下 `browser_download_url`（github.com 那个）会超时。
 
 - 0.1.4：tag `v0.1.4` → CI run `39014387848` **success** → 交付邮件 15:41 发出
   （附件已在 126 收件箱核验：`FloatingBall_0.1.4.tipa` 296.1 KB ≈ 303,232 字节）。

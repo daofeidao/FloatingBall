@@ -138,6 +138,11 @@ git push
     运行时查，**别直接调用**（直接调用会把链接风险留在 SDK 的私有 stub 上）。
 - ⚠️ **BOOL 返回值别用 `performSelector`**：它的返回类型是 `id`，ARC 会把 BOOL 的 `0x1` 当对象 retain → 崩。
   用 `objc_msgSend` + 显式函数指针转型。
+- ⚠️ **跨 `.m` / `.mm` 的 C 函数，`.h` 里必须包 `extern "C"`**（或照 Helium 那样用 `OBJC_EXTERN`，
+  它在 C++ 下就是 `extern "C"`）：
+  实现放在 `.mm` 里就是 **ObjC++**，不加这层函数名会被 C++ 修饰（`_FBLog` → `__Z5FBLogP8NSStringz`），
+  而 C 那边（`.m` / Swift）找的是 `_FBLog` → 链接期 `Undefined symbols: _FBLog`。
+  本仓库 `FBLog.h` 已踩过一次；`HUDHelper.h` 是 `OBJC_EXTERN` 所以一直没出问题。
 - 七个 Swift 文件在 Xcode 15.1 下一次过，`-swift-version` 不用调。
 - 一轮 CI 约 3～4 分钟（SDK 有缓存之后），迭代成本可以接受。
 

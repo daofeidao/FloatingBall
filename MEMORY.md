@@ -656,8 +656,11 @@ _CTServerConnectionResetModem(conn, CFSTR("UserTriggeredReload"))
 | 0.1.17 | 2026-10-18 | `E:\下载\FloatingBall_0.1.17.tipa` | 415,036 | `7b992f3c` |
 | 0.1.18 | 2026-10-18 | `E:\下载\FloatingBall_0.1.18.tipa` | 415,845 | `4b7419af` |
 | 0.1.19 | 2026-10-18 | `C:\Users\Administrator\Downloads\FloatingBall.tipa` | 421,477 | `bf4f7dbe` |
-| 0.1.20 | 2026-10-18 | 同上目录 | 待填 | 待填 |
+| 0.1.20 | 2026-10-18 | `C:\Users\Administrator\Downloads\FloatingBall.tipa` | 423,412 | `a2cfb501` |
 
+- 0.1.20：tag `v0.1.20` → CI run `39118095207` **success**（远端 main = `2044a63`）
+  → 包 423,412 B / sha256 `a2cfb501`，包内 0.1.20 / build 21。
+  和 0.1.19 一样**没发邮件**（用户明说走别的渠道）；本机与 GitHub Release 两个位置。
 - 0.1.19：tag `v0.1.19` → CI run `39101150822` **success**（远端 main = `d1b493f9`）
   → 包 421,477 B / sha256 `bf4f7dbe`，包内 0.1.19 / build 20。
   **⚠️ 交付方式变了**：这次**没有发邮件**（用户 2026-10-18 明说「先不发，我用别的渠道拿」）。

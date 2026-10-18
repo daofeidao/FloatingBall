@@ -591,6 +591,23 @@ _CTServerConnectionResetModem(conn, CFSTR("UserTriggeredReload"))
       ⑤ ⚠️ 如果整屏点不动：长按「电源 + 音量减」强制重启，然后立刻告诉我。
       ⑥ 如果窗口问还是 0：说明还差一处窗口配置，下一版继续按 TheBall 反汇编补齐
          （下一步该查它 AppDelegate 里窗口注册/Scene 的细节）。
+- [ ] **0.1.19 待验（2026-10-18：修「点不动」+ 13 个确凿 bug）**：
+      ① 【最关键】**轻点球**：缩一下 / 计数 +1 吗？**连点 5 次都灵吗**？
+         （0.1.16/0.1.17 是「只有第一下有用」，0.1.18 是「完全点不动」——
+          这两条都是本版修的根因，先确认这一条。）
+      ② **下面 App 还能正常点吗**？（0.1.18 的全屏窗口 + `_ignoresHitTest=NO`
+         有可能把整屏触摸吃掉。本版改回 `YES`，这是 Helium 原值，理论上不再抢。）
+      ③ 双击、长按 0.5 秒、快速来回拖（还跳左上角吗）？
+      ④ 改形状/颜色/大小/透明度 → 球 2 秒内变吗？**点一下球，球还闪不闪**（本版修了）？
+      ⑤ 开关开/关：等 1.8 秒后**还会不会弹「球没起来」**？球明明在屏幕上却被弹回关闭
+         的那个竞态本版修了（覆盖安装时必现）。
+      ⑥ 「关于」→「真实点球诊断」里新增了**节流=** 这一项；接管/喂球应持续涨。
+      ⑦ 全局返回 / 截屏：这两个动作本版修了**注入时间戳**（原来整串事件在派发前
+         全造完，时间戳定死 → 系统认不出来）。**先看日志**确认注入发出去了，
+         效果要看你手机上的实际表现 —— 这两条目前还没有真机验证过。
+         截屏若仍只是锁屏，说明组合键没被认出来（把日志发我）。
+         截屏若系统说「现在不允许截屏」，按设计**不会**绕过去（0.1.19 改了这条）。
+      ⑧ ⚠️ 万一整屏点不动：长按「电源 + 音量减」强制重启，然后立刻告诉我。
 - [ ] 顺带把 `E:\文档\默认项目\MEMORY.md` 里两条过时信息更正：
       ① 「persona root spawn 是线索未证实」→ Helium/TheBall 都在生产用；
       ② 它指向的 `E:\文档\Helium\MEMORY.md` **并不存在**。
@@ -624,8 +641,86 @@ _CTServerConnectionResetModem(conn, CFSTR("UserTriggeredReload"))
 | 0.1.16 | 2026-10-18 | `E:\下载\FloatingBall_0.1.16.tipa` | 413,593 | `e55db40a` |
 | 0.1.17 | 2026-10-18 | `E:\下载\FloatingBall_0.1.17.tipa` | 415,036 | `7b992f3c` |
 | 0.1.18 | 2026-10-18 | `E:\下载\FloatingBall_0.1.18.tipa` | 415,845 | `4b7419af` |
+| 0.1.19 | 2026-10-18 | `C:\Users\Administrator\Downloads\FloatingBall.tipa` | 421,477 | `bf4f7dbe` |
 
-- 0.1.18：tag `v0.1.18` → CI run `39065498165` **success**（远端 main = `fcd772d174f745737c644669086f379c9af5cf55`）
+- 0.1.19：tag `v0.1.19` → CI run `39101150822` **success**（远端 main = `d1b493f9`）
+  → 包 421,477 B / sha256 `bf4f7dbe`，包内 0.1.19 / build 20。
+  **⚠️ 交付方式变了**：这次**没有发邮件**（用户 2026-10-18 明说「先不发，我用别的渠道拿」）。
+  本机 `C:\Users\Administrator\Downloads\FloatingBall.tipa`；
+  GitHub Release `releases/tag/v0.1.19`（含 FloatingBall_symbols.zip）。
+  ⚠️ 这台机器上 **126 邮箱 skill 没配过授权码**（0.1.18 那封是另一台机器发的）。
+  用户给的收件地址是 **sz202610@126.com**（不是 git 里的 13086848965@126.com）。
+  下次要发邮件前得先 `config setup --email ... --auth-code ...`。
+
+  **这一版是代码审查驱动的，不是加功能** —— 一次审出 13 个确凿 bug，两个是主线：
+
+  **① 自熔断（这是「只有第一下有用」和「点不动」的正主）**
+  `FBRealTouchWorks()` 判据是 `sProbeRealTap > 0`，而那个数在 `onSingleTap:` 里加 ——
+  **`onSingleTap:` 同样会被我们自己合成的触摸触发**。于是：
+  第一次点球成功 → sProbeRealTap=1 → 判定「系统真触摸已通」
+  → `FBHandleHIDEvent` 第一行 `return` → 从此不再喂任何合成触摸 → 球彻底死掉。
+  「关于」页的自喂测试按钮也踩同一个雷。
+  改成必须同时满足三条：手势触发过 **且** **系统自己**问过命中测试（`FBProbeTouchHit`
+  记的时间戳，不是我们合成的）**且** 都在 2 秒内（`kRealTouchGrace`）。
+  → **教训**：判据不能建立在「我们自己也会产生」的信号上。
+
+  **② 全屏窗口 + `_ignoresHitTest=NO` 会吃掉整块屏幕**（0.1.18 新引入）
+  TheBall 吃的是系统真触摸，所以它敢让系统来命中；我们不吃
+  （iOS 15.1+ 系统不会把真触摸派发进 root 进程的窗口，0.1.8~0.1.17 的「窗口问=0」是硬证据）。
+  0.1.18 把窗口改成全屏却留着 NO —— SpringBoard 会把整屏命中判给这个窗口，
+  而系统又送不进触摸 → 手机整个变哑巴（比球点不动严重得多）。
+  `_ignoresHitTest` 改回 **YES**（Helium / TrollSpeed 原值，二者都在生产用）：
+  窗口照样浮在最上面，但系统不拿它做命中测试，触摸原样漏给下面的 App；
+  我们合成触摸走 `[app sendEvent:]`，**根本不看这个标志**。
+  → **教训**：照抄别的项目只能抄「长什么样」，不能抄「它凭什么能用」——
+     它能吃系统真触摸，我们不能，这一条就不能抄。
+
+  **③ 其余 11 个**（都是确凿 bug，已修）：
+  - 主线程事件积压：自检「回调=30225」，每条都 dispatch 到主线程做 8 个候选点 + hitTest
+    → 「按下」迟到几百毫秒 = 「点了没反应」，且越用越卡。现在**在 dispatch 之前**节流，
+    起手和抬起永远放行（这两个一丢就点不动）。
+  - 两处坐标系：`HUDMainWindow.hitTest:` 漏了 `convertPoint:toView:`；
+    `pointInside:` 直接用 `interactiveSubview.frame`，改 `convertRect:fromView:`。
+  - 球还没建好那一瞬间 `pointInside:` 返回 `[super...]` = 整屏吃触摸 → 改 NO。
+  - 「点一下球球就闪一下」：`pollAppearanceFiles` 拿整份 plist 的 mtime 当判据，
+    而每次点击都写盘 → 必重贴图 + 重设 frame。改只看外观相关的键。
+  - `applyLayout` 的 `center.x <= 0 && center.y <= 0` 应为 `||` —— 球吸在左边缘时
+    x 恰好是 0 而 y 不是，每秒被重算成默认位置，球会自己跑掉。
+  - `SetHUDEnabled` 的解散通知无条件发 + 老球 `atexit` 无条件删 pid 文件
+    → **球好好跑着，开关却弹「球没起来」**，覆盖安装时必现。
+  - `waitForNotification` 先 spawn 后注册，而球的 init 第一件事就是 post
+    → 注册晚一步就白等 5 秒。现在先 `IsHUDEnabled()` 问一次内核。
+  - **静默抹掉用户全部设置**：`setValue` 无条件读再写回，读失败的 catch 把
+    「文件不存在」「权限不足」「**XML 读到一半**」统统返回 `[:]`；而这个 plist 被
+    App(501) 和球(root) 同时读写，App 侧却是非原子写。修：加 `.atomic` + 读失败放弃写入。
+  - 触摸注入 7 条事件**在派发前全造完**，时间戳定死 → 全局返回必然不成立；
+    按键注入同一个病 → 「两键同时按住」的窗口在 HID 时间轴上不存在，截图只会锁屏。
+    两处都改成「先空跑预检（保住造不全就一个都不发的保命约束）+ 真正发的现造现发」。
+  - 截屏的「不硬来」注释和控制流正好相反：屏幕使用时间禁止时反而掉进更危险的按键注入。
+    `FBScreenshotViaService` 改返回 int，2 = 策略禁止（不降级）。
+  - `FBHIDReadTouchDeep` 返回「读到了」但出参还是 -1 → 触摸自检读数失真。
+  - `BallSettings` 的 `default:` 参数是死的；`double` 无法表达 0。
+  - 快捷指令名带 `&` `+` 会漏出查询串（`.urlQueryAllowed` 包含 sub-delims）。
+  - CI 的 `FloatingBall_symbols.zip` 一直是空转（产出了但两处 path/files 都没列）。
+    0.1.19 起 Release 里真的有符号包了。
+
+  **三条评估后决定不动**：
+  - `ipabuild.sh` 在 Theos 签名之后再 `strip` —— 理论上会改写 Mach-O 让签名失效，
+    但 0.1.0~0.1.18 十八个包全都装得上、跑得起来，动它风险大于收益。
+  - CI 的 PPL 黑名单漏了 `get-task-allow` / `task_for_pid-allow` —— 这两个正是球
+    能注入的前提，真加进黑名单会直接把构建打挂。
+  - `FBGoBack` / `FBTakeScreenshot` 在主线程 `usleep` 90~180ms —— 确实是卡顿，
+    但挪后台队列要动注入的线程模型，等「点不动」这条主线在真机上验证过再动。
+
+  **过程教训（补上一条）**：这版第一次 CI 也挂了 ——
+  `error: variable 'foundFinger' set but not used [-Werror,-Wunused-but-set-variable]`。
+  起因是我把 `return found ? 1 : (foundFinger ? 1 : 0)` 简化成 `found ? 1 : 0`
+  （那个判断是对的：`foundFinger = YES` 的上一行必定已经 `found = YES`），
+  **却没把 `foundFinger` 变量本身删掉**。加上 0.1.18 那条「改结构先全局搜旧变量名」，
+  现在规矩是两条一起：**简化表达式之后要顺手看一眼被删的变量还在不在**
+  —— `-Werror` 下「只写不读」等于编译失败。
+
+  - 0.1.18：tag `v0.1.18` → CI run `39065498165` **success**（远端 main = `fcd772d174f745737c644669086f379c9af5cf55`）
   → 交付邮件 **4:15 发出**（收件箱核验：附件 406.1 KB = 415,845 字节，整封 561.6 KB，带抄送）；
   包内 0.1.18 / build 19。
   **用户定案：「现在就照抄 TheBall」**。反汇编对比出三处根本差别（这就是 13 个版本打转的原因）：

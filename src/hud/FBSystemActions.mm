@@ -482,7 +482,11 @@ int FBHIDReadTouchDeep(void *hidEvent, int *touch, int *range, double *nx, doubl
 
     int bestT = -1, bestR = -1;
     double bestX = 0, bestY = 0;
-    BOOL found = NO, foundFinger = NO;
+    // ⚠️ 0.1.19：原来的 foundFinger 删掉了 —— 它只在下面那个
+    // `return found ? 1 : (foundFinger ? 1 : 0)` 里被读，而那个表达式恒等于
+    // `found ? 1 : 0`（foundFinger = YES 的那一行上面必定已经 found = YES）。
+    // 简化 return 之后它就成了只写不读，CI 是 -Werror，直接编译失败。
+    BOOL found = NO;
     CFIndex n = CFArrayGetCount(kids);
     for (CFIndex i = 0; i < n; i++) {
         void *kid = (void *)CFArrayGetValueAtIndex(kids, i);
@@ -492,7 +496,6 @@ int FBHIDReadTouchDeep(void *hidEvent, int *touch, int *range, double *nx, doubl
         found = YES;
         if (kt == 1 || kr == 1) {          // 优先取「有手指」的那一个
             bestT = kt; bestR = kr; bestX = kx; bestY = ky;
-            foundFinger = YES;
             break;
         }
         if (bestT < 0) { bestT = kt; bestR = kr; bestX = kx; bestY = ky; }
@@ -866,35 +869,48 @@ static BOOL FBScreenshotViaHID(void)
         return NO;
     }
 
-    // ---- ① 四条事件先全造出来（造不全就一个都不发）----
-    //      顺序：音量加↓ → 电源↓ → 电源↑ → 音量加↑
-    //      中间那 60ms 就是「两个键同时按住」的窗口，系统靠它认组合键。
-    IOHIDEventRef volDown  = FBMakeKeyEvent(FBHIDUsageVolumeUp, YES);
-    IOHIDEventRef lockDown = FBMakeKeyEvent(FBHIDUsageLock, YES);
-    IOHIDEventRef lockUp   = FBMakeKeyEvent(FBHIDUsageLock, NO);
-    IOHIDEventRef volUp    = FBMakeKeyEvent(FBHIDUsageVolumeUp, NO);
-    if (!volDown || !lockDown || !lockUp || !volUp) {
-        FBLog(@"⚠️ 截屏：按键事件造不全 → 一个都不发（避免留下按着不放的键）");
-        if (volDown)  CFRelease(volDown);
-        if (lockDown) CFRelease(lockDown);
-        if (lockUp)   CFRelease(lockUp);
-        if (volUp)    CFRelease(volUp);
-        return NO;
+// ---- 序列：音量加↓ → 电源↓ → 电源↑ → 音量加↑ ----
+    static const uint32_t kShotUsages[4] = { FBHIDUsageVolumeUp, FBHIDUsageLock,
+                                             FBHIDUsageLock,   FBHIDUsageVolumeUp };
+    static const BOOL kShotDown[4]      = { YES, YES, NO, NO };
+    static const char *kShotLabels[4]   = { "音量加↓", "电源↓", "电源↑", "音量加↑" };
+
+    // ---- ① 空跑预检：只验「造得出来」，造完立刻扔掉 ----
+    //
+    // ⚠️ 0.1.19 修「组合键永远不被认出来」：原来四条事件在派发之前**全造完**，
+    // 而 FBMakeKeyEvent 内部也是 `mach_absolute_time()` —— 于是四条的时间戳
+    // 几乎是同一个瞬间。下面那句「中间那 60ms 就是『两个键同时按住』的窗口，
+    // 系统靠它认组合键」写反了：usleep 只推迟了**派发**，推不动定死的时间戳。
+    // 在 HID 时间轴上「两键同时按住」的窗口根本不存在 → 系统只会当成
+    // 「按了音量加、又按了电源」→ 结果是把屏幕锁上（这正是注释里警告的现象）。
+    // 保命约束「造不全就一个都不发」保留：先空跑验能力，真正发的现造现发。
+    for (int i = 0; i < 4; i++) {
+        IOHIDEventRef probe = FBMakeKeyEvent(kShotUsages[i], kShotDown[i]);
+        if (!probe) {
+            FBLog(@"⚠️ 截屏：试造第 %d 个按键事件就造不出来 → 一个都不发（避免留下按着不放的键）", i);
+            return NO;
+        }
+        CFRelease(probe);
     }
 
-    // ---- ② 按顺序发 ----
+    // ---- ② 现造现发：每条的时间戳取自它自己被造出来的那一刻 ----
     gFBShotCooldownUntil = now + 2.0;
-    IOHIDEventRef seq[4] = { volDown, lockDown, lockUp, volUp };
-    const char *labels[4] = { "音量加↓", "电源↓", "电源↑", "音量加↑" };
-
     FBLog(@"截屏：开始注入按键组合（音量加 + 电源），共 4 条");
     for (int i = 0; i < 4; i++) {
-        if (i > 0) usleep(60 * 1000);     // 60ms
-        fbSetSenderID(seq[i], gFBRealSenderID);
-        fbDispatchHIDEvent(fbHIDClient, seq[i]);
-        FBLog(@"截屏：注入 %s", labels[i]);
+        // usleep 放在**造事件之前**，让这条的时间戳就是「此刻」。
+        if (i > 0) usleep(60 * 1000);     // 60ms —— 组合键的判定窗口
+
+        IOHIDEventRef ev = FBMakeKeyEvent(kShotUsages[i], kShotDown[i]);
+        if (!ev) {
+            FBLog(@"⚠️ 截屏：第 %d 个按键事件中途造不出来 —— 剩下的不发了，先补两条松开", i);
+            FBSendLoneKeyUp();
+            return NO;
+        }
+        fbSetSenderID(ev, gFBRealSenderID);
+        fbDispatchHIDEvent(fbHIDClient, ev);
+        CFRelease(ev);
+        FBLog(@"截屏：注入 %s", kShotLabels[i]);
     }
-    for (int i = 0; i < 4; i++) CFRelease(seq[i]);
     FBLog(@"截屏：注入完了 —— 正常的话屏幕会闪一下、图进「相册 → 截屏」");
 
     // ---- ③ 兜底：600ms 后再补两条「松开」----

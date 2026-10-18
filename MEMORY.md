@@ -708,6 +708,7 @@ send([r"...\FloatingBall.tipa"],
 | 0.1.21 | 2026-10-18 | `C:\Users\Administrator\Downloads\FloatingBall.tipa`（邮件已发，to sz202610@126.com / cc lion.2026.10@proton.me） | 424,197 | `6f4f5a0b` |
 | 0.1.22 | 2026-10-18 | GitHub Release `v0.1.22`（CI 10:55 就绿了，但**没打 tag、没发邮件**，白等了 9 个小时；教训见下） | 435,115 | `dc600959` |
 | 0.1.23 | 2026-10-18 | GitHub Release `v0.1.23` + 邮件已发（to sz202610@126.com / cc lion.2026.10@proton.me） | 440,539 | `c4e155e2` |
+| 0.1.24 | 2026-10-18 | GitHub Release `v0.1.24` + 邮件已发（to sz202610@126.com / cc lion.2026.10@proton.me） | 440,606 | `2239e807` |
 
 - 0.1.23：tag `v0.1.23`（第一次打在 `2416aa9` 上，**CI 挂了一次** —— `AboutTab.swift`
   `text.split(separator:"\n").map(String.init)` 二义，见「硬规则」新增那条；
@@ -806,6 +807,20 @@ send([r"...\FloatingBall.tipa"],
   → 规矩：**Swift 里切字符串分行，一律用 Foundation 的 `components(separatedBy:)`**
   （直接给 `[String]`，没有二义）；别用 `split(separator:)` 链式 `.map(String.init)`。
   （`for line in text.split(separator: "\n")` 循环形式不受影响，但新代码别再写。）
+
+- **0.1.24 再加一条，最贵的一条**：「第二轮候选点」的修复**白写了两版**
+  （0.1.22 加上、0.1.23 用户实测「仍然不能拖动」才发现它一次都没执行）。
+  进入条件 `!CGRectContainsPoint(screenRect, winPt)` 想表达「winPt 不可信才另找」，
+  但这台设备 `[rep location]` 恒为 **(0,0)**，换算后 winPt=(0,0) 是屏幕左上角、
+  **在矩形内** → 条件恒假。**(0,0) 既能当「空坐标」又能当「合法屏内点」，
+  `CGRectContainsPoint` 分不清** —— 用矩形包含判断「坐标有效性」时，
+  边界值 (0,0) 会同时满足两个语义，把门关死。
+  → 规矩：**「坐标不可信」必须显式判 (0,0) + 越界，不能只靠「在不在矩形内」；
+    加「另一条路」的修复时，进入条件要能在目标设备上真的为真**
+     （写完对着这台设备的已知事实走一遍：location 恒 (0,0) → 条件会成立吗）。
+  → 连带教训：修完「不生效」的 bug，要在代码里留下**能证明它生效的判据**
+    （0.1.21 加的「沿用上一帧=」自检计数就是干这个的，用户报「仍然不行」时
+    第一件事就是看这个数在不在涨）。
 
   - 0.1.18：tag `v0.1.18` → CI run `39065498165` **success**（远端 main = `fcd772d174f745737c644669086f379c9af5cf55`）
   → 交付邮件 **4:15 发出**（收件箱核验：附件 406.1 KB = 415,845 字节，整封 561.6 KB，带抄送）；

@@ -640,10 +640,24 @@ BOOL FBGoBack(CGRect ballRectOnScreen)
 
     double y = FBPickSwipeY(ballRectOnScreen, h);
 
-    // 划动的采样点：从**贴左缘** 2pt 划到 235pt。
-    // 起点必须贴边 —— 系统判「左缘手势」就是看起点离边多远。
-    static const double xs[] = { 2.0, 18.0, 55.0, 110.0, 170.0, 235.0 };
+    // 划动的采样点：从**贴左缘** 1pt 划到 240pt。
+    //
+    // ⚠️⚠️ 0.1.22 改这两行（用户 2026-10-18 实测：「全局返回」看起来
+    //    **不像返回，更像某个界面在左右滑动切换**）。
+    //
+    // 原来的参数是「6 个点 × 18ms = 90ms 划 233pt」→ 速度 **2600 pt/s**。
+    // 真实手指做边缘返回大约是 600~1000 pt/s，而且**落下之后先停 50~100ms**
+    // 才起划（那个「按住」的瞬间是识别器判断意图的关键）。
+    // 2600pt/s 太快，系统手势识别器会把它当成「快速轻扫 / flick」——
+    // flick 不触发边缘返回，于是那一下被当成普通触摸漏给了下面的 App，
+    // 下面的 App 拿它去做自己的横向翻页 → 看起来就是「在左右滑动切换」。
+    //
+    // 现在的参数：8 个点 × 42ms ≈ 294ms 划 239pt → **约 810 pt/s**，
+    // 并且下面多了一个「按下后先按住 70ms」的起步阶段。
+    static const double xs[] = { 1.0, 8.0, 24.0, 52.0, 92.0, 140.0, 190.0, 240.0 };
     const int count = (int)(sizeof(xs) / sizeof(xs[0]));
+    static const int kStepMs = 42;        // 每步 42ms
+    static const int kHoldMs = 70;       // 按下之后先按住多久再起划（真实手势都有）
 
     // ---- ① 空跑预检：只验「造得出来」，造完立刻扔掉 ----
     //
@@ -678,7 +692,12 @@ BOOL FBGoBack(CGRect ballRectOnScreen)
 
         // usleep 放在**造事件之前**：这样这条事件的时间戳才是「此刻」，
         // 和它真正派发出去的时刻对得上（时间戳先定、派发后补的老写法正好相反）。
-        if (i > 0) usleep(18 * 1000);      // 18ms ≈ 真实手指划过 235pt 的速度
+        //
+        // ⚠️ 0.1.22：i==1 那一段是「按住不动」的起步阶段 —— 手指落在屏幕上
+        //    之后不会立刻就划，先停 kHoldMs。那个停顿是识别器判断
+        //    「这是有意的边缘手势、不是随手一划」的关键。
+        if (i == 1) usleep(kHoldMs * 1000);
+        else if (i > 1) usleep(kStepMs * 1000);
 
         IOHIDEventRef ev = FBMakeTouchEvent(phase, xs[pi] / w, y / h);
         if (!ev) {
@@ -690,7 +709,8 @@ BOOL FBGoBack(CGRect ballRectOnScreen)
         fbDispatchHIDEvent(fbHIDClient, ev);
         CFRelease(ev);
     }
-    FBLog(@"全局返回：注入完了（down + %d 个 move + up）—— 看界面回没回上一页", count - 1);
+    FBLog(@"全局返回：注入完了（按住 %dms + down + %d 个 move + up，约 %.0fpt/s）"
+          @"—— 看界面回没回上一页", kHoldMs, count - 1, 239.0 / (0.001 * (kHoldMs + kStepMs * count)));
 
     // ---- ③ 兜底：500ms 后再补一条「抬起」----
     double nx = xs[count - 1] / w;

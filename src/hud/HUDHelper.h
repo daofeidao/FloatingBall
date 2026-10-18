@@ -18,6 +18,21 @@ OBJC_EXTERN NSString *FBHUDPIDFilePath(void);
 /// 在 BallRootViewController 的 viewDidLoad 里调用。
 OBJC_EXTERN void FBHUDSetBallView(UIView *ballView);
 
+// ---- 快捷菜单浮层（0.1.22）----
+//
+// 菜单是全屏窗口里的另一个子视图，位置在球旁边。它带来两个新情况：
+//   1. 判定「这一下该不该接管」时，除了球还要算上菜单的矩形；
+//   2. 菜单打开时，点在菜单**外面**也要接管 —— 那一下的作用是「把菜单关掉」。
+//      否则用户点了外面，事件根本不会被我们看到，菜单永远关不掉。
+
+/// 菜单当前占的矩形（**窗口坐标**）。CGRectZero = 菜单没显示。
+/// 由 BallRootViewController 在菜单显示/隐藏时更新。
+OBJC_EXTERN void FBHUDSetMenuArea(CGRect rectInWindow);
+
+/// 菜单打开时置 YES：这时**整个屏幕**的触摸都接管，
+/// 用来接「点菜单外面 → 关菜单」那一下。菜单关掉后立刻置回 NO。
+OBJC_EXTERN void FBHUDSetConsumeWholeScreen(BOOL consume);
+
 // ---- 触摸自检 ----
 // 我们**不吃**系统派发的真触摸（iOS 15.1+ 系统不会把真触摸派发进 root 进程的窗口，
 // 0.1.8~0.1.17 的自检「窗口问=0」是硬证据）。触摸全部由我们自己从 HID 事件合成

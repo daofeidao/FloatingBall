@@ -22,12 +22,26 @@
 
 #import "../helpers/private_headers/LSApplicationWorkspace.h"
 
+// 0.1.22：快捷菜单的那些类定义在文件后半部分，这里先前向声明一下 ——
+// 下面 `@interface` 里要用 `NSArray<FBQuietMenuItem *> *` 这种带泛型的写法，
+// 那要求编译器在**声明处**就已经知道 FBQuietMenuItem 是什么。
+@class FBQuietMenuItem;
+@class FBQuietMenuView;
+
 // 0.1.16：这些方法互相调用，先声明一遍，省得编译器报「找不到方法」
 @interface BallRootViewController ()
 - (BOOL)applyBallStyle;   // 0.1.21：返回「这一轮有没有真的拿到贴图」
 - (void)applyLayout;
 - (void)refreshLabel;
 - (void)writeStyleDiag:(NSString *)source;
+// 0.1.22 菜单浮层（互相调用，先声明）
+- (void)openQuickMenu;
+- (void)closeQuickMenu;
+- (void)toggleQuickMenu;
+- (void)updatePassThroughRegion;
+- (NSArray<FBQuietMenuItem *> *)loadMenuItems;
+- (NSString *)symbolForActionId:(NSString *)actionId;
+- (void)quickMenuDidSelectIndex:(NSInteger)idx;
 @end
 
 // 默认值
@@ -167,6 +181,10 @@ static const CGFloat kBallTouchSlack = 10.0;
     BOOL _showText;           // 是否显示球上的数字（存在 ShowLabel 键里）
     BOOL _fallbackBall;       // 贴图丢了、退化成纯色球时，要给它留一圈描边
     BOOL _moveMode;           // 「移动模式」：球高亮，拖一下就落位，点一下退出
+    // 0.1.22：快捷菜单浮层
+    FBQuietMenuView *_menuView;
+    NSArray<FBQuietMenuItem *> *_menuItems;
+    UIView *_passThroughRegion;   // 球 ∪ 菜单 的包围矩形（只给 pointInside: 用，不参与绘制）
 }
 
 #pragma mark - 震动
@@ -526,10 +544,290 @@ void FBBallHapticTouchDown(void)
     notify_post(NOTIFY_LAUNCHED_HUD);
 }
 
+// ============================================================================
+// 0.1.22：快捷菜单浮层（双击球就弹在球旁边，不用打开 App）
+//
+// 为什么要有它：原来 `action:openAppList` 的实现只是「往设置里写个 PendingTab，
+// 再把 App 从 root 进程拉起来切到第 2 栏」—— 那不是全局浮层（用户要的是球旁边
+// 直接弹出来、点一下就执行），而且它还依赖 FBOpenApplication 从 root 拉起 App，
+// 那条路在 iOS 15 上经常被系统拒（用户实测「双击之后没有任何反应」）。
+// 浮层完全在 HUD 进程里画，**不经过 App、不经过 LSApplicationWorkspace**。
+//
+// 排列：**竖排**，贴着球的那一侧（球在屏幕右半边就往左弹，反之往右弹），
+// 这样菜单不会被系统刘海/圆角切掉。每项一行：图标 + 标题。
+// 点菜单外面关掉菜单（这一下由 HUDApp 的 gFBConsumeWholeScreen 接管）。
+// ============================================================================
+
+static const CGFloat kMenuRowH     = 40.0;   // 一行多高
+static const CGFloat kMenuRowGap   = 4.0;    // 行间距
+static const CGFloat kMenuPadX     = 14.0;   // 左右内边距
+static const CGFloat kMenuPadY     = 8.0;
+static const CGFloat kMenuCorner   = 14.0;
+static const CGFloat kMenuWidth    = 168.0;
+static const CGFloat kMenuGapFromBall = 10.0;
+static const CGFloat kMenuMaxRows  = 8.0;    // 超过就滚动不了，所以条数上限就是 8
+
+/// 菜单里的一项。点它就把 key 交给 BallRootViewController 去执行。
+@interface FBQuietMenuItem : NSObject
+@property (nonatomic, copy) NSString *key;      // "app:xxx" / "action:xxx" / "url:xxx"
+@property (nonatomic, copy) NSString *title;
+@property (nonatomic, copy) NSString *symbol;   // SF Symbol 名
+@end
+@implementation FBQuietMenuItem
+@end
+
+@interface FBQuietMenuView : UIView
+@property (nonatomic, weak) id menuTapHandler;   // BallRootViewController
+- (instancetype)initWithItems:(NSArray<FBQuietMenuItem *> *)items;
+@end
+
+@implementation FBQuietMenuView
+
+- (instancetype)initWithItems:(NSArray<FBQuietMenuItem *> *)items
+{
+    CGFloat h = kMenuPadY * 2 + items.count * kMenuRowH + MAX(0, (CGFloat)items.count - 1) * kMenuRowGap;
+    if (self = [super initWithFrame:CGRectMake(0, 0, kMenuWidth, h)]) {
+        self.backgroundColor = [UIColor colorWithWhite:0.12 alpha:0.92];
+        self.layer.cornerRadius = kMenuCorner;
+        self.layer.masksToBounds = YES;
+        // 菜单要投一层影在下面的 App 上，不然糊成一片看不清
+        self.layer.shadowColor = [UIColor blackColor].CGColor;
+        self.layer.shadowOpacity = 0.45;
+        self.layer.shadowRadius = 12.0;
+        self.layer.shadowOffset = CGSizeMake(0.0, 4.0);
+        self.userInteractionEnabled = YES;
+
+        // 出现动画：从球那一侧缩出来。用 alpha+scale，纯 transform 不依赖任何系统服务。
+        self.alpha = 0.0;
+        self.transform = CGAffineTransformMakeScale(0.86, 0.86);
+        [UIView animateWithDuration:0.16 animations:^{
+            self.alpha = 1.0;
+            self.transform = CGAffineTransformIdentity;
+        }];
+
+        CGFloat y = kMenuPadY;
+        for (NSInteger i = 0; i < (NSInteger)items.count; i++) {
+            FBQuietMenuItem *item = items[i];
+
+            UIControl *row = [[UIControl alloc] initWithFrame:CGRectMake(0, y, kMenuWidth, kMenuRowH)];
+            row.tag = 1000 + i;                     // tag 装索引，回调时取
+            row.backgroundColor = [UIColor clearColor];
+            [row addTarget:self action:@selector(onRow:) forControlEvents:UIControlEventTouchUpInside];
+            [self addSubview:row];
+
+            UIImageView *icon = [[UIImageView alloc] initWithImage:[UIImage systemImageNamed:item.symbol]];
+            icon.tintColor = [UIColor whiteColor];
+            icon.contentMode = UIViewContentModeScaleAspectFit;
+            icon.frame = CGRectMake(kMenuPadX, (kMenuRowH - 18) / 2, 18, 18);
+            icon.userInteractionEnabled = NO;
+            [row addSubview:icon];
+
+            UILabel *label = [[UILabel alloc] initWithFrame:CGRectMake(kMenuPadX + 26, 0,
+                                                                         kMenuWidth - kMenuPadX - 26 - 8,
+                                                                         kMenuRowH)];
+            label.text = item.title;
+            label.textColor = [UIColor whiteColor];
+            label.font = [UIFont systemFontOfSize:15.0 weight:UIFontWeightMedium];
+            label.userInteractionEnabled = NO;
+            [row addSubview:label];
+
+            y += kMenuRowH + kMenuRowGap;
+        }
+    }
+    return self;
+}
+
+- (void)onRow:(UIControl *)sender
+{
+    BallRootViewController *vc = (BallRootViewController *)self.menuTapHandler;
+    NSInteger idx = sender.tag - 1000;
+    // 事件走的是 UIButton/UIControl 的 target-action，和手势一样由 UIKit 派发，
+    // 所以合成触摸喂进来时它们照样会被调到。
+    if ([vc respondsToSelector:@selector(quickMenuDidSelectIndex:)]) {
+        [vc quickMenuDidSelectIndex:idx];
+    }
+}
+
+@end
+
+#pragma mark - 快捷菜单浮层（0.1.22）
+
+/// 从共享设置里读 App 那边存的快捷列表。
+/// 存的是 plist 的 `Shortcuts` 键：`[["kind":"app|action|url","id":...,"title":...,"icon":...]]`
+/// （格式见 ShortcutStore.swift，两边必须对齐 —— 改那边记得改这里）
+- (NSArray<FBQuietMenuItem *> *)loadMenuItems
+{
+    NSMutableArray<FBQuietMenuItem *> *out = [NSMutableArray array];
+    NSDictionary *d = [NSDictionary dictionaryWithContentsOfFile:USER_DEFAULTS_PATH];
+    NSArray *raw = d[@"Shortcuts"];
+    if (![raw isKindOfClass:[NSArray class]]) return out;
+
+    for (id row in raw) {
+        if (![row isKindOfClass:[NSDictionary class]]) continue;
+        NSDictionary *r = row;
+        NSString *kind = r[@"kind"];
+        NSString *rid  = r[@"id"];
+        NSString *title = r[@"title"];
+        if (![kind isKindOfClass:[NSString class]] ||
+            ![rid isKindOfClass:[NSString class]] || rid.length == 0) continue;
+
+        FBQuietMenuItem *item = [[FBQuietMenuItem alloc] init];
+        item.key = [NSString stringWithFormat:@"%@:%@", kind, rid];
+        item.title = [title isKindOfClass:[NSString class]] ? title : rid;
+
+        // 图标：自定义的用存的；内置动作按 rawValue 映射（和 ShortcutAction.symbol 对齐）
+        id icon = r[@"icon"];
+        item.symbol = ([icon isKindOfClass:[NSString class]] && [icon length] > 0) ? icon
+                    : [self symbolForActionId:rid];
+
+        [out addObject:item];
+        if (out.count >= (NSUInteger)kMenuMaxRows) break;   // 菜单放不下更多
+    }
+    return out;
+}
+
+/// 内置动作的 SF Symbol（对应 ShortcutAction.symbol；写全是因为 HUD 那边看不到 Swift）
+- (NSString *)symbolForActionId:(NSString *)actionId
+{
+    static NSDictionary *map = nil;
+    if (!map) {
+        map = @{ @"refreshSignal": @"antenna.radiowaves.left.and.right",
+                 @"goBack":        @"arrow.uturn.backward",
+                 @"screenshot":    @"camera.viewfinder",
+                 @"openMainApp":   @"app.badge",
+                 @"openAppList":   @"square.grid.2x2",
+                 @"moveBall":      @"hand.draw",
+                 @"toggleLabel":   @"number",
+                 @"none":          @"minus.circle" };
+    }
+    return map[actionId] ?: @"circle";
+}
+
+- (void)toggleQuickMenu
+{
+    if (_menuView) { [self closeQuickMenu]; return; }
+    [self openQuickMenu];
+}
+
+- (void)openQuickMenu
+{
+    NSArray<FBQuietMenuItem *> *items = [self loadMenuItems];
+    if (items.count == 0) {
+        FBLog(@"菜单是空的（设置里还没加过任何快捷项）—— 先去 App 的「快捷菜单」页加几个");
+        return;
+    }
+    _menuItems = items;
+
+    FBQuietMenuView *menu = [[FBQuietMenuView alloc] initWithItems:items];
+    menu.menuTapHandler = self;
+
+    // ---- 摆位：竖排，贴在球那一侧（球在右半边就往左弹，反之往右弹）----
+    CGFloat mh = CGRectGetHeight(menu.frame);
+    CGFloat ballHalf = [self ballSize] / 2.0;
+    CGRect sb = [self screenBounds];
+
+    CGFloat mx;
+    if (CGRectGetMidX(_ball.frame) > CGRectGetMidX(sb) / 2.0) {
+        mx = CGRectGetMinX(_ball.frame) - kMenuGapFromBall - kMenuWidth;   // 球在右 → 菜单往左
+    } else {
+        mx = CGRectGetMaxX(_ball.frame) + kMenuGapFromBall;                // 球在左 → 菜单往右
+    }
+    // 贴边保护：别顶出屏幕
+    mx = MAX(6.0, MIN(mx, CGRectGetMaxX(sb) - kMenuWidth - 6.0));
+
+    // 竖排贴着球：菜单垂直居中对齐球心，然后夹进屏幕
+    CGFloat my = CGRectGetMidY(_ball.frame) - mh / 2.0;
+    my = MAX(56.0, MIN(my, CGRectGetMaxY(sb) - mh - 20.0));
+
+    menu.frame = CGRectMake(mx, my, kMenuWidth, mh);
+    _menuView = menu;
+    [self.view addSubview:menu];
+
+    // ⚠️ 关键：根视图的「可吃触摸区域」要**同时**包含球和菜单。
+    // FBPassThroughView.pointInside: 只认一个 interactiveSubview，
+    // 这里把它的 frame 换成「球 ∪ 菜单」的包围矩形 ——
+    // 这样 [window hitTest:] 才可能落到菜单里的那一行上（不然点击根本送不到菜单）。
+    [self updatePassThroughRegion];
+
+    // 告诉 HUD 的触摸回调：菜单占哪块（判定接管用），并且**整屏接管**，
+    // 好接住「点菜单外面 → 关菜单」那一下。
+    CGRect menuInWindow = [menu convertRect:menu.bounds toView:self.view.window];
+    FBHUDSetMenuArea(menuInWindow);
+    FBHUDSetConsumeWholeScreen(YES);
+
+    FBLog(@"菜单已打开：%lu 项，位置 %@", (unsigned long)items.count, NSStringFromCGRect(menu.frame));
+}
+
+- (void)closeQuickMenu
+{
+    if (!_menuView) return;
+    FBQuietMenuView *menu = _menuView;
+    _menuView = nil;
+    _menuItems = nil;
+
+    [self updatePassThroughRegion];
+    FBHUDSetMenuArea(CGRectZero);
+    FBHUDSetConsumeWholeScreen(NO);
+
+    [UIView animateWithDuration:0.12 animations:^{
+        menu.alpha = 0.0;
+        menu.transform = CGAffineTransformMakeScale(0.9, 0.9);
+    } completion:^(BOOL finished) {
+        [menu removeFromSuperview];
+    }];
+    FBLog(@"菜单已关闭");
+}
+
+/// 菜单里第 idx 项被点了
+- (void)quickMenuDidSelectIndex:(NSInteger)idx
+{
+    if (idx < 0 || idx >= (NSInteger)_menuItems.count) return;
+    FBQuietMenuItem *item = _menuItems[idx];
+    NSString *key = item.key;
+    [self closeQuickMenu];
+
+    // 推迟一拍再执行：菜单关闭有 0.12 秒的动画，
+    // 如果这一项绑的恰好是「打开快捷菜单」自己，立刻执行会把菜单又弹出来。
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.14 * NSEC_PER_SEC)),
+                   dispatch_get_main_queue(), ^{
+        [self performTargetKey:key];
+    });
+}
+
+/// 根视图的可吃触摸区域：球 ∪ 菜单
+- (void)updatePassThroughRegion
+{
+    if (![self.view isKindOfClass:[FBPassThroughView class]]) return;
+    FBPassThroughView *ptv = (FBPassThroughView *)self.view;
+
+    if (!_menuView) {
+        ptv.interactiveSubview = _ball;
+        return;
+    }
+    // 复用一个不显示的「区域视图」，frame = 球 ∪ 菜单，
+    // 让 pointInside: 用它算（它只看 interactiveSubview 的 bounds）。
+    // userInteractionEnabled=NO → 它自己不参与 hitTest，只是块「边界板」。
+    if (!_passThroughRegion) {
+        _passThroughRegion = [[UIView alloc] initWithFrame:CGRectZero];
+        _passThroughRegion.userInteractionEnabled = NO;
+        _passThroughRegion.backgroundColor = [UIColor clearColor];
+    }
+    if (!_passThroughRegion.superview) [self.view insertSubview:_passThroughRegion atIndex:0];
+    _passThroughRegion.frame = CGRectUnion(_ball.frame, _menuView.frame);
+    ptv.interactiveSubview = _passThroughRegion;
+}
+
 #pragma mark - 动作
 
 - (void)onSingleTap:(UITapGestureRecognizer *)g
 {
+    // ⚠️ 0.1.22：菜单开着的时候，轻点的语义是「关掉菜单」，
+    //    **不执行**单击绑定的动作 —— 否则用户想关菜单，结果顺手打开了设置。
+    if (_menuView) {
+        FBLog(@"轻点：菜单开着，按「关掉菜单」处理（不执行单击绑定）");
+        [self closeQuickMenu];
+        return;
+    }
     // ⚠️⚠️ 0.1.19 重要更正：**这个回调有两来路**。
     //    ① 我们自己合成的触摸（HUDApp.mm → TSEventFetcher → sendEvent:）—— 这是常态；
     //    ② 极少数情况下系统真把触摸派发进窗口。
@@ -635,8 +933,17 @@ void FBBallHapticTouchDown(void)
         return;
     }
 
-    if ([action isEqualToString:@"openMainApp"] || [action isEqualToString:@"openAppList"]) {
-        [self requestAppTab:[action isEqualToString:@"openAppList"]];
+    if ([action isEqualToString:@"openAppList"]) {
+        // ⚠️ 0.1.22：改成弹**球旁边的浮层**，不再「打开 App 到第 2 栏」。
+        //    原来那条要靠 FBOpenApplication 从 root 进程把 App 拉起来，
+        //    iOS 15 上经常被系统拒（用户实测「双击之后没有任何反应」），
+        //    而且它本身也不是用户要的东西（用户要的是球旁边直接弹出来、能点的）。
+        [self toggleQuickMenu];
+        return;
+    }
+
+    if ([action isEqualToString:@"openMainApp"]) {
+        [self requestAppTab:NO];
         return;
     }
 
@@ -747,7 +1054,17 @@ void FBBallHapticTouchDown(void)
 {
     if (_moveMode) { [self setMoveMode:NO]; return; }
 
+    // ⚠️ 0.1.22：双击默认直接开/关菜单浮层，不再绕「打开 App 到第 2 栏」那条路
+    //    （用户实测那条没反应：它依赖 FBOpenApplication 从 root 进程拉起 App，
+    //    iOS 15 上经常被系统拒；而它就算成功也只是「打开 App」，不是用户要的浮层）。
+    //    仍然尊重用户自己的绑定：绑成别的就照旧走绑定。
     NSString *target = [self gestureTarget:@"GestureDoubleTap"];
+    if ([target isEqualToString:@"action:openAppList"]) {
+        FBLog(@"双击：切换快捷菜单浮层");
+        [self toggleQuickMenu];
+        return;
+    }
+
     FBLog(@"双击：绑定=%@", target);
     // ⚠️ 0.1.20 同样删掉 `haptic:FBHapticTap` —— 双击的第二次「按下」起手时已经震过了，
     //    再补一下就是「双击听到四下」。（单击那处的原因写在 onSingleTap: 上面。）
@@ -770,6 +1087,16 @@ void FBBallHapticTouchDown(void)
 - (void)onPan:(UIPanGestureRecognizer *)g
 {
     if (!_ball) return;
+
+    // ⚠️ 0.1.22：菜单开着的时候**先关菜单**，不拖球。
+    //    （否则想点菜单项、结果把球拖走了 —— 菜单浮层最忌讳这个。）
+    if (_menuView) {
+        if (g.state == UIGestureRecognizerStateBegan) {
+            FBLog(@"拖动：菜单开着，按「关掉菜单」处理（不挪球）");
+            [self closeQuickMenu];
+        }
+        return;
+    }
 
     // ⚠️ 0.1.18：窗口是全屏的、不跟着手指走 —— 直接按**根视图坐标（= 屏幕坐标）**移动球。
     //    （以前是移动窗口，还得每帧把窗口坐标换算回屏幕坐标，那个反馈环的坑现在不存在了。）

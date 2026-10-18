@@ -76,6 +76,24 @@ void FBHUDSetBallView(UIView *ballView)
           ballView.window ? @"有" : @"无");
 }
 
+// ---- 快捷菜单浮层（0.1.22）----
+static CGRect gFBMenuArea = CGRectZero;
+static BOOL   gFBConsumeWholeScreen = NO;
+
+void FBHUDSetMenuArea(CGRect rectInWindow)
+{
+    gFBMenuArea = rectInWindow;
+    FBLog(@"菜单区域更新 = %@（%@）", NSStringFromCGRect(rectInWindow),
+          CGRectIsEmpty(rectInWindow) ? @"菜单已关" : @"菜单已开");
+}
+
+void FBHUDSetConsumeWholeScreen(BOOL consume)
+{
+    gFBConsumeWholeScreen = consume;
+    FBLog(@"全屏消费 = %@（菜单开着时会接管整屏，用来接「点外面关菜单」）",
+          consume ? @"是" : @"否");
+}
+
 // ============================================================================
 // 触摸自检（2026-10-17 加：用户报「点球直接穿透、球没反应」）
 //
@@ -582,15 +600,29 @@ static void FBHandleHIDEvent(int route, void *target, void *refcon, IOHIDService
         CGPoint winPt = [window convertPoint:location fromWindow:nil];
         BOOL onBall = NO;
         int matched = -1;
+        // ⚠️ 0.1.22：菜单开着时，除了球还要认菜单的矩形。
+        CGRect menuTouch = CGRectInset(gFBMenuArea, -10.0, -10.0);   // 同样放宽 10pt 给手指
+        BOOL hasMenu = !CGRectIsEmpty(gFBMenuArea);
+
         for (int i = 0; i < candCount; i++) {
             if (cands[i].x == 0.0 && cands[i].y == 0.0) continue;   // 没手指的事件常带 (0,0)
             CGPoint asScreen = [window convertPoint:cands[i] fromWindow:nil];
             if (CGRectContainsPoint(touchWin, asScreen)) { winPt = asScreen; onBall = YES; matched = i; break; }
             if (CGRectContainsPoint(touchWin, cands[i])) { winPt = cands[i]; onBall = YES; matched = i; break; }
+            // 候选点虽然不在球上，但可能落在菜单上 —— 那也要认（菜单点不动等于没做）
+            if (hasMenu) {
+                if (CGRectContainsPoint(menuTouch, asScreen)) { winPt = asScreen; matched = i; break; }
+                if (CGRectContainsPoint(menuTouch, cands[i])) { winPt = cands[i]; matched = i; break; }
+            }
         }
 
+        BOOL onMenu = hasMenu && CGRectContainsPoint(menuTouch, winPt);
+
         // 「盲喂」= 不看坐标，任何一下都当点球（只在用户手动打开的测试模式下）
-        BOOL takeOverArea = onBall || gFBBlindFeed;
+        // ⚠️ 0.1.22：菜单开着时**整屏都接管** —— 那一下如果不在菜单上，
+        //    作用就是把菜单关掉。要是只接管菜单矩形，用户点外面我们根本收不到，
+        //    菜单就永远关不掉。
+        BOOL takeOverArea = onBall || onMenu || gFBBlindFeed || gFBConsumeWholeScreen;
 
         // ---- 0.1.17：手指不会瞬移 ----
         // 触点还活着时，新事件的点离上一次喂过的点太远（>90pt 且隔了 30ms 以上），

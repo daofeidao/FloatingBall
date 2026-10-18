@@ -109,8 +109,18 @@ enum BuiltinURLs {
     static let shortcutIcon = "sparkles"
 
     /// 把「快捷指令」App 里的指令名字拼成 URL（名字要 URL 编码）
+    ///
+    /// ⚠️ 0.1.19：原来用 `.urlQueryAllowed`。那个字符集是给**整条 query 串**用的，
+    /// 它**包含** sub-delims —— `&` `;` `=` `+` `,` `$`，还包括 `/` `?`。
+    /// 一条叫「天气 & 提醒」的快捷指令会生成
+    /// `shortcuts://run-shortcut?name=天气%20&%20提醒`，对面解析成 `name=天气 `
+    /// 并把 `提醒` 当成另一个参数丢掉；名字里的 `+` 在 form 解码下还会变成空格。
+    /// 中文快捷指令名里出现「&」并不罕见。
+    /// 现在明确把分隔符从允许集里扣掉。
     static func shortcutURL(name: String) -> String {
-        let encoded = name.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? name
+        var allowed = CharacterSet.urlQueryAllowed
+        allowed.remove(charactersIn: "&=+?#/")
+        let encoded = name.addingPercentEncoding(withAllowedCharacters: allowed) ?? name
         return "shortcuts://run-shortcut?name=\(encoded)"
     }
 }

@@ -461,9 +461,24 @@ int FBHIDReadTouchDeep(void *hidEvent, int *touch, int *range, double *nx, doubl
     }
 
     // ② 翻子事件：父事件（collection）本身没有手指字段，每根手指是一个 type=11 子事件
-    if (!fbGetChildren) return (t >= 0 || r >= 0);
+    // ⚠️ 0.1.19 修出参契约：下面两条 return 原来返回 `t >= 0 || r >= 0`，
+    //    但 ① 那次 **根本没把 t/r/x/y 拷进出参**（454 的条件为假就跳过了 455~458），
+    //    于是调用方拿到的是「返回 1（读到了）+ touch=-1 / range=-1」——
+    //    而 HUDApp.mm 的契约是「返回 1 就意味着 touch/range 有意义」，
+    //    结果这类事件被误记进 `深读(读不到)`，触摸自检读数失真
+    //    （0.1.11~0.1.14 排障正是靠这份读数）。
+    // 现在两条都先拷出参再返回。
+    if (!fbGetChildren) {
+        if (touch) *touch = t;
+        if (range) *range = r;
+        return (t >= 0 || r >= 0) ? 1 : 0;
+    }
     CFArrayRef kids = fbGetChildren((IOHIDEventRef)hidEvent);
-    if (!kids) return (t >= 0 || r >= 0);
+    if (!kids) {
+        if (touch) *touch = t;
+        if (range) *range = r;
+        return (t >= 0 || r >= 0) ? 1 : 0;
+    }
 
     int bestT = -1, bestR = -1;
     double bestX = 0, bestY = 0;
@@ -487,7 +502,10 @@ int FBHIDReadTouchDeep(void *hidEvent, int *touch, int *range, double *nx, doubl
     if (range) *range = bestR;
     if (nx) *nx = bestX;
     if (ny) *ny = bestY;
-    return found ? 1 : (foundFinger ? 1 : 0);
+    // ⚠️ 0.1.19：原来写 `found ? 1 : (foundFinger ? 1 : 0)` —— 但 `foundFinger = YES` 时
+    //    上面第 477 行早就把 `found` 置成 YES 了，所以后半个分支永远走不到，
+    //    整句等价于 `found ? 1 : 0`。写清楚，别让下一个人以为它有别的含义。
+    return found ? 1 : 0;
 }
 
 void FBHIDNoteRealEvent(void *hidEvent)
@@ -596,12 +614,24 @@ BOOL FBGoBack(CGRect ballRectOnScreen)
         return NO;
     }
 
-    // 屏幕尺寸：HID 那边按「竖屏的点数」归一化，所以要取 min/max
+    // 屏幕尺寸
     CGSize screen = [UIScreen mainScreen].bounds.size;
     double w = MIN(screen.width, screen.height);
     double h = MAX(screen.width, screen.height);
     if (w < 100 || h < 100) {
         FBLog(@"全局返回：屏幕尺寸拿不到（%.0fx%.0f），放弃", w, h);
+        return NO;
+    }
+
+    // ⚠️ 0.1.19：横屏直接放弃，不猜坐标。
+    // 上面 w/h 是按「竖屏短边/长边」取的，而 ballRectOnScreen 是**当前朝向**的矩形：
+    // 横屏时 FBPickSwipeY 会拿 h=852 去算 mid=426 —— 那是屏幕外，落点全错。
+    // 至于 HID 的归一化坐标到底跟不跟界面旋转，在没有真机读数之前改就是赌：
+    // 赌错了会在横屏下往屏幕上乱划一串，比划不中糟糕得多。
+    // 先明确放弃 + 留日志，等有真机读数再放开。
+    if (screen.width > screen.height) {
+        FBLog(@"全局返回：现在是横屏（%.0fx%.0f），归一化坐标系跟旋转的关系还没在真机上验证过，"
+              @"这次不注入（竖屏下正常可用）", screen.width, screen.height);
         return NO;
     }
 
@@ -612,36 +642,51 @@ BOOL FBGoBack(CGRect ballRectOnScreen)
     static const double xs[] = { 2.0, 18.0, 55.0, 110.0, 170.0, 235.0 };
     const int count = (int)(sizeof(xs) / sizeof(xs[0]));
 
-    // ---- ① 先把整串事件全造出来（造不全就一个都不发，绝不能发一半）----
-    IOHIDEventRef evs[16];
-    int n = 0;
-    for (int i = 0; i < count; i++) {
-        IOHIDEventRef ev = FBMakeTouchEvent(i == 0 ? 0 : 1, xs[i] / w, y / h);
-        if (!ev) {
-            FBLog(@"⚠️ 全局返回：第 %d 个事件造不出来 → 整串放弃（一个都不发，避免卡住触摸）", i);
-            for (int k = 0; k < n; k++) CFRelease(evs[k]);
+    // ---- ① 空跑预检：只验「造得出来」，造完立刻扔掉 ----
+    //
+    // ⚠️ 0.1.19 修「全局返回必然不成立」：原来先把 7 个事件**全造完**再逐个派发，
+    // 而 FBMakeTouchEvent 的第一行就是 `mach_absolute_time()` —— 于是
+    // down / 5×move / up 的 HID 时间戳几乎是同一个瞬间（后面那句「之间 sleep 一点，
+    // 时间戳才像是真手划出来的」注释写反了：usleep 只推迟了**派发**，
+    // 推不动早已定死的时间戳）。
+    // 系统判「左缘返回」靠的就是手指在**时间轴上的位移和速度**，
+    // 零时长的 down→move→up 在识别器眼里只是一次点按，功能一定不成立。
+    //
+    // 保命约束「造不全就一个都不发」必须保留（半串事件会让屏幕上留一根按着
+    // 不放的手指），所以拆成两步：先空跑验能力，**真正要发的那串现造现发**。
+    for (int i = 0; i <= count; i++) {
+        int pi = (i < count) ? i : count - 1;
+        int phase = (i == 0) ? 0 : (i == count ? 2 : 1);
+        IOHIDEventRef probe = FBMakeTouchEvent(phase, xs[pi] / w, y / h);
+        if (!probe) {
+            FBLog(@"⚠️ 全局返回：试造第 %d 个事件就造不出来 → 整体放弃（一个都不发，避免卡住触摸）", i);
             return NO;
         }
-        evs[n++] = ev;
+        CFRelease(probe);
     }
-    IOHIDEventRef up = FBMakeTouchEvent(2, xs[count - 1] / w, y / h);
-    if (!up) {
-        FBLog(@"⚠️ 全局返回：「抬起」造不出来 → 整串放弃（一个都不发，避免卡住触摸）");
-        for (int k = 0; k < n; k++) CFRelease(evs[k]);
-        return NO;
-    }
-    evs[n++] = up;
 
-    // ---- ② 按顺序发（之间 sleep 一点，时间戳才像是真手划出来的）----
+    // ---- ② 现造现发：每条事件的时间戳取自它自己被造出来的那一刻 ----
     gFBInjectCooldownUntil = now + 0.6;
     FBLog(@"全局返回：开始注入（屏幕 %.0fx%.0f，落点 x=2→235 y=%.0f，球矩形=%@）",
           w, h, y, NSStringFromCGRect(ballRectOnScreen));
-    for (int i = 0; i < n; i++) {
-        if (i > 0) usleep(18 * 1000);      // 18ms
-        fbSetSenderID(evs[i], gFBRealSenderID);
-        fbDispatchHIDEvent(fbHIDClient, evs[i]);
+    for (int i = 0; i <= count; i++) {
+        int pi = (i < count) ? i : count - 1;
+        int phase = (i == 0) ? 0 : (i == count ? 2 : 1);
+
+        // usleep 放在**造事件之前**：这样这条事件的时间戳才是「此刻」，
+        // 和它真正派发出去的时刻对得上（时间戳先定、派发后补的老写法正好相反）。
+        if (i > 0) usleep(18 * 1000);      // 18ms ≈ 真实手指划过 235pt 的速度
+
+        IOHIDEventRef ev = FBMakeTouchEvent(phase, xs[pi] / w, y / h);
+        if (!ev) {
+            FBLog(@"⚠️ 全局返回：第 %d 个事件中途造不出来 —— 剩下的不发了，先补一条抬起", i);
+            FBSendLoneUp(xs[count - 1] / w, y / h);
+            return NO;
+        }
+        fbSetSenderID(ev, gFBRealSenderID);
+        fbDispatchHIDEvent(fbHIDClient, ev);
+        CFRelease(ev);
     }
-    for (int i = 0; i < n; i++) CFRelease(evs[i]);
     FBLog(@"全局返回：注入完了（down + %d 个 move + up）—— 看界面回没回上一页", count - 1);
 
     // ---- ③ 兜底：500ms 后再补一条「抬起」----
@@ -709,7 +754,15 @@ static NSString *FBShotClassProbe(void)
 }
 
 /// ① 系统截图服务。YES = 请求已经交出去；NO = 这条路走不通，交给 ②。
-static BOOL FBScreenshotViaService(void)
+/// 返回值：1 = 截成了；0 = 这条路不可用（**可以**降级到按键注入）；
+///         2 = **系统策略禁止**（屏幕使用时间之类）—— 这种情况**绝不降级**。
+///
+/// ⚠️ 0.1.19：原来返回 BOOL，「系统说现在不允许截屏」和「服务不可用」都返回 NO，
+///    而 FBTakeScreenshot 是 `if (ViaService()) return 1; if (ViaHID()) return 2;` ——
+///    于是「不硬来」那句注释和实际控制流**正好相反**：被策略禁止时反而掉进
+///    按键注入那条更危险的兜底。屏幕使用时间这个安全限制形同虚设。
+///    现在把「策略禁止」单独用 2 标出来，调用方见到就到此为止。
+static int FBScreenshotViaService(void)
 {
     static void *handle = NULL;
     static dispatch_once_t once;
@@ -720,7 +773,7 @@ static BOOL FBScreenshotViaService(void)
             FBLog(@"截屏：打不开 ScreenshotServices（%s）—— 走按键注入那条兜底", dlerror() ?: "?");
         }
     });
-    if (!handle) return NO;
+    if (!handle) return 0;   // 可降级
 
     // 能不能截：开了「屏幕使用时间」之类的限制时，系统自己会拒绝
     Class ability = NSClassFromString(@"SSScreenCaptureAbilityCheck");
@@ -728,8 +781,8 @@ static BOOL FBScreenshotViaService(void)
         BOOL (*ableFn)(id, SEL) = (BOOL (*)(id, SEL))objc_msgSend;
         if (!ableFn(ability, @selector(isAbleToTakeScreenshots))) {
             FBLog(@"截屏：系统说现在不允许截屏（SSScreenCaptureAbilityCheck = NO，"
-                  @"常见原因是开了「屏幕使用时间」的限制）—— 不硬来");
-            return NO;
+                  @"常见原因是开了「屏幕使用时间」的限制）—— 不硬来，也不降级到按键注入");
+            return 2;   // ← 策略禁止：不是「这条路不好使」，是「这件事被禁止了」
         }
     }
 
@@ -738,7 +791,7 @@ static BOOL FBScreenshotViaService(void)
     if (!optionsCls || !capturerCls) {
         FBLog(@"截屏：ScreenshotServices 里没找到 SSScreenCapturer / …Options（这套系统里实际有：%@）",
               FBShotClassProbe());
-        return NO;
+        return 0;   // 可降级
     }
 
     @try {
@@ -753,16 +806,16 @@ static BOOL FBScreenshotViaService(void)
         SEL take = NSSelectorFromString(@"takeScreenshotWithPresentationOptions:");
         if (![capturer respondsToSelector:take]) {
             FBLog(@"截屏：SSScreenCapturer 不认 takeScreenshotWithPresentationOptions: —— 走按键注入");
-            return NO;
+            return 0;   // 可降级
         }
         ((void (*)(id, SEL, id))objc_msgSend)(capturer, take, options);
     } @catch (NSException *e) {
         FBLog(@"⚠️ 截屏：系统截图服务抛异常（%@）—— 改走按键注入", e.reason);
-        return NO;
+        return 0;   // 可降级
     }
 
     FBLog(@"截屏：走系统截图服务（ScreenshotServices）—— 画面会闪一下、图进「相册 → 截屏」");
-    return YES;
+    return 1;   // 成功
 }
 
 /// 造一条「按键」事件（down/up）。返回 NULL = 造不出来 → 调用方必须整体放弃。
@@ -854,7 +907,9 @@ static BOOL FBScreenshotViaHID(void)
 
 int FBTakeScreenshot(void)
 {
-    if (FBScreenshotViaService()) return 1;   // 系统截图服务
-    if (FBScreenshotViaHID())     return 2;   // 按键注入兜底
+    int viaService = FBScreenshotViaService();
+    if (viaService == 1) return 1;             // 系统截图服务，成功
+    if (viaService == 2) return 0;             // 策略禁止（屏幕使用时间）—— 到此为止，不硬来
+    if (FBScreenshotViaHID())     return 2;    // 服务不可用，才轮到按键注入兜底
     return 0;
 }

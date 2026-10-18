@@ -128,11 +128,16 @@ jobs:
           cd $GITHUB_WORKSPACE/FloatingBall
           find .theos/obj -name "*.dSYM" -print | zip -r build/FloatingBall_symbols.zip -@ || true
 
+      # ⚠️ 0.1.19：这个步骤原来 100% 是空转 —— 产出了 build/FloatingBall_symbols.zip，
+      #    但下面两处 path/files 都只列了 .tipa，符号包从来没被上传过。
+      #    球以后要是崩在用户手机上，没有符号什么都定位不了。
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
           name: FloatingBall.tipa
-          path: ${{ github.workspace }}/FloatingBall/build/FloatingBall.tipa
+          path: |
+            ${{ github.workspace }}/FloatingBall/build/FloatingBall.tipa
+            ${{ github.workspace }}/FloatingBall/build/FloatingBall_symbols.zip
 
       - name: Upload release
         uses: softprops/action-gh-release@v1
@@ -143,3 +148,4 @@ jobs:
           generate_release_notes: true
           files: |
             ${{ github.workspace }}/FloatingBall/build/FloatingBall.tipa
+            ${{ github.workspace }}/FloatingBall/build/FloatingBall_symbols.zip

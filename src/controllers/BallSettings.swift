@@ -20,14 +20,23 @@ enum BallSettings {
 
     // MARK: - 读
 
+    /// ⚠️ 0.1.19：原来这里写的是 `v == 0 ? fallback : v` —— **无法表达 0 这个合法值**，
+    ///    用户真的存了 0 也会被静默换成默认值（今天恰好无害：
+    ///    BallOpacity 被夹在 ≥0.3、HapticIntensity ≥0.2、BallSize 是 56，
+    ///    但只要哪天加一个「允许 0」的滑块就会炸）。
+    ///    改成和下面的 `bool()` 一样先问 `hasKey`。
     static func double(_ key: String, `default` fallback: Double) -> Double {
-        let v = UserDefaults().double(forKey: key, forPath: path)
-        return v == 0 ? fallback : v
+        guard hasKey(key) else { return fallback }
+        return UserDefaults().double(forKey: key, forPath: path)
     }
 
+    /// ⚠️ 0.1.19：原来 `fallback` 这个参数从头到尾**没被用过** ——
+    ///    函数签名承诺「没设过时返回 fallback」，实际永远返回 0。
+    ///    今天唯一调用点传的恰好是 `default: 0`，所以一直没暴露；
+    ///    只要有人传一个非 0 的默认值就会静默失效。
     static func integer(_ key: String, `default` fallback: Int) -> Int {
-        let v = UserDefaults().integer(forKey: key, forPath: path)
-        return v
+        guard hasKey(key) else { return fallback }
+        return UserDefaults().integer(forKey: key, forPath: path)
     }
 
     static func string(_ key: String, `default` fallback: String) -> String {

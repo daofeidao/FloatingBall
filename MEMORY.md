@@ -1,6 +1,6 @@
 # MEMORY.md — 悬浮球（FloatingBall）
 
-最后更新：2026-10-17
+最后更新：2026-10-18
 
 > 硬规则看 `C:\Users\lion\.config\opencode\AGENTS.md` 与 `E:\文档\默认项目\AGENTS.md`。
 > 这里只记「下次不知道就会做错」的事。
@@ -705,6 +705,19 @@ send([r"...\FloatingBall.tipa"],
 | 0.1.18 | 2026-10-18 | `E:\下载\FloatingBall_0.1.18.tipa` | 415,845 | `4b7419af` |
 | 0.1.19 | 2026-10-18 | `C:\Users\Administrator\Downloads\FloatingBall.tipa` | 421,477 | `bf4f7dbe` |
 | 0.1.20 | 2026-10-18 | `C:\Users\Administrator\Downloads\FloatingBall.tipa` | 423,412 | `a2cfb501` |
+| 0.1.21 | 2026-10-18 | `C:\Users\Administrator\Downloads\FloatingBall.tipa`（邮件已发，to sz202610@126.com / cc lion.2026.10@proton.me） | 424,197 | `6f4f5a0b` |
+| 0.1.22 | 2026-10-18 | GitHub Release `v0.1.22`（CI 10:55 就绿了，但**没打 tag、没发邮件**，白等了 9 个小时；教训见下） | 435,115 | `dc600959` |
+| 0.1.23 | 2026-10-18 | GitHub Release `v0.1.23` + 邮件已发（to sz202610@126.com / cc lion.2026.10@proton.me） | 440,539 | `c4e155e2` |
+
+- 0.1.23：tag `v0.1.23`（第一次打在 `2416aa9` 上，**CI 挂了一次** —— `AboutTab.swift`
+  `text.split(separator:"\n").map(String.init)` 二义，见「硬规则」新增那条；
+  修好后 tag 移到 `71fdfe5`）→ CI run `39122825035` success。
+  0.1.22 的修复（拖动跟手/长按震一次/双击菜单浮层/全局返回参数）**从没上过真机**，
+  和 0.1.23 合成一版交付，邮件里验证顺序按「拖动 → 长按 → 双击菜单 → 连点 → 外观 → 截屏」排。
+- 0.1.22：CI 10:55:28 就 success（run `39121158813`），但**打 tag / 发 release / 发邮件
+  三步都没做** —— 用户 19:00 来问「卡在哪一步」才发现。
+  → **教训：CI 绿了不等于交付完。** 出包流程是四步：commit → push → **tag** → **邮件**，
+  每步都在聊天里明确说「第 X 步完成」，别说「编译通过我就发你」就结束回合。
 
 - 0.1.20：tag `v0.1.20` → CI run `39118095207` **success**（远端 main = `2044a63`）
   → 包 423,412 B / sha256 `a2cfb501`，包内 0.1.20 / build 21。
@@ -785,6 +798,14 @@ send([r"...\FloatingBall.tipa"],
   **却没把 `foundFinger` 变量本身删掉**。加上 0.1.18 那条「改结构先全局搜旧变量名」，
   现在规矩是两条一起：**简化表达式之后要顺手看一眼被删的变量还在不在**
   —— `-Werror` 下「只写不读」等于编译失败。
+
+- **0.1.23 又加一条同源教训**：`text.split(separator: "\n").map(String.init)`
+  报 `ambiguous use of 'split(separator:maxSplits:omittingEmptySubsequences:)'`
+  （`Swift.Sequence` / `Swift.Collection` 两个候选都命中 —— `String` 同时遵守俩协议，
+  Element 在 `Character` 和 `SubSequence` 之间定不下来，链上 `map` 才爆）。
+  → 规矩：**Swift 里切字符串分行，一律用 Foundation 的 `components(separatedBy:)`**
+  （直接给 `[String]`，没有二义）；别用 `split(separator:)` 链式 `.map(String.init)`。
+  （`for line in text.split(separator: "\n")` 循环形式不受影响，但新代码别再写。）
 
   - 0.1.18：tag `v0.1.18` → CI run `39065498165` **success**（远端 main = `fcd772d174f745737c644669086f379c9af5cf55`）
   → 交付邮件 **4:15 发出**（收件箱核验：附件 406.1 KB = 415,845 字节，整封 561.6 KB，带抄送）；

@@ -709,6 +709,16 @@ send([r"...\FloatingBall.tipa"],
 | 0.1.22 | 2026-10-18 | GitHub Release `v0.1.22`（CI 10:55 就绿了，但**没打 tag、没发邮件**，白等了 9 个小时；教训见下） | 435,115 | `dc600959` |
 | 0.1.23 | 2026-10-18 | GitHub Release `v0.1.23` + 邮件已发（to sz202610@126.com / cc lion.2026.10@proton.me） | 440,539 | `c4e155e2` |
 | 0.1.24 | 2026-10-18 | GitHub Release `v0.1.24` + 邮件已发（to sz202610@126.com / cc lion.2026.10@proton.me） | 440,606 | `2239e807` |
+| 0.1.25 | 2026-10-19 | `E:\下载\FloatingBall_0.1.25.tipa`（邮件已发，to sz202610@126.com / cc lion.2026.10@proton.me） | @@BYTES@@ | `@@SHA8@@` |
+
+- 0.1.25：基于用户 0.1.24 最新代码（`origin/main` = `a8f0e06`）出的一行修复：
+  **`sLastFedPoint = winPt` → `= feedPt`**（`src/hud/HUDApp.mm`）。
+  根因：0.1.17 起的「坐标不可信就沿用上一帧」靠 `sLastFedPoint` 续命，但存的是
+  **未经修正的 winPt** —— 一旦某一帧坐标读不到（拖动中手指移出球、或这台设备
+  `[rep location]` 恒为 (0,0)），坏点被**永久记住** → 球钉在原地 / 原地缩放
+  （用户 0.1.24 实测「仍然不能拖动」）。改成存**真正喂出去的 feedPt**，坏点只用一次；
+  超时补抬起那段也一起修好（不会再把球交到 (0,0)）。
+  版本 0.1.25 / build 26；README 加 0.1.25 行；启动页页脚补 0.1.25。
 
 - 0.1.23：tag `v0.1.23`（第一次打在 `2416aa9` 上，**CI 挂了一次** —— `AboutTab.swift`
   `text.split(separator:"\n").map(String.init)` 二义，见「硬规则」新增那条；

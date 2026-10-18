@@ -906,7 +906,13 @@ static void FBHandleHIDEvent(int route, void *target, void *refcon, IOHIDService
 
         sProbeFed++;
         sLastFedAt = now;
-        sLastFedPoint = winPt;
+        // ⚠️ 0.1.25：存**真正喂出去的那个点**（feedPt），不是未经修正的 winPt。
+        //    0.1.17 起的「坐标不可信就沿用上一帧」靠 sLastFedPoint 续命，
+        //    但这里原来存的是坏点：一旦某一帧坐标读不到（拖动中手指移出球、
+        //    或这台设备上 [rep location] 恒为 (0,0)），坏点就被永久记住 ——
+        //    表现正是「球钉在原地不动 / 原地缩放」（用户 0.1.24 实测）。
+        //    超时补抬起那段也用这个量，一起跟着修好了（不会再把球交到 (0,0)）。
+        sLastFedPoint = feedPt;
 
         // 0.1.17：**定时兜底**（0.42 → 0.18 秒）。真机上抬起事件送不到，光靠「等下一条事件」
         // 永远等不到结束：一直攥着假触点，后面的点击全被吃掉 —— 就是「只有第一下有用」。

@@ -86,11 +86,13 @@ struct AboutTab: View {
     private static func actionLogLines() -> [String] {
         guard let text = try? String(contentsOfFile: "/tmp/FloatingBall.log",
                                       encoding: .utf8) else { return [] }
-        return text.split(separator: "\n")
-            .map(String.init)
+        // ⚠️ 别用 text.split(separator: "\n") 再链 .map(String.init) ——
+        // split 的 Element 在 Character / SubSequence 之间二义，链上 map 就报
+        // ambiguous use of 'split(...)'（0.1.23 CI 实测挂在这儿）。
+        // components(separatedBy:) 是 Foundation 的，直接给 [String]，没有二义。
+        return Array(text.components(separatedBy: "\n")
             .filter { $0.contains("截屏") || $0.contains("全局返回") }
-            .suffix(12)
-            .map(String.init)
+            .suffix(12))
     }
 
     private var actionLog: [String] {

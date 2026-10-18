@@ -116,6 +116,7 @@ static int    sProbeOtherRoute = 0;  // 另一条路又送来的触摸（只记�
 static int    sProbeTakeover  = 0;   // ⑤ 接管了（起手落在球上）
 static int    sProbeFed       = 0;   // ⑤ 喂给球视图了
 static int    sProbeThrottled = 0;   // 0.1.19：被节流掉的高频移动事件
+static int    sProbeReused   = 0;   // 0.1.21：拖动时坐标不可信、沿用上一帧的次数
 // ---- 底层字段（0.1.11 加，0.1.14 改「翻子事件」）----
 static int    sProbeAXDown    = 0;   // AX 的 isTouchDown 说过几次「按下」
 // 0.1.14：深读（会翻子事件）的三个计数 —— 这是判断「字段到底读得到读不到」的关键
@@ -183,13 +184,13 @@ static void FBProbeWrite(BOOL force)
     sProbeLastWrite = now;
     NSString *text = [NSString stringWithFormat:
         @"回调=%d（路A=%d 路B=%d 匹配服务=%d） 无rep=%d 无路径=%d id<=0=%d "
-        @"不在球=%d 非本触点=%d 另一条路=%d 接管=%d 喂球=%d 节流=%d\n"
+        @"不在球=%d 非本触点=%d 另一条路=%d 接管=%d 喂球=%d 节流=%d 沿用上一帧=%d\n"
         @"真触摸：窗口问=%d 落在球=%d 真点击=%d 自喂测试=%d\n"
         @"底层：AX按下=%d 深读(有手指=%d 没手指=%d 读不到=%d)\n最后：%@\n",
         sProbeCallbacks, sProbeRouteA, sProbeRouteB, sProbeMatched,
         sProbeNoRep, sProbeNoPath, sProbeZeroID,
         sProbeOffBall, sProbeNotOurs, sProbeOtherRoute, sProbeTakeover, sProbeFed,
-        sProbeThrottled,
+        sProbeThrottled, sProbeReused,
         sProbeHitAsk, sProbeHitBall, sProbeRealTap, sProbeSelfTest,
         sProbeAXDown, sProbeDeepFinger, sProbeDeepUp, sProbeDeepNone, sProbeLast];
     [text writeToFile:FB_PROBE_PATH atomically:YES encoding:NSUTF8StringEncoding error:NULL];
@@ -663,16 +664,55 @@ static void FBHandleHIDEvent(int route, void *target, void *refcon, IOHIDService
         UITouchPhase phase;
         BOOL isNewTouch = NO;
         BOOL tookOver = NO;
+        // ⚠️ 0.1.21：这一帧要用「上一帧那个已知-good的坐标」而不是 winPt。
+        //    见下面 bogusPoint 的处理。
+        BOOL reuseLastPoint = NO;
 
         if (gFBActivePointer != 0) {
-            // 还攥着上一次的触点：抬起 / 超时 / 空坐标 → 交还；否则继续当「移动」
-            // ⚠️ 没有可靠抬起信号时，0.55 秒就交还（长按 0.5 秒已经触发过了，不会误伤），
-            //    这样单击不用等到 1.2 秒，双击也不会被第一下吃掉。
-            NSTimeInterval limit = sSawLiftSignal ? 1.2 : 0.55;
+            // 还攥着上一次的触点：抬起 / 超时 → 交还；否则继续当「移动」
+            //
+            // ⚠️⚠️ 0.1.21 修「拖不动 + 拖动时球反复缩放并连着震」（用户 2026-10-18 实测）
+            //
+            // 以前 `bogusPoint` 和 `timeout` **一样会直接把触点交还**：
+            //   · 拖动时手指移出球 → `onBall` 变 false；坐标换算一旦落到屏幕外
+            //     → 每一帧都判 bogus → 每一帧都 Ended → 下一帧又变成新起手。
+            //   · 于是 **pan 永远积累不到足够的 `Changed` 事件 → 球拖不动**，
+            //     而每一轮新起手都会调 `FBBallHapticTouchDown()` →
+            //     **球反复缩放 + 反复震动**（盲喂测试时在球外拖动看得最清楚）。
+            //
+            // 现在：
+            //   · `bogusPoint` 只用来**否决起手**（那才是它当初要防的「跳到左上角」），
+            //     已经攥着触点时它只代表「这一帧的坐标不可信」→ 沿用上一帧坐标继续 Moved；
+            //   · `timeout` 从 0.55 秒放宽到 1.0 秒（下面 limit 那一行）。
+            //     单击/双击不受影响 —— 它们靠 tap 手势自己判完成，不靠这个超时。
+            NSTimeInterval limit = sSawLiftSignal ? 1.6 : 1.0;
             BOOL timeout = (sLastFedAt > 0 && now - sLastFedAt > limit);
-            if (lifted || timeout || bogusPoint) {
+
+            // 盲喂模式专用的「别把球拖飞」保险：
+            // 盲喂不看位置，所以**在屏幕上任何一处**起手都会被接管。修好连续性之后
+            // 就会出现新问题 —— 用户在远处随手一划，球跟着那根手指满屏跑。
+            // 这里给一道距离闸：离球太远就交还触点（正常模式根本不进这个分支，
+            // 因为正常模式压根不会在球外起手）。
+            BOOL tooFarFromBall = NO;
+            if (gFBBlindFeed && !onBall) {
+                CGFloat dxw = winPt.x - CGRectGetMidX(ballWin);
+                CGFloat dyw = winPt.y - CGRectGetMidY(ballWin);
+                tooFarFromBall = (dxw * dxw + dyw * dyw) > (150.0 * 150.0);
+            }
+
+            if (lifted) {
                 phase = axCancel ? UITouchPhaseCancelled : UITouchPhaseEnded;
-                sLastEndReason = lifted ? @"抬起信号" : (bogusPoint ? @"空坐标" : @"超时");
+                sLastEndReason = axCancel ? @"取消信号" : @"抬起信号";
+            } else if (timeout) {
+                phase = axCancel ? UITouchPhaseCancelled : UITouchPhaseEnded;
+                sLastEndReason = @"超时";
+            } else if (tooFarFromBall) {
+                phase = UITouchPhaseEnded;
+                sLastEndReason = @"盲喂：离球太远，放手";
+            } else if (bogusPoint) {
+                phase = UITouchPhaseMoved;
+                reuseLastPoint = YES;      // 坐标这一帧不可信，沿用上一帧
+                sLastEndReason = @"空坐标(沿用上一帧)";
             } else {
                 phase = UITouchPhaseMoved;
             }
@@ -712,7 +752,8 @@ static void FBHandleHIDEvent(int route, void *target, void *refcon, IOHIDService
         //    「抬起位置离按下位置太远」判失败，而超时时手上这条事件的坐标很可能在别处。
         CGPoint feedPt = winPt;
         if (gFBActivePointer != 0 && !lifted && sLastFedPoint.x != 0 && sLastFedPoint.y != 0
-            && (sLastFedAt > 0 && now - sLastFedAt > (sSawLiftSignal ? 1.2 : 0.6))) {
+            && (reuseLastPoint                              // 0.1.21：这一帧坐标不可信
+                || (sLastFedAt > 0 && now - sLastFedAt > (sSawLiftSignal ? 1.6 : 1.0)))) {
             feedPt = sLastFedPoint;
         }
 
@@ -768,12 +809,18 @@ static void FBHandleHIDEvent(int route, void *target, void *refcon, IOHIDService
 
         if (phase == UITouchPhaseEnded || phase == UITouchPhaseCancelled) {
             if (sProbeFed == 1 || isNewTouch) {
-                FBLog(@"触摸：触点 %ld 交还（phase=%ld）", (long)pointerId, (long)phase);
+                FBLog(@"触摸：触点 %ld 交还（phase=%ld 原因=%@）",
+                      (long)pointerId, (long)phase, sLastEndReason);
             }
             gFBActivePointer = 0;
         } else {
             if (isNewTouch) {
                 FBLog(@"触摸：接管触点 %ld（窗口点 %.0f,%.0f）", (long)pointerId, winPt.x, winPt.y);
+            } else if (reuseLastPoint) {
+                // 0.1.21：拖动时最常见的这一支。原来它会把触点交还（→ 拖不动）。
+                sProbeReused++;
+                FBLog(@"触摸：这一帧坐标不可信，沿用上一帧 (%.0f,%.0f)（不交还触点）",
+                      feedPt.x, feedPt.y);
             }
             gFBActivePointer = pointerId;
         }

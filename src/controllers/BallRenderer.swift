@@ -200,7 +200,14 @@ enum BallRenderer {
         let image = render(shape: shape, color: color, pixelSize: 512, customImage: custom)
         guard let data = image.pngData() else { return "PNG 编码失败" }
         do {
-            try data.write(to: URL(fileURLWithPath: ballImagePath))
+            // ⚠️ 0.1.21：必须 .atomic —— 球进程**正在读**这个文件
+            //    （BallRootViewController.applyBallStyle 每 2 秒读一次）。
+            //    非原子写是「截断 → 写」，球正好在这中间读到半截 PNG →
+            //    imageWithContentsOfFile: 返回 nil → 球退回包里的默认图，
+            //    而轮询那边已经把「新 mtime」记成基准了 → **再也不会重试** →
+            //    表现就是点「重新应用外观」球纹丝不动（用户 2026-10-18 实测）。
+            //    和 UserDefaults 那次是同一个病（同一个跨进程共享文件的坑）。
+            try data.write(to: URL(fileURLWithPath: ballImagePath), options: .atomic)
             return nil
         } catch {
             return "写不进 \(ballImagePath)（\(error.localizedDescription)）"

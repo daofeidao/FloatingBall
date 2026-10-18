@@ -24,7 +24,7 @@
 
 // 0.1.16：这些方法互相调用，先声明一遍，省得编译器报「找不到方法」
 @interface BallRootViewController ()
-- (void)applyBallStyle;
+- (BOOL)applyBallStyle;   // 0.1.21：返回「这一轮有没有真的拿到贴图」
 - (void)applyLayout;
 - (void)refreshLabel;
 - (void)writeStyleDiag:(NSString *)source;
@@ -257,12 +257,22 @@ void FBBallHapticTouchDown(void)
     if ([look isEqualToString:sLastLook]) return;
 
     FBLog(@"外观变了（%@），重新应用", look);
-    sLastLook = look;
 
     [self loadPrefs];
-    [self applyBallStyle];
+    BOOL ok = [self applyBallStyle];
     [self applyLayout];
     [self refreshLabel];
+
+    // ⚠️ 0.1.21：**别在失败时也把基准记死**。
+    // 贴图正被另一个进程改写时，这一轮很可能读到半截的 PNG → 退回默认图。
+    // 以前不管成不成都把 sLastLook 更新了，于是「这一轮没读到」= 永久不再重试
+    // → 点「重新应用外观」球纹丝不动。改成：只有真的拿到了图才记基准，
+    // 下个 2 秒周期还会再试一次。
+    if (ok || _fallbackBall == NO) {
+        sLastLook = look;
+    } else {
+        FBLog(@"⚠️ 这一轮没读到完整贴图，先不记基准，2 秒后再试");
+    }
 }
 
 /// 把「现在到底用了哪张图、球多大、透明度多少」写到 /tmp/FloatingBall.style，
@@ -812,10 +822,14 @@ void FBBallHapticTouchDown(void)
 
 #pragma mark - 视图刷新
 
-- (void)applyBallStyle
+/// 重新应用外观。
+/// - Returns: 0.1.21 起返回 BOOL —— `YES` = 真的拿到图了（或者本来就该走兜底路径）；
+///                `NO` = 贴图读不出来（多半是另一个进程正在改写它），调用方据此决定要不要重试。
+- (BOOL)applyBallStyle
 {
     // 贴图由 App 那边按「形状 + 颜色 + 自定义图」画好写到公共路径（见 BallRenderer.swift），
     // 这里只负责读文件显示 —— 画图代码只有一处，预览和实际不会不一致。
+    BOOL applied = YES;   // 0.1.21
     UIImage *image = [UIImage imageWithContentsOfFile:BALL_IMAGE_PATH];
     NSString *source = @"App 画的贴图";
     if (!image) {
@@ -838,6 +852,7 @@ void FBBallHapticTouchDown(void)
         _ball.layer.borderColor = [UIColor colorWithWhite:1.0 alpha:0.35].CGColor;
         _fallbackBall = YES;
         FBLog(@"⚠️ 没有任何贴图（%@ 和包里的默认图都不在），退化成纯色球", BALL_IMAGE_PATH);
+        applied = NO;   // 0.1.21：告诉调用方这一轮没拿到图，让它别把基准记死
     }
 
     // 移动模式的高亮圈不能被「重设样式」抹掉
@@ -856,6 +871,7 @@ void FBBallHapticTouchDown(void)
 
     [self updateShadowPath];
     [self writeStyleDiag:source];
+    return applied;   // 0.1.21
 }
 
 - (void)updateShadowPath

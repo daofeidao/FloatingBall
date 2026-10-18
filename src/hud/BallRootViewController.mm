@@ -725,7 +725,6 @@ void FBBallHapticTouchDown(void)
 
     // ---- 摆位：竖排，贴在球那一侧（球在右半边就往左弹，反之往右弹）----
     CGFloat mh = CGRectGetHeight(menu.frame);
-    CGFloat ballHalf = [self ballSize] / 2.0;
     CGRect sb = [self screenBounds];
 
     CGFloat mx;

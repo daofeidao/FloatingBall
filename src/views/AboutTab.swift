@@ -79,11 +79,31 @@ struct AboutTab: View {
     @State private var selfTestRunning = false
     @State private var selfTestResult = ""
 
-    // ---- 真实点球诊断（0.1.15）----
+    // ---- 截屏/全局返回的日志（0.1.23）----
+    /// 这两个动作走的是「注入按键/触摸」，手机上看不见任何提示，
+    /// 出问题只能靠日志。以前每次都得让用户开终端，太绕 ——
+    /// 这里直接把球进程日志里相关的几行抠出来显示。
+    private static func actionLogLines() -> [String] {
+        guard let text = try? String(contentsOfFile: "/tmp/FloatingBall.log",
+                                      encoding: .utf8) else { return [] }
+        return text.split(separator: "\n")
+            .map(String.init)
+            .filter { $0.contains("截屏") || $0.contains("全局返回") }
+            .suffix(12)
+            .map(String.init)
+    }
+
+    private var actionLog: [String] {
+        _ = actionLogTick
+        return Self.actionLogLines()
+    }
+
+// ---- 真实点球诊断（0.1.15）----
     @State private var blindFeed = BallSettings.bool("BlindFeed", default: false)
     /// 0.1.20：`_ignoresHitTest` 的开关（见 HUDMainWindow 里的注释）。
     /// **默认 false = 不吃掉触摸**（宁可穿透，也不能整屏哑巴）。
     @State private var swallowTouch = BallSettings.bool("SwallowTouch", default: false)
+    @State private var actionLogTick = 0
     @State private var diagTick = 0
     private let diagTicker = Timer.publish(every: 1.0, on: .main, in: .common).autoconnect()
 
@@ -179,6 +199,19 @@ struct AboutTab: View {
                             .font(.system(.caption2, design: .monospaced))
                             .foregroundColor(.secondary)
                     }
+                }
+
+                Section(header: Text("截屏 / 全局返回 的执行记录（0.1.23）"),
+                        footer: Text("这两个动作靠「往系统注入按键/触摸」实现，手机上看不见任何提示，出问题只能看日志。先在屏幕上试一次，再点下面的刷新。")) {
+                    if actionLog.isEmpty {
+                        Text("还没有相关记录 —— 先在屏幕上用一次「截屏」或「全局返回」。")
+                            .font(.footnote)
+                    } else {
+                        ForEach(Array(actionLog.enumerated()), id: \.offset) { _, line in
+                            Text(line).font(.system(.caption2, design: .monospaced))
+                        }
+                    }
+                    Button("刷新记录") { actionLogTick += 1 }
                 }
 
                 Section(header: Text("穿透（0.1.20 新增，先关着）"),

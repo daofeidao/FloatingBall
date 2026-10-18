@@ -889,11 +889,28 @@ static BOOL FBScreenshotViaHID(void)
         return NO;
     }
 
-// ---- 序列：音量加↓ → 电源↓ → 电源↑ → 音量加↑ ----
+// ---- 序列：音量加↓ → 电源↓ →（重叠一会儿）→ 电源↑ → 音量加↑ ----
     static const uint32_t kShotUsages[4] = { FBHIDUsageVolumeUp, FBHIDUsageLock,
                                              FBHIDUsageLock,   FBHIDUsageVolumeUp };
     static const BOOL kShotDown[4]      = { YES, YES, NO, NO };
     static const char *kShotLabels[4]   = { "音量加↓", "电源↓", "电源↑", "音量加↑" };
+
+    // ⚠️⚠️ 0.1.23 改这三个时间（用户 2026-10-18 实测截图不对）。
+    //
+    // 原来四个事件之间一律 `usleep(60ms)`，于是「电源↓ → 电源↑」的重叠只有 60ms。
+    // iOS 判「Side + 音量加」是组合键靠的正是**两个键同时被按住的那段时间**，
+    // 60ms 太短 → 系统不认组合键，于是这一串被当成
+    // 「按了一下音量加（音量变大）+ 按了一下电源（锁屏）」两次独立按键。
+    //
+    // 现在：
+    //   音量加↓  ──50ms──▶ 电源↓ ──180ms──▶ 电源↑ ──50ms──▶ 音量加↑
+    //                        └──── 两个键同时按住 180ms ────┘
+    // 180ms 要够系统认出组合键；同时必须**远小于 500ms** ——
+    // 长按电源键会呼出 Siri / 助理功能，停太久就会变成那个。
+    static const int kShotLeadMs    = 50;    // 音量加按下后停多久再按电源
+    static const int kShotOverlapMs = 180;   // 两键同时按住多久
+    static const int kShotTailMs    = 50;    // 电源松开后再松开音量加
+    static const int kShotStepMs[3] = { kShotLeadMs, kShotOverlapMs, kShotTailMs };
 
     // ---- ① 空跑预检：只验「造得出来」，造完立刻扔掉 ----
     //
@@ -918,7 +935,7 @@ static BOOL FBScreenshotViaHID(void)
     FBLog(@"截屏：开始注入按键组合（音量加 + 电源），共 4 条");
     for (int i = 0; i < 4; i++) {
         // usleep 放在**造事件之前**，让这条的时间戳就是「此刻」。
-        if (i > 0) usleep(60 * 1000);     // 60ms —— 组合键的判定窗口
+        if (i > 0) usleep(kShotStepMs[i - 1] * 1000);
 
         IOHIDEventRef ev = FBMakeKeyEvent(kShotUsages[i], kShotDown[i]);
         if (!ev) {

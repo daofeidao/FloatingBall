@@ -633,7 +633,29 @@ _CTServerConnectionResetModem(conn, CFSTR("UserTriggeredReload"))
 > 只给 GitHub 链接，都等于没交付。主题固定带版本号 +「含 IPA」。
 > 正文必须带：文件名 + 字节数 + **sha256** + 怎么装/怎么用/怎么验 + 已知问题。
 > 邮件发失败要当场在聊天里说清楚原因，不能默默吞掉。
-> 核验用 `C:\Users\lion\.workbuddy\skills\mail-126\scripts\read_mail.py`（126 的 IMAP 必须先发 `ID` 命令）。
+
+### 怎么发（2026-10-18 定：走脚本，不走 UI）
+
+用项目自带的 **`scripts/send_mail.py`**（纯标准库，不装依赖）：
+
+```
+python scripts/send_mail.py <文件> <收件人> "<主题带版本号+含IPA>" ref/mail_body.txt
+```
+
+- **凭证复用 WorkBuddy 那套已验证的 126 邮箱**：`D:\wb\scripts\notify\notify.json`
+  （明文授权码，本仓库**不复制、不提交**）。脚本找不到就自动去桌面那份找。
+- ⚠️ **别用桌面上那个 `wb\scripts\send-file-mail\发送文件到邮箱.exe`** ——
+  它是给用户**手动点**的：无窗口（`MainWindowHandle=0`）、吃 stdin，
+  脚本调用会**挂住直到超时**（实测 `--help` 直接卡死，起了进程只能强杀）。
+- ⚠️ **收件人如果是外部地址，本机无法自证送达** —— 能读的那个信箱是凭证里的
+  `user` 自己。以前一直「自发自收」，所以每次发完能用 `read_mail.py` 核验
+  （`D:\wb\scripts\notify\read_mail.py --all --subject <关键词>`）；
+  发给外部地址只能让用户在手机上确认，**发之前要讲清楚这一点，别默默发完就算数**。
+- 主题固定带版本号和「含 IPA」—— 手机上下载附件再交给巨魔，正文要让用户不用开终端就能验。
+
+> ⚠️ 另记一条本机情况：`D:\wb` 和 桌面上的 `wb` 是**两个独立目录**（不是联接/符号链接），
+> 目前 `notify.json` 哈希相同所以都能用，但**改一边另一边不会自动同步**。
+> 另外 `notify.json` 里是**明文授权码**，而这个目录在桌面上。
 
 | 版本 | 时间 | 交付文件 | 字节数 | sha256 前 8 位 |
 |---|---|---|---|---|

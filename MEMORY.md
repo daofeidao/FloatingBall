@@ -634,26 +634,52 @@ _CTServerConnectionResetModem(conn, CFSTR("UserTriggeredReload"))
 > 正文必须带：文件名 + 字节数 + **sha256** + 怎么装/怎么用/怎么验 + 已知问题。
 > 邮件发失败要当场在聊天里说清楚原因，不能默默吞掉。
 
-### 怎么发（2026-10-18 定：走脚本，不走 UI）
+### 怎么发（2026-10-18 定：走脚本，不走 UI，也**不要**重复发明轮子）
 
-用项目自带的 **`scripts/send_mail.py`**（纯标准库，不装依赖）：
+⚠️ **唯一事实来源**：`C:\Users\Administrator\.workbuddy\skills\wb-send-file-mail\scripts\send_file_mail.py`
+（`send_file_mail_gui.py` 只是它的 tkinter 壳；桌面上的 `发送文件到邮箱.exe` 是它冻成的单文件。
+**核心逻辑三份是同一份**，改口径只改 `send_file_mail.py`。）
 
+里面写死了既定口径，文件头明确标注「**使用者已确认，不要让他重复交代**」：
+
+| 项 | 值 |
+|---|---|
+| 收件人 | `sz202610@126.com` |
+| 抄送 | `lion.2026.10@proton.me` |
+| 发件箱 | `13086848965@126.com`（smtp.126.com:465） |
+| 凭证 | `D:\wb\scripts\notify\notify.json`（明文授权码，**仓库不复制不提交**） |
+
+**直接调它的 `send()` 函数**（正文长，别走命令行 `--body`，会踩中文/引号）：
+
+```python
+import sys, io
+sys.path.insert(0, r"C:\Users\Administrator\.workbuddy\skills\wb-send-file-mail\scripts")
+from send_file_mail import send
+send([r"...\FloatingBall.tipa"],
+     subject="悬浮球 0.1.20 已出包（含 IPA：FloatingBall.tipa）",
+     body=io.open(r"...\mail_body.txt", encoding="utf-8").read())
+# 返回 {"to","cc","sender","files","total_size"}
 ```
-python scripts/send_mail.py <文件> <收件人> "<主题带版本号+含IPA>" ref/mail_body.txt
-```
 
-- **凭证复用 WorkBuddy 那套已验证的 126 邮箱**：`D:\wb\scripts\notify\notify.json`
-  （明文授权码，本仓库**不复制、不提交**）。脚本找不到就自动去桌面那份找。
-- ⚠️ **别用桌面上那个 `wb\scripts\send-file-mail\发送文件到邮箱.exe`** ——
-  它是给用户**手动点**的：无窗口（`MainWindowHandle=0`）、吃 stdin，
-  脚本调用会**挂住直到超时**（实测 `--help` 直接卡死，起了进程只能强杀）。
-- ⚠️ **收件人如果是外部地址，本机无法自证送达** —— 能读的那个信箱是凭证里的
-  `user` 自己。以前一直「自发自收」，所以每次发完能用 `read_mail.py` 核验
-  （`D:\wb\scripts\notify\read_mail.py --all --subject <关键词>`）；
-  发给外部地址只能让用户在手机上确认，**发之前要讲清楚这一点，别默默发完就算数**。
-- 主题固定带版本号和「含 IPA」—— 手机上下载附件再交给巨魔，正文要让用户不用开终端就能验。
+规矩不变（全局 `AGENTS.md` 第八节）：主题固定带版本号 +「含 IPA」（手机上下载邮件附件再交给巨魔）；
+正文必须带 **文件名 + 字节数 + sha256 + 怎么装 / 怎么用 / 怎么验 + 已知问题**。
 
-> ⚠️ 另记一条本机情况：`D:\wb` 和 桌面上的 `wb` 是**两个独立目录**（不是联接/符号链接），
+#### 这条路上踩过的两个坑
+
+1. **别问用户收件人**。口径已经在脚本里定死了，问了是白问
+   （0.1.20 那轮我专门发了一次提问，事后才发现没必要）。
+2. **⚠️ 漏抄送**：0.1.20 我第一封是用自己临时写的脚本发的，
+   **没抄送 `lion.2026.10@proton.me`**，事后才发现并补发了一封。
+   → **每次发完必须核对返回的 `to` 和 `cc` 都对**，别只看「发送成功」。
+
+#### 核验送达的边界
+
+本机能读的信箱是凭证里的 `user` 自己（`D:\wb\scripts\notify\read_mail.py`，用 IMAP）。
+收件人 `sz202610@126.com` **读不到**，所以**发出去之后无法自证送达** —— 只能让用户自己在手机上确认。
+（`lion.2026.10@proton.me` 那个抄送信箱本机同样读不到。）
+> **这一条要在聊天里跟用户讲清楚，不能默默发完就算数。**
+
+> ⚠️ 本机另一件事：`D:\wb` 和 桌面上的 `wb` 是**两个独立目录**（不是联接/符号链接），
 > 目前 `notify.json` 哈希相同所以都能用，但**改一边另一边不会自动同步**。
 > 另外 `notify.json` 里是**明文授权码**，而这个目录在桌面上。
 

@@ -135,6 +135,11 @@ static int    sProbeTakeover  = 0;   // ⑤ 接管了（起手落在球上）
 static int    sProbeFed       = 0;   // ⑤ 喂给球视图了
 static int    sProbeThrottled = 0;   // 0.1.19：被节流掉的高频移动事件
 static int    sProbeReused   = 0;   // 0.1.21：拖动时坐标不可信、沿用上一帧的次数
+
+/// 0.1.22：这一轮触摸（从起手开始）里有没有收到过 Moved。
+/// 手指按住不动时数字器**不会**产生新事件，所以「没收到过 Moved」= 用户在长按，
+/// 不是「触点卡死」。用它把 timeout 挡掉（不然长按会每秒震一下）。
+static BOOL   sSawMoveSinceBegin = NO;
 // ---- 底层字段（0.1.11 加，0.1.14 改「翻子事件」）----
 static int    sProbeAXDown    = 0;   // AX 的 isTouchDown 说过几次「按下」
 // 0.1.14：深读（会翻子事件）的三个计数 —— 这是判断「字段到底读得到读不到」的关键
@@ -604,6 +609,7 @@ static void FBHandleHIDEvent(int route, void *target, void *refcon, IOHIDService
         CGRect menuTouch = CGRectInset(gFBMenuArea, -10.0, -10.0);   // 同样放宽 10pt 给手指
         BOOL hasMenu = !CGRectIsEmpty(gFBMenuArea);
 
+        // ---- 第一轮：球 / 菜单里的点（决定 onBall、onMenu）----
         for (int i = 0; i < candCount; i++) {
             if (cands[i].x == 0.0 && cands[i].y == 0.0) continue;   // 没手指的事件常带 (0,0)
             CGPoint asScreen = [window convertPoint:cands[i] fromWindow:nil];
@@ -613,6 +619,27 @@ static void FBHandleHIDEvent(int route, void *target, void *refcon, IOHIDService
             if (hasMenu) {
                 if (CGRectContainsPoint(menuTouch, asScreen)) { winPt = asScreen; matched = i; break; }
                 if (CGRectContainsPoint(menuTouch, cands[i])) { winPt = cands[i]; matched = i; break; }
+            }
+        }
+
+        // ---- 第二轮：不在球/菜单里，但**落在屏幕内**的候选点 ----
+        //
+        // ⚠️⚠️ 0.1.22 修「拖动不跟手」（用户实测：拖球时球只在原地缩放，不跟着手走）。
+        //
+        //    第一轮一个都没匹配上时，`winPt` 保持 `[rep location]` 换算来的值。
+        //    而 `[rep location]` 读的是 HID **父事件**（collection）—— 0.1.14 已经查明
+        //    父事件上没有坐标、坐标全在**子事件**上。所以移动事件的 location 经常是
+        //    (0,0) 或某个固定值 → 一路 bogus → 沿用上一帧坐标 → 球钉在原地不动。
+        //
+        //    候选点 ③（`hidNX/hidNY`，来自会翻子事件的 `FBHIDReadTouchDeep`）
+        //    才是拖动时真正能拿到真坐标的来源。所以这里补一轮：
+        //    **只要有一个候选点落在屏幕范围内，就用它**（哪怕它在球外面）——
+        //    手指本来就该能拖出球。
+        if (matched < 0 && !CGRectContainsPoint(screenRect, winPt)) {
+            for (int i = 0; i < candCount; i++) {
+                if (cands[i].x == 0.0 && cands[i].y == 0.0) continue;
+                CGPoint asScreen = [window convertPoint:cands[i] fromWindow:nil];
+                if (CGRectContainsPoint(screenRect, asScreen)) { winPt = asScreen; matched = i; break; }
             }
         }
 
@@ -628,21 +655,41 @@ static void FBHandleHIDEvent(int route, void *target, void *refcon, IOHIDService
         // 触点还活着时，新事件的点离上一次喂过的点太远（>90pt 且隔了 30ms 以上），
         // 那一定是**新的一下**，不是这一根的移动 —— 先把旧的结束，再按新触点处理。
         // （修「只有第一下有用」：后面的点击全被并成第一根的「移动」，于是再也没有新触摸）
+        //
+        // ⚠️⚠️ 0.1.22 修「拖不动 + 每秒震一下」（用户 2026-10-18 实测：
+        //    「拖球不跟手，只在原地缩放一下」；「长按每隔 1 秒震一下」）。
+        //
+        //    原来这个「跳点」判定直接拿 **未经修正的 `winPt`** 去和 `sLastFedPoint` 比。
+        //    而拖动/长按时，移动事件里 `[rep location]` 经常读不到有效坐标
+        //    （退化成 (0,0) 或某个固定值）—— 于��它每次都「跳了三四百 pt」→ 每次都补抬起
+        //    → 下一条又变成新起手 → 每秒一次「补抬起 + 重新起手」= 每秒震一下、球原地缩放。
+        //
+        //    **关键**：`bogusPoint`（下面算）本来就是干「这一帧坐标不可信」这件事的，
+        //    但它算在**这段之后**，所以修正根本来不及生效 —— 两个机制在做同一件事，
+        //    而且抢先的那个用的是坏数据。
+        //    现在：**坐标不可信时不算「跳点」**（沿用上一帧坐标继续移动），
+        //    只有坐标可信（真的在屏内、不是 (0,0)）且位移异常时才算跳点。
         if (gFBActivePointer != 0 && sLastFedAt > 0) {
-            CGFloat dx = winPt.x - sLastFedPoint.x;
-            CGFloat dy = winPt.y - sLastFedPoint.y;
-            if (dx * dx + dy * dy > 90.0 * 90.0 && (now - sLastFedAt) > 0.03) {
-                [TSEventFetcher receiveAXEventID:gFBActivePointer
-                              atGlobalCoordinate:sLastFedPoint
-                                  withTouchPhase:UITouchPhaseEnded
-                                        inWindow:window
-                                          onView:ball];
-                FBLog(@"触摸：点跳了 %.0fpt（%.0f,%.0f → %.0f,%.0f），先把触点 %ld 结束掉",
-                      sqrt(dx * dx + dy * dy),
-                      sLastFedPoint.x, sLastFedPoint.y, winPt.x, winPt.y,
-                      (long)gFBActivePointer);
-                sLastEndReason = @"跳点补抬起";
-                gFBActivePointer = 0;
+            BOOL ptUnreliable = (location.x == 0.0 && location.y == 0.0)
+                             || winPt.x < -30.0 || winPt.y < -30.0
+                             || winPt.x > screenRect.size.width + 30.0
+                             || winPt.y > screenRect.size.height + 30.0;
+            if (!ptUnreliable) {
+                CGFloat dx = winPt.x - sLastFedPoint.x;
+                CGFloat dy = winPt.y - sLastFedPoint.y;
+                if (dx * dx + dy * dy > 90.0 * 90.0 && (now - sLastFedAt) > 0.03) {
+                    [TSEventFetcher receiveAXEventID:gFBActivePointer
+                                  atGlobalCoordinate:sLastFedPoint
+                                      withTouchPhase:UITouchPhaseEnded
+                                            inWindow:window
+                                              onView:ball];
+                    FBLog(@"触摸：点跳了 %.0fpt（%.0f,%.0f → %.0f,%.0f），先把触点 %ld 结束掉",
+                          sqrt(dx * dx + dy * dy),
+                          sLastFedPoint.x, sLastFedPoint.y, winPt.x, winPt.y,
+                          (long)gFBActivePointer);
+                    sLastEndReason = @"跳点补抬起";
+                    gFBActivePointer = 0;
+                }
             }
         }
 
@@ -720,6 +767,19 @@ static void FBHandleHIDEvent(int route, void *target, void *refcon, IOHIDService
             NSTimeInterval limit = sSawLiftSignal ? 1.6 : 1.0;
             BOOL timeout = (sLastFedAt > 0 && now - sLastFedAt > limit);
 
+            // ⚠️⚠️ 0.1.22 修「长按每隔 1 秒震一下」（用户实测）。
+            //
+            //    **手指按住不动时，数字器本来就不产生新的移动事件** —— 这是硬件行为。
+            //    所以「长时间没有新事件」在长按场景下是**正常**的，
+            //    而我们的 timeout 却把它当成「触点卡死、抬起送不到了」→ 补一个 Ended
+            //    → 紧接着的新事件又变成**新起手** → FBBallHapticTouchDown()
+            //    → **每秒震一下、球每秒缩一下**。用户描述得完全吻合。
+            //
+            //    判据：**这一轮里一条 Moved 都没收到过** = 手指一直没动 = 长按/按住，
+            //    不是卡死 → 不走 timeout。（长按 0.5 秒要触发，靠的是 UIKit 那边
+            //    UITouch 停在 Stationary 计时，本来就不需要我们持续喂 Moved。）
+            if (!sSawMoveSinceBegin) timeout = NO;
+
             // 盲喂模式专用的「别把球拖飞」保险：
             // 盲喂不看位置，所以**在屏幕上任何一处**起手都会被接管。修好连续性之后
             // 就会出现新问题 —— 用户在远处随手一划，球跟着那根手指满屏跑。
@@ -748,6 +808,7 @@ static void FBHandleHIDEvent(int route, void *target, void *refcon, IOHIDService
             } else {
                 phase = UITouchPhaseMoved;
             }
+            if (phase == UITouchPhaseMoved) sSawMoveSinceBegin = YES;   // 0.1.22
         } else {
             // 没有在手上的触点：这一下必须「落在球上」（盲喂模式下不看位置）
             BOOL beganSignal = axDown || (hidOK && (hidTouch == 1 || hidRange == 1)) || gFBBlindFeed;
@@ -768,6 +829,7 @@ static void FBHandleHIDEvent(int route, void *target, void *refcon, IOHIDService
             isNewTouch = YES;
             tookOver = YES;
             sProbeTakeover++;
+            sSawMoveSinceBegin = NO;   // 0.1.22：新的一轮，重置「有没有动过」
             FBProbeNote([NSString stringWithFormat:
                 @"⑤ 起手在球上→接管（id=%ld 点=(%.0f,%.0f) 窗口点=(%.0f,%.0f) 球(窗口)=%@ "
                 @"信号=%@ 候选=%d 命中=%d 深读(t=%d r=%d)）",

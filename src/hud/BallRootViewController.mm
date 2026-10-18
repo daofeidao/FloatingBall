@@ -173,6 +173,98 @@ static const CGFloat kBallTouchSlack = 10.0;
 
 @end
 
+/// 菜单里的一项。点它就把 key 交给 BallRootViewController 去执行。
+
+static const CGFloat kMenuRowH     = 40.0;   // 一行多高
+static const CGFloat kMenuRowGap   = 4.0;    // 行间距
+static const CGFloat kMenuPadX     = 14.0;   // 左右内边距
+static const CGFloat kMenuPadY     = 8.0;
+static const CGFloat kMenuCorner   = 14.0;
+static const CGFloat kMenuWidth    = 168.0;
+static const CGFloat kMenuGapFromBall = 10.0;
+static const CGFloat kMenuMaxRows  = 8.0;    // 超过就滚动不了，所以条数上限就是 8
+
+@interface FBQuietMenuItem : NSObject
+@property (nonatomic, copy) NSString *key;      // "app:xxx" / "action:xxx" / "url:xxx"
+@property (nonatomic, copy) NSString *title;
+@property (nonatomic, copy) NSString *symbol;   // SF Symbol 名
+@end
+@implementation FBQuietMenuItem
+@end
+
+@interface FBQuietMenuView : UIView
+@property (nonatomic, weak) id menuTapHandler;   // BallRootViewController
+- (instancetype)initWithItems:(NSArray<FBQuietMenuItem *> *)items;
+@end
+
+@implementation FBQuietMenuView
+
+- (instancetype)initWithItems:(NSArray<FBQuietMenuItem *> *)items
+{
+    CGFloat h = kMenuPadY * 2 + items.count * kMenuRowH + MAX(0, (CGFloat)items.count - 1) * kMenuRowGap;
+    if (self = [super initWithFrame:CGRectMake(0, 0, kMenuWidth, h)]) {
+        self.backgroundColor = [UIColor colorWithWhite:0.12 alpha:0.92];
+        self.layer.cornerRadius = kMenuCorner;
+        self.layer.masksToBounds = YES;
+        // 菜单要投一层影在下面的 App 上，不然糊成一片看不清
+        self.layer.shadowColor = [UIColor blackColor].CGColor;
+        self.layer.shadowOpacity = 0.45;
+        self.layer.shadowRadius = 12.0;
+        self.layer.shadowOffset = CGSizeMake(0.0, 4.0);
+        self.userInteractionEnabled = YES;
+
+        // 出现动画：从球那一侧缩出来。用 alpha+scale，纯 transform 不依赖任何系统服务。
+        self.alpha = 0.0;
+        self.transform = CGAffineTransformMakeScale(0.86, 0.86);
+        [UIView animateWithDuration:0.16 animations:^{
+            self.alpha = 1.0;
+            self.transform = CGAffineTransformIdentity;
+        }];
+
+        CGFloat y = kMenuPadY;
+        for (NSInteger i = 0; i < (NSInteger)items.count; i++) {
+            FBQuietMenuItem *item = items[i];
+
+            UIControl *row = [[UIControl alloc] initWithFrame:CGRectMake(0, y, kMenuWidth, kMenuRowH)];
+            row.tag = 1000 + i;                     // tag 装索引，回调时取
+            row.backgroundColor = [UIColor clearColor];
+            [row addTarget:self action:@selector(onRow:) forControlEvents:UIControlEventTouchUpInside];
+            [self addSubview:row];
+
+            UIImageView *icon = [[UIImageView alloc] initWithImage:[UIImage systemImageNamed:item.symbol]];
+            icon.tintColor = [UIColor whiteColor];
+            icon.contentMode = UIViewContentModeScaleAspectFit;
+            icon.frame = CGRectMake(kMenuPadX, (kMenuRowH - 18) / 2, 18, 18);
+            icon.userInteractionEnabled = NO;
+            [row addSubview:icon];
+
+            UILabel *label = [[UILabel alloc] initWithFrame:CGRectMake(kMenuPadX + 26, 0,
+                                                                         kMenuWidth - kMenuPadX - 26 - 8,
+                                                                         kMenuRowH)];
+            label.text = item.title;
+            label.textColor = [UIColor whiteColor];
+            label.font = [UIFont systemFontOfSize:15.0 weight:UIFontWeightMedium];
+            label.userInteractionEnabled = NO;
+            [row addSubview:label];
+
+            y += kMenuRowH + kMenuRowGap;
+        }
+    }
+    return self;
+}
+
+- (void)onRow:(UIControl *)sender
+{
+    BallRootViewController *vc = (BallRootViewController *)self.menuTapHandler;
+    NSInteger idx = sender.tag - 1000;
+    // 事件走的是 UIButton/UIControl 的 target-action，和手势一样由 UIKit 派发，
+    // 所以合成触摸喂进来时它们照样会被调到。
+    if ([vc respondsToSelector:@selector(quickMenuDidSelectIndex:)]) {
+        [vc quickMenuDidSelectIndex:idx];
+    }
+}
+
+@end
 @implementation BallRootViewController {
     UIImageView *_ball;       // 球本体（贴图；样式可在 App 里换）
     UILabel *_label;
@@ -558,97 +650,7 @@ void FBBallHapticTouchDown(void)
 // 点菜单外面关掉菜单（这一下由 HUDApp 的 gFBConsumeWholeScreen 接管）。
 // ============================================================================
 
-static const CGFloat kMenuRowH     = 40.0;   // 一行多高
-static const CGFloat kMenuRowGap   = 4.0;    // 行间距
-static const CGFloat kMenuPadX     = 14.0;   // 左右内边距
-static const CGFloat kMenuPadY     = 8.0;
-static const CGFloat kMenuCorner   = 14.0;
-static const CGFloat kMenuWidth    = 168.0;
-static const CGFloat kMenuGapFromBall = 10.0;
-static const CGFloat kMenuMaxRows  = 8.0;    // 超过就滚动不了，所以条数上限就是 8
-
 /// 菜单里的一项。点它就把 key 交给 BallRootViewController 去执行。
-@interface FBQuietMenuItem : NSObject
-@property (nonatomic, copy) NSString *key;      // "app:xxx" / "action:xxx" / "url:xxx"
-@property (nonatomic, copy) NSString *title;
-@property (nonatomic, copy) NSString *symbol;   // SF Symbol 名
-@end
-@implementation FBQuietMenuItem
-@end
-
-@interface FBQuietMenuView : UIView
-@property (nonatomic, weak) id menuTapHandler;   // BallRootViewController
-- (instancetype)initWithItems:(NSArray<FBQuietMenuItem *> *)items;
-@end
-
-@implementation FBQuietMenuView
-
-- (instancetype)initWithItems:(NSArray<FBQuietMenuItem *> *)items
-{
-    CGFloat h = kMenuPadY * 2 + items.count * kMenuRowH + MAX(0, (CGFloat)items.count - 1) * kMenuRowGap;
-    if (self = [super initWithFrame:CGRectMake(0, 0, kMenuWidth, h)]) {
-        self.backgroundColor = [UIColor colorWithWhite:0.12 alpha:0.92];
-        self.layer.cornerRadius = kMenuCorner;
-        self.layer.masksToBounds = YES;
-        // 菜单要投一层影在下面的 App 上，不然糊成一片看不清
-        self.layer.shadowColor = [UIColor blackColor].CGColor;
-        self.layer.shadowOpacity = 0.45;
-        self.layer.shadowRadius = 12.0;
-        self.layer.shadowOffset = CGSizeMake(0.0, 4.0);
-        self.userInteractionEnabled = YES;
-
-        // 出现动画：从球那一侧缩出来。用 alpha+scale，纯 transform 不依赖任何系统服务。
-        self.alpha = 0.0;
-        self.transform = CGAffineTransformMakeScale(0.86, 0.86);
-        [UIView animateWithDuration:0.16 animations:^{
-            self.alpha = 1.0;
-            self.transform = CGAffineTransformIdentity;
-        }];
-
-        CGFloat y = kMenuPadY;
-        for (NSInteger i = 0; i < (NSInteger)items.count; i++) {
-            FBQuietMenuItem *item = items[i];
-
-            UIControl *row = [[UIControl alloc] initWithFrame:CGRectMake(0, y, kMenuWidth, kMenuRowH)];
-            row.tag = 1000 + i;                     // tag 装索引，回调时取
-            row.backgroundColor = [UIColor clearColor];
-            [row addTarget:self action:@selector(onRow:) forControlEvents:UIControlEventTouchUpInside];
-            [self addSubview:row];
-
-            UIImageView *icon = [[UIImageView alloc] initWithImage:[UIImage systemImageNamed:item.symbol]];
-            icon.tintColor = [UIColor whiteColor];
-            icon.contentMode = UIViewContentModeScaleAspectFit;
-            icon.frame = CGRectMake(kMenuPadX, (kMenuRowH - 18) / 2, 18, 18);
-            icon.userInteractionEnabled = NO;
-            [row addSubview:icon];
-
-            UILabel *label = [[UILabel alloc] initWithFrame:CGRectMake(kMenuPadX + 26, 0,
-                                                                         kMenuWidth - kMenuPadX - 26 - 8,
-                                                                         kMenuRowH)];
-            label.text = item.title;
-            label.textColor = [UIColor whiteColor];
-            label.font = [UIFont systemFontOfSize:15.0 weight:UIFontWeightMedium];
-            label.userInteractionEnabled = NO;
-            [row addSubview:label];
-
-            y += kMenuRowH + kMenuRowGap;
-        }
-    }
-    return self;
-}
-
-- (void)onRow:(UIControl *)sender
-{
-    BallRootViewController *vc = (BallRootViewController *)self.menuTapHandler;
-    NSInteger idx = sender.tag - 1000;
-    // 事件走的是 UIButton/UIControl 的 target-action，和手势一样由 UIKit 派发，
-    // 所以合成触摸喂进来时它们照样会被调到。
-    if ([vc respondsToSelector:@selector(quickMenuDidSelectIndex:)]) {
-        [vc quickMenuDidSelectIndex:idx];
-    }
-}
-
-@end
 
 #pragma mark - 快捷菜单浮层（0.1.22）
 

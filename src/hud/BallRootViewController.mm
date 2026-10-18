@@ -129,16 +129,30 @@ static void FBHapticPlay(FBHapticKind kind, CGFloat intensity)
 
 @implementation FBPassThroughView
 
+/// 球外面 10pt 的宽容区：手指是有宽度的（指尖接触面 40~50px），
+/// 球才 56pt，按得偏一点就漏给下面的 App 了 —— 「怎么点都点不中」多半是这个。
+static const CGFloat kBallTouchSlack = 10.0;
+
 - (BOOL)pointInside:(CGPoint)point withEvent:(UIEvent *)event
 {
-    if (!self.interactiveSubview) {
-        return [super pointInside:point withEvent:event];
-    }
-    // 球本身再往外放 6pt，手指没那么准
-    CGRect touchable = CGRectInset(self.interactiveSubview.frame, -6.0, -6.0);
+    // ⚠️ 0.1.19：原来这里 `return [super pointInside:...]` —— 球还没建好的那一瞬间
+    //    （viewDidLoad 还没跑到 setInteractiveSubview:）整屏触摸都会被这个全屏根视图吃掉。
+    //    「没有球」= 「这里不该吃任何触摸」，必须返回 NO。
+    if (!self.interactiveSubview) return NO;
+
+    // ⚠️ 0.1.19：改用 convertRect:fromView: 换算，而不是直接拿 `interactiveSubview.frame`。
+    //    `frame` 是**父视图**（本视图）坐标系里的值，`pointInside:` 收到的 `point` 也是
+    //    本视图坐标系 —— 只有两者原点一致时才碰巧对得上。
+    //    根视图的 bounds.origin 一旦非 0（旋转 / 安全区 / UIKit 挪过），
+    //    整块命中区域就会偏移，表现正是「球在那儿，点不到」。
+    //    convertRect: 还顺带把 pressFeedback 那个 0.86 缩放算进去。
+    CGRect touchable = [self convertRect:self.interactiveSubview.bounds
+                                 fromView:self.interactiveSubview];
+    touchable = CGRectInset(touchable, -kBallTouchSlack, -kBallTouchSlack);
     BOOL inside = CGRectContainsPoint(touchable, point);
-    // 自检：窗口重新参与命中测试之后（0.1.8），这里每被问一次就说明
-    //「**真有触摸问进这个窗口**」—— 这是判断这条路通没通的第一手证据。
+    // 自检：系统问我们「这个点是不是你的」时记一笔（0.1.8 加的）。
+    // ⚠️ 0.1.19：`_ignoresHitTest` 改回 YES 之后，这一行在真机上**长期是 0** ——
+    //    这正是我们要的：说明系统没在拿我们这个全屏窗口做命中测试。
     FBProbeTouchHit(inside);
     return inside;
 }
@@ -215,24 +229,35 @@ void FBBallHapticTouchDown(void)
 
 - (void)pollAppearanceFiles
 {
-    static NSTimeInterval lastCfg = -1, lastImg = -1;
+    // ⚠️ 0.1.19 修「点一下球，球就闪一下」：
+    //    原来拿**整份 plist 的 mtime**当判据。可 HUD 每点一下球（TapCount）、
+    //    每拖一次（BallX/BallY）都要 savePrefs → plist mtime 必变 →
+    //    两秒内必走一次 loadPrefs + applyBallStyle + applyLayout。
+    //    applyBallStyle 会重新读图并重设 _ball.image → 球当众闪一下；
+    //    applyLayout 还会重设 frame → 手指还按在球上时球会跳。
+    //    这跟「改了外观没反应」是两码事，但都会让人觉得球在抽风。
+    //
+    // 现在只看**真正决定外观的那几项**（键值 + 贴图文件的 mtime/大小）。
+    static NSString *sLastLook = nil;
+
+    NSDictionary *onDisk = [NSDictionary dictionaryWithContentsOfFile:USER_DEFAULTS_PATH];
     NSFileManager *fm = [NSFileManager defaultManager];
-    NSDictionary *cfgAttrs = [fm attributesOfItemAtPath:USER_DEFAULTS_PATH error:NULL];
     NSDictionary *imgAttrs = [fm attributesOfItemAtPath:BALL_IMAGE_PATH error:NULL];
-    NSTimeInterval cfg = [cfgAttrs[NSFileModificationDate] timeIntervalSince1970];
-    NSTimeInterval img = [imgAttrs[NSFileModificationDate] timeIntervalSince1970];
 
-    if (lastCfg < 0) {           // 第一次只记基准
-        lastCfg = cfg;
-        lastImg = img;
-        return;
+    NSMutableString *look = [NSMutableString string];
+    for (NSString *k in @[@"BallShape", @"BallColor", @"BallSize",
+                          @"BallOpacity", @"ShowLabel", @"CustomImage"]) {
+        [look appendFormat:@"%@=%@;", k, onDisk[k] ?: @"-"];
     }
-    if (cfg == lastCfg && img == lastImg) return;
+    [look appendFormat:@"img=%.0f/%llu;",
+     [imgAttrs[NSFileModificationDate] timeIntervalSince1970],
+     (unsigned long long)[imgAttrs[NSFileSize] unsignedLongLongValue]];
 
-    FBLog(@"外观文件变了（plist %.0f→%.0f / 图 %.0f→%.0f），重新应用",
-          lastCfg, cfg, lastImg, img);
-    lastCfg = cfg;
-    lastImg = img;
+    if (!sLastLook) { sLastLook = look; return; }   // 第一次只记基准
+    if ([look isEqualToString:sLastLook]) return;
+
+    FBLog(@"外观变了（%@），重新应用", look);
+    sLastLook = look;
 
     [self loadPrefs];
     [self applyBallStyle];
@@ -495,7 +520,14 @@ void FBBallHapticTouchDown(void)
 
 - (void)onSingleTap:(UITapGestureRecognizer *)g
 {
-    // 自检：这是「触摸真的落到球上、手势也认出来了」的证据（0.1.8）
+    // ⚠️⚠️ 0.1.19 重要更正：**这个回调有两来路**。
+    //    ① 我们自己合成的触摸（HUDApp.mm → TSEventFetcher → sendEvent:）—— 这是常态；
+    //    ② 极少数情况下系统真把触摸派发进窗口。
+    //    原来 `FBProbeRealTapDidFire()` 在这里无脑调用，于是 ① 也把它涨上去了，
+    //    而 `FBRealTouchWorks()` 又只看这个数 —— **合成触摸把自己熔断了**
+    //    （第一次点成功 → 判定「真触摸通了」→ 从此不再喂合成触摸 → 球彻底死掉）。
+    //    熔断判据已改成「系统真的问过命中测试 + 手势触发 + 都在 2 秒内」，
+    //    这里保留调用没问题，但**别再把它当成「系统派发了触摸」的证据**。
     FBProbeRealTapDidFire();
 
     // 计数 +1 是「点到了」的证据：球浮在别的 App 上面时，这是唯一看得见的回执。
@@ -834,7 +866,12 @@ void FBBallHapticTouchDown(void)
     CGFloat ball = [self ballSize];
 
     CGPoint center = _ball.center;
-    if (center.x <= 0.0 && center.y <= 0.0) {
+    // ⚠️ 0.1.19：原来是 `if (center.x <= 0.0 && center.y <= 0.0)`。
+    //    球被 clamp 到屏幕左上角时 center.x 恰好是 0（半径），
+    //    但 y 通常不是 0 —— 于是「只在左边缘」这一种最常见的贴边位置
+    //    每秒被重算成默认位置（右侧中部），球会自己跑掉。
+    //    「还没定位过」的条件应该是**任一**坐标无效。
+    if (center.x <= 0.0 || center.y <= 0.0) {
         center = [self initialCenter];
     }
     center = [self clampedCenter:center];

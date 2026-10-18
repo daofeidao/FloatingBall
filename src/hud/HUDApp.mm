@@ -115,6 +115,7 @@ static int    sProbeOffBall   = 0;   // ④ 起手不在球上（留给下面的
 static int    sProbeOtherRoute = 0;  // 另一条路又送来的触摸（只记数，不喂，防重复）
 static int    sProbeTakeover  = 0;   // ⑤ 接管了（起手落在球上）
 static int    sProbeFed       = 0;   // ⑤ 喂给球视图了
+static int    sProbeThrottled = 0;   // 0.1.19：被节流掉的高频移动事件
 // ---- 底层字段（0.1.11 加，0.1.14 改「翻子事件」）----
 static int    sProbeAXDown    = 0;   // AX 的 isTouchDown 说过几次「按下」
 // 0.1.14：深读（会翻子事件）的三个计数 —— 这是判断「字段到底读得到读不到」的关键
@@ -142,6 +143,15 @@ static int sProbeHitBall = 0;   // 其中落在球（含 6pt 宽容区）上的
 static int sProbeRealTap = 0;   // 球自己的单击手势真的触发了
 static int sProbeSelfTest = 0;  // 「自喂一次点击」做了几次（0.1.14）
 
+// ---- 0.1.19：熔断判据的时间戳（这一版的重点，见下面 FBRealTouchWorks 的注释）----
+/// 系统**自己**把触摸派发进我们窗口、并且点在球上的最近时刻。
+/// 由 FBProbeTouchHit(onBall=YES) 记 —— 只有它能证明「这一下是系统派发的，不是我们合成的」。
+static NSTimeInterval sSysAskBallAt = 0;
+/// 球的手势最近一次触发的时刻（由 FBProbeRealTapDidFire 记）。
+static NSTimeInterval sGestureAt = 0;
+/// 真触摸路线一旦被判定为「通」，多久之后强制回退到合成路线（秒）。
+static const NSTimeInterval kRealTouchGrace = 2.0;
+
 /// 自喂测试进行中：球的手势认出来之后**只记账、不执行绑定动作**
 /// （否则「测试一下」会顺手打开设置/跑一个手势动作，太吓人）
 BOOL gFBSelfTestTapPending = NO;
@@ -161,12 +171,13 @@ static void FBProbeWrite(BOOL force)
     sProbeLastWrite = now;
     NSString *text = [NSString stringWithFormat:
         @"回调=%d（路A=%d 路B=%d 匹配服务=%d） 无rep=%d 无路径=%d id<=0=%d "
-        @"不在球=%d 非本触点=%d 另一条路=%d 接管=%d 喂球=%d\n"
+        @"不在球=%d 非本触点=%d 另一条路=%d 接管=%d 喂球=%d 节流=%d\n"
         @"真触摸：窗口问=%d 落在球=%d 真点击=%d 自喂测试=%d\n"
         @"底层：AX按下=%d 深读(有手指=%d 没手指=%d 读不到=%d)\n最后：%@\n",
         sProbeCallbacks, sProbeRouteA, sProbeRouteB, sProbeMatched,
         sProbeNoRep, sProbeNoPath, sProbeZeroID,
         sProbeOffBall, sProbeNotOurs, sProbeOtherRoute, sProbeTakeover, sProbeFed,
+        sProbeThrottled,
         sProbeHitAsk, sProbeHitBall, sProbeRealTap, sProbeSelfTest,
         sProbeAXDown, sProbeDeepFinger, sProbeDeepUp, sProbeDeepNone, sProbeLast];
     [text writeToFile:FB_PROBE_PATH atomically:YES encoding:NSUTF8StringEncoding error:NULL];
@@ -231,6 +242,8 @@ void FBProbeTouchHit(BOOL onBall)
     sProbeHitAsk++;
     if (onBall) {
         sProbeHitBall++;
+        // 0.1.19：记下「系统自己问到了球上」的时刻 —— 熔断判据要用它。
+        sSysAskBallAt = [NSDate timeIntervalSinceReferenceDate];
         if (sProbeHitBall == 1) FBLog(@"真触摸：窗口问到了，而且落在球上（这条路通了）");
     }
     FBProbeWrite(NO);
@@ -239,6 +252,7 @@ void FBProbeTouchHit(BOOL onBall)
 void FBProbeRealTapDidFire(void)
 {
     sProbeRealTap++;
+    sGestureAt = [NSDate timeIntervalSinceReferenceDate];
     if (sProbeRealTap == 1) FBLog(@"真触摸：球自己的单击手势触发了");
     FBProbeWrite(NO);
 }
@@ -311,13 +325,27 @@ void FBSelfTestFeedTap(void)
 
 /// 真触摸这条路是不是已经通了？通了就别再喂合成触摸（否则一次点击走两遍）。
 ///
-/// ⚠️ 0.1.11 收紧：只看「球自己的手势真的触发过」（真点击 > 0）。
-///    0.1.8 用的判据是「窗口问到了 + 落在球上」，但「触摸进了窗口」不等于
-///    「手势认出来了」—— 万一只是进了窗口没触发手势，HID 这条备份路会被提前关掉，
-///    两条路都不响应，球就彻底没反应了。
+/// ⚠️⚠️ 0.1.19 修**自熔断**（这就是 0.1.16/0.1.17「只有第一下有用」和 0.1.18
+///    「点不动」的正主）：
+///    原来的判据是 `sProbeRealTap > 0`，而 `sProbeRealTap` 是在 `onSingleTap:` 里加的 ——
+///    **`onSingleTap:` 同样会被我们自己合成的触摸触发。** 于是：
+///      第一次点球成功 → onSingleTap → sProbeRealTap=1 → 这里返回 YES
+///      → FBHandleHIDEvent 第一行 `return` → 从此再也不喂任何合成触摸 → 球彻底死掉。
+///    「自喂测试」按钮也会踩同一个雷（它也走 onSingleTap）。
+///
+/// 现在必须**同时**满足三个条件才算「系统真触摸在起作用」：
+///   ① 球的手势触发过；
+///   ② **系统自己**（FBProbeTouchHit，不是我们）刚问过命中测试且点在球上；
+///   ③ 那两件事都发生在最近 kRealTouchGrace 秒之内。
+/// ② 一旦不满足（我们改成 `_ignoresHitTest=YES` 后就永远是 0）或 ③ 超时，立刻回退到合成路线。
 BOOL FBRealTouchWorks(void)
 {
-    return sProbeRealTap > 0;
+    if (sProbeRealTap <= 0) return NO;
+    NSTimeInterval now = [NSDate timeIntervalSinceReferenceDate];
+    if (sSysAskBallAt <= 0) return NO;                 // 从来没有被系统问过 → 不是系统派发的
+    if (now - sSysAskBallAt > kRealTouchGrace) return NO;  // 系统不再问了 → 回退
+    if (sGestureAt <= 0) return NO;
+    return (now - sGestureAt) <= kRealTouchGrace;
 }
 
 /// 两条路（BKS 回调 / 监视客户端）**共用**的处理函数。
@@ -449,6 +477,34 @@ static void FBHandleHIDEvent(int route, void *target, void *refcon, IOHIDService
     NSTimeInterval sinceLast = (sLastEventAt > 0) ? (now - sLastEventAt) : 999.0;
     sLastEventAt = now;
     BOOL firstInBurst = (sinceLast > 0.15);
+
+    // ---- 0.1.19：进主队列**之前**就节流（关键：进了队列再丢就晚了）----
+    //
+    // 自检里「回调=30225」不是小数目：手指一移动就是每秒上百条 HID 事件。
+    // 原来每一条都 dispatch_async 到主线程、每一条都做一遍 8 个候选点 +
+    // `[window hitTest:]`。主队列会迅速积压，「按下」迟到几百毫秒 ——
+    // **用户看到的就是「点了没反应 / 很迟钝」**，而且越用越卡（积压不会自己清）。
+    //
+    // 规则：
+    //   · **起手永远放行** —— 单击 / 双击 / 长按全靠 Began，节流了就等于点不动；
+    //   · **抬起也永远放行** —— click 的另一半，节流了就变成「按下去没反应」；
+    //   · 只节流「已经在手上、既不是起手也不是抬起」的移动事件，限频 ~60Hz；
+    //   · 新一轮（firstInBurst）也放行。
+    //
+    // ⚠️ 必须在这里（dispatch_async 之前）判断：进了队列再丢，「按下」已经排在后面了。
+    //    读 sLastFedAt / sHIDSawTouch（主线程写的静态量）有竞态，
+    //    但它们只决定节流激进与否，判错顶多多喂/少喂一条事件，没有正确性风险。
+    {
+        BOOL fingerNow = (hidOK && (hidTouch == 1 || hidRange == 1));
+        BOOL beginNow = axDown || fingerNow || gFBBlindFeed;
+        BOOL upNow    = axLift || axCancel || axInRangeLift
+                     || (sHIDSawTouch && hidOK && !fingerNow);
+        NSTimeInterval sinceFeed = (sLastFedAt > 0) ? (now - sLastFedAt) : 999.0;
+        if (gFBActivePointer != 0 && !firstInBurst && !beginNow && !upNow && sinceFeed < 0.016) {
+            sProbeThrottled++;
+            return;
+        }
+    }
 
     dispatch_async(dispatch_get_main_queue(), ^(void) {
         UIView *ball = gFBBallView;

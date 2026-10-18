@@ -622,7 +622,7 @@ static void FBHandleHIDEvent(int route, void *target, void *refcon, IOHIDService
             }
         }
 
-        // ---- 第二轮：不在球/菜单里，但**落在屏幕内**的候选点 ----
+        // ---- 第二轮：不在球/菜单里，但**落在屏幕/窗口内**的候选点 ----
         //
         // ⚠️⚠️ 0.1.22 修「拖动不跟手」（用户实测：拖球时球只在原地缩放，不跟着手走）。
         //
@@ -635,11 +635,29 @@ static void FBHandleHIDEvent(int route, void *target, void *refcon, IOHIDService
         //    才是拖动时真正能拿到真坐标的来源。所以这里补一轮：
         //    **只要有一个候选点落在屏幕范围内，就用它**（哪怕它在球外面）——
         //    手指本来就该能拖出球。
-        if (matched < 0 && !CGRectContainsPoint(screenRect, winPt)) {
+        //
+        // ⚠️⚠️ 0.1.24：0.1.22 这一轮**在白写**（用户 2026-10-18 实测「仍然不能拖动」）。
+        //
+        //    原来的进入条件是 `matched < 0 && !CGRectContainsPoint(screenRect, winPt)`，
+        //    想表达「winPt 不可信时才另找」。但这台设备的 location 恒为 **(0,0)**
+        //    （0.1.16 修「快速拖动跳到左上角」时已经用事实确认过），换算后 winPt≈(0,0)，
+        //    而 (0,0) 是屏幕左上角、**在矩形内** → `!CGRectContainsPoint(...)` 恒为 false
+        //    → 第二轮一次都没跑过 → 坐标永远走「沿用上一帧」→ 球永远钉在原地。
+        //    （(0,0) 既能当「空坐标」又能当「合法屏内点」，CGRectContainsPoint 分不清。）
+        //
+        //    现在：**第一轮没匹配上就跑第二轮**，不再看 winPt 在不在屏内 ——
+        //    第一轮都没匹配上时，winPt 就只剩「未换算的 [rep location]」这一个来源，
+        //    在这台设备上它本来就是废的。cands[0] 就是 location 本身：
+        //    location 真有效时它排在第一个、屏内判定先命中它，winPt 不变（行为无差别）；
+        //    location 是 (0,0) 时它被跳过，顺位让给子事件的真坐标。
+        //    另外补一个「原样当窗口坐标」的解释：路径点可能是窗口系而非屏幕系，
+        //    只按屏内判会把真坐标误杀（窗口理论上是全屏的，两条判定几乎等价，图个稳）。
+        if (matched < 0) {
             for (int i = 0; i < candCount; i++) {
                 if (cands[i].x == 0.0 && cands[i].y == 0.0) continue;
                 CGPoint asScreen = [window convertPoint:cands[i] fromWindow:nil];
                 if (CGRectContainsPoint(screenRect, asScreen)) { winPt = asScreen; matched = i; break; }
+                if (CGRectContainsPoint(window.bounds, cands[i])) { winPt = cands[i]; matched = i; break; }
             }
         }
 
@@ -746,6 +764,10 @@ static void FBHandleHIDEvent(int route, void *target, void *refcon, IOHIDService
         // ⚠️ 0.1.21：这一帧要用「上一帧那个已知-good的坐标」而不是 winPt。
         //    见下面 bogusPoint 的处理。
         BOOL reuseLastPoint = NO;
+        // 0.1.24：「触点还能攥多久」的超时值。提到 if 外面声明 ——
+        // 下面 feedPt 的「陈旧坐标」判定要用同一个值（两处必须一致，
+        // 否则会出现「超时没判钝、坐标先被判陈旧」的错位）。
+        NSTimeInterval limit = sSawLiftSignal ? 1.6 : 1.0;
 
         if (gFBActivePointer != 0) {
             // 还攥着上一次的触点：抬起 / 超时 → 交还；否则继续当「移动」
@@ -764,8 +786,6 @@ static void FBHandleHIDEvent(int route, void *target, void *refcon, IOHIDService
             //     已经攥着触点时它只代表「这一帧的坐标不可信」→ 沿用上一帧坐标继续 Moved；
             //   · `timeout` 从 0.55 秒放宽到 1.0 秒（下面 limit 那一行）。
             //     单击/双击不受影响 —— 它们靠 tap 手势自己判完成，不靠这个超时。
-            NSTimeInterval limit = sSawLiftSignal ? 1.6 : 1.0;
-            BOOL timeout = (sLastFedAt > 0 && now - sLastFedAt > limit);
 
             // ⚠️⚠️ 0.1.22 修「长按每隔 1 秒震一下」（用户实测）。
             //
@@ -778,7 +798,20 @@ static void FBHandleHIDEvent(int route, void *target, void *refcon, IOHIDService
             //    判据：**这一轮里一条 Moved 都没收到过** = 手指一直没动 = 长按/按住，
             //    不是卡死 → 不走 timeout。（长按 0.5 秒要触发，靠的是 UIKit 那边
             //    UITouch 停在 Stationary 计时，本来就不需要我们持续喂 Moved。）
-            if (!sSawMoveSinceBegin) timeout = NO;
+            //
+            // ⚠️ 0.1.24：拖动进行中（收到过 Moved）停住瞄准，是**同一种硬件行为** ——
+            //    手指停在屏幕上不动，数字器同样不发事件。1.0 秒的 limit 会把
+            //    「拖到一半停住、瞄准、再继续」当成触点卡死 → 提前 End → 球吸边、
+            //    剩下的拖动全部丢掉（表现为「拖一半球自己弹到边上」）。
+            //    现在：没收过 Moved = 长按，完全不走超时；收到过 = 放宽到 2.5 秒。
+            //    真卡死（抬起信号丢了）的恢复从 1.0 秒变成最多 2.5 秒 ——
+            //    换慢拖动不被腰斩，值。（跳点/断档两道闸照旧，重按立刻重新起手。）
+            if (!sSawMoveSinceBegin) {
+                limit = DBL_MAX;                      // 长按：不走超时
+            } else {
+                limit = MAX(limit, 2.5);              // 拖动中暂停：放宽
+            }
+            BOOL timeout = (sLastFedAt > 0 && now - sLastFedAt > limit);
 
             // 盲喂模式专用的「别把球拖飞」保险：
             // 盲喂不看位置，所以**在屏幕上任何一处**起手都会被接管。修好连续性之后
@@ -847,7 +880,7 @@ static void FBHandleHIDEvent(int route, void *target, void *refcon, IOHIDService
         CGPoint feedPt = winPt;
         if (gFBActivePointer != 0 && !lifted && sLastFedPoint.x != 0 && sLastFedPoint.y != 0
             && (reuseLastPoint                              // 0.1.21：这一帧坐标不可信
-                || (sLastFedAt > 0 && now - sLastFedAt > (sSawLiftSignal ? 1.6 : 1.0)))) {
+                || (sLastFedAt > 0 && now - sLastFedAt > limit))) {   // 与超时用同一个 limit（0.1.24）
             feedPt = sLastFedPoint;
         }
 

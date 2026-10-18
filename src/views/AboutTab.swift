@@ -81,6 +81,9 @@ struct AboutTab: View {
 
     // ---- 真实点球诊断（0.1.15）----
     @State private var blindFeed = BallSettings.bool("BlindFeed", default: false)
+    /// 0.1.20：`_ignoresHitTest` 的开关（见 HUDMainWindow 里的注释）。
+    /// **默认 false = 不吃掉触摸**（宁可穿透，也不能整屏哑巴）。
+    @State private var swallowTouch = BallSettings.bool("SwallowTouch", default: false)
     @State private var diagTick = 0
     private let diagTicker = Timer.publish(every: 1.0, on: .main, in: .common).autoconnect()
 
@@ -176,6 +179,15 @@ struct AboutTab: View {
                             .font(.system(.caption2, design: .monospaced))
                             .foregroundColor(.secondary)
                     }
+                }
+
+                Section(header: Text("穿透（0.1.20 新增，先关着）"),
+                        footer: Text("打开后系统会拿我们这个窗口做命中测试，点在球上的那一下**理论上**就不漏给下面的 App 了（TheBall 就是这么做到的）。\n\n⚠️ 代价：万一系统仍然不把真触摸派发给球，整块屏幕会变成哑巴（什么都点不动）。真那样的话：长按「电源 + 音量减」强制重启，然后把这个开关关掉。\n\n球不需要重启，开关改完 1 秒内自动生效。")) {
+                    Toggle("吃掉触摸（不穿透）", isOn: $swallowTouch)
+                        .onChange(of: swallowTouch) { value in
+                            BallSettings.set(value, "SwallowTouch")
+                            BallSettings.notifyReload()
+                        }
                 }
 
                 Section(header: Text("盲喂（验证用，平时关掉）"),

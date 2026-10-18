@@ -8,7 +8,7 @@
 // 反汇编 TheBall 的 `HUDMainWindow`，它一共覆盖 **9 个方法**，我们以前只有 3 个：
 //   +_isSystemWindow                          = YES   （我们原来就有）
 //   -_isWindowServerHostingManaged            = NO    （我们原来就有）
-//   -_ignoresHitTest                          = NO    （见下面，0.1.19 改回 YES）
+//   -_ignoresHitTest                          = 运行时可切换（0.1.20，见下）
 //   -_isSecure                                = YES   ← 我们缺
 //   -_shouldCreateContextAsSecure             = YES   ← 我们缺
 //   -_shouldAutorotateToInterfaceOrientation: = YES   ← 我们缺
@@ -53,7 +53,36 @@
 /// 0.1.19：由 NO 改回 **YES**（Helium / TrollSpeed 原值）。理由见文件顶部那一段：
 /// 我们不吃系统派发的真触摸，全屏窗口 + NO 会让 SpringBoard 把整屏触摸判给这个
 /// 窗口又送不进来 —— 手机直接变成哑巴。合成路线不走这里，改成 YES 反而是修 bug。
-- (BOOL)_ignoresHitTest { return YES; }
+- (BOOL)_ignoresHitTest
+{
+    // ⚠️⚠️ 0.1.20：**改成运行时可读设置**，因为真机把两边的代价都验出来了。
+    //
+    //   YES（系统不拿我们做命中测试）→ 点球时**下面的 App 也收到这一下**（用户实测：
+    //       「点击的是小白点，但是图标下的模块也有点击反应」）。这是监听+合成这条
+    //       路线的**固有缺陷**：HID 回调只能「观察」，没有「吃掉事件」的能力 ——
+    //       我们只能自己再合成一个 touch 喂给球，系统那份照样发给下面的 App。
+    //
+    //   NO（系统拿我们做命中测试）→ 命中球的那一下**理论上不漏给下面**（TheBall 就是
+    //       这么做到不穿透的）；代价是万一系统仍不把真触摸派发给我们，
+    //       整块屏幕会变成哑巴（只能长按电源+音量减重启）。
+    //
+    // 哪一个成立取决于机型/系统版本，没法在开发机上判断，所以两种都留着，
+    // 由用户在「关于」页自己试（SwallowTouch 键）。**默认 YES** ——
+    // 宁可穿透，也不能让整块屏幕哑巴。
+    //
+    // 带 1 秒缓存：这是命中测试热路径，不能每次调用都读一次盘。
+    // 用户改完设置，球在 1 秒内自动生效，不用重启球。
+    static NSTimeInterval lastAt = 0;
+    static BOOL lastValue = YES;
+    NSTimeInterval now = CACurrentMediaTime();
+    if (now - lastAt > 1.0) {
+        lastAt = now;
+        NSDictionary *d = [NSDictionary dictionaryWithContentsOfFile:USER_DEFAULTS_PATH];
+        id v = d[@"SwallowTouch"];
+        lastValue = (v && [v boolValue]) ? NO : YES;
+    }
+    return lastValue;
+}
 
 - (BOOL)_isSecure { return YES; }
 

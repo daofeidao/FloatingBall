@@ -143,11 +143,23 @@ static int sProbeHitBall = 0;   // 其中落在球（含 6pt 宽容区）上的
 static int sProbeRealTap = 0;   // 球自己的单击手势真的触发了
 static int sProbeSelfTest = 0;  // 「自喂一次点击」做了几次（0.1.14）
 
-// ---- 0.1.19：熔断判据的时间戳（这一版的重点，见下面 FBRealTouchWorks 的注释）----
-/// 系统**自己**把触摸派发进我们窗口、并且点在球上的最近时刻。
-/// 由 FBProbeTouchHit(onBall=YES) 记 —— 只有它能证明「这一下是系统派发的，不是我们合成的」。
-static NSTimeInterval sSysAskBallAt = 0;
-/// 球的手势最近一次触发的时刻（由 FBProbeRealTapDidFire 记）。
+// ---- 0.1.19 / 0.1.20：熔断判据 ----
+//
+// ⚠️⚠️ 0.1.19 在这里栽了，而且是真机立刻逮到（用户：连点只有第一下有反应，
+//    间隔 1~2 秒才恢复）。0.1.19 用 `sSysAskBallAt` 当「系统真的派发了触摸」的证据，
+//    由 FBProbeTouchHit(onBall=YES) 记 —— 可是 **FBProbeTouchHit 是 pointInside 调的，
+//    而 pointInside 不分是谁问的**：我们自己那条
+//      `[window hitTest:winPt withEvent:nil]`（在 FBHandleHIDEvent 里）
+//    同样会走到 pointInside → sSysAskBallAt 被填上 →
+//    熔断的三个条件在**第一次点击成功后**全部满足 →
+//    第二次点击（2 秒内）被判定成「系统真触摸已通」→ 第一行就 return → **连点全废**。
+//
+// 0.1.20 换判据：只认「**不是我们合成**的 onSingleTap」。
+// 这件事没法靠 pointInside 判断，只能靠「有没有走过合成起手那条路」：
+//   合成触摸在喂 Began 的那一刻会调 FBBallHapticTouchDown()，那里记下时刻；
+//   onSingleTap 触发时（0.3 秒后）如果距离那个时刻不到 grace，就是合成触摸，**不算证据**。
+static NSTimeInterval sSynthTapAt = 0;   // 我们自己合成触摸「起手」的时刻
+/// 确认为**非合成**的手势最近一次触发的时刻（= 系统真触摸的证据）。
 static NSTimeInterval sGestureAt = 0;
 /// 真触摸路线一旦被判定为「通」，多久之后强制回退到合成路线（秒）。
 static const NSTimeInterval kRealTouchGrace = 2.0;
@@ -242,8 +254,6 @@ void FBProbeTouchHit(BOOL onBall)
     sProbeHitAsk++;
     if (onBall) {
         sProbeHitBall++;
-        // 0.1.19：记下「系统自己问到了球上」的时刻 —— 熔断判据要用它。
-        sSysAskBallAt = [NSDate timeIntervalSinceReferenceDate];
         if (sProbeHitBall == 1) FBLog(@"真触摸：窗口问到了，而且落在球上（这条路通了）");
     }
     FBProbeWrite(NO);
@@ -252,7 +262,12 @@ void FBProbeTouchHit(BOOL onBall)
 void FBProbeRealTapDidFire(void)
 {
     sProbeRealTap++;
-    sGestureAt = [NSDate timeIntervalSinceReferenceDate];
+    NSTimeInterval now = [NSDate timeIntervalSinceReferenceDate];
+    // ⚠️ 只有**不是**我们合成的那一下，才算「系统真触摸」的证据。
+    //    合成触摸起手时 FBBallHapticTouchDown() 已经记下了 sSynthTapAt，
+    //    而 onSingleTap 是在 0.3 秒之后才触发的（要等双击判定失败）——
+    //    这段时间差远小于 grace，所以合成来的手势一定会被排除掉。
+    if (now - sSynthTapAt > kRealTouchGrace) sGestureAt = now;
     if (sProbeRealTap == 1) FBLog(@"真触摸：球自己的单击手势触发了");
     FBProbeWrite(NO);
 }
@@ -292,6 +307,15 @@ void FBSelfTestFeedTap(void)
         gFBSelfTestTapPending = YES;
 
         NSInteger pid = 99;   // TSEventFetcher 一共 100 个槽位，最后一个专门留给自测
+        // ⚠️ 0.1.20：自喂测试原来**没有任何可见/可感反馈** —— 用户点了「自喂测试」
+        //    只看到「点击次数 +1」，球不缩、也不震，于是完全分不清「测试到底跑没跑」
+        //    （用户 2026-10-18 原话：「自喂测试 - 没感觉有变化」）。
+        //    现在和真触摸走同一个入口：按下就缩一下 + 震一下。
+        //    注意也要记 sSynthTapAt —— 它同样是**合成**的，
+        //    不记的话这次自喂触发的 onSingleTap 会被当成「系统真触摸」的证据。
+        sSynthTapAt = [NSDate timeIntervalSinceReferenceDate];
+        FBBallHapticTouchDown();
+
         FBLog(@"[自喂测试] 往球心喂一次点击：窗口点=(%.1f,%.1f) hit=%@ -> onView=%@",
               winPt.x, winPt.y, hit ? NSStringFromClass([hit class]) : @"(nil)",
               NSStringFromClass([feedView class]));
@@ -325,27 +349,33 @@ void FBSelfTestFeedTap(void)
 
 /// 真触摸这条路是不是已经通了？通了就别再喂合成触摸（否则一次点击走两遍）。
 ///
-/// ⚠️⚠️ 0.1.19 修**自熔断**（这就是 0.1.16/0.1.17「只有第一下有用」和 0.1.18
-///    「点不动」的正主）：
-///    原来的判据是 `sProbeRealTap > 0`，而 `sProbeRealTap` 是在 `onSingleTap:` 里加的 ——
-///    **`onSingleTap:` 同样会被我们自己合成的触摸触发。** 于是：
-///      第一次点球成功 → onSingleTap → sProbeRealTap=1 → 这里返回 YES
-///      → FBHandleHIDEvent 第一行 `return` → 从此再也不喂任何合成触摸 → 球彻底死掉。
-///    「自喂测试」按钮也会踩同一个雷（它也走 onSingleTap）。
+/// ⚠️⚠️ 这里改过两次，两次都是被真机打回来的，记下来别再走回头路：
 ///
-/// 现在必须**同时**满足三个条件才算「系统真触摸在起作用」：
-///   ① 球的手势触发过；
-///   ② **系统自己**（FBProbeTouchHit，不是我们）刚问过命中测试且点在球上；
-///   ③ 那两件事都发生在最近 kRealTouchGrace 秒之内。
-/// ② 一旦不满足（我们改成 `_ignoresHitTest=YES` 后就永远是 0）或 ③ 超时，立刻回退到合成路线。
+/// **0.1.8~0.1.18（`return sProbeRealTap > 0;`）—— 自熔断**
+///    `sProbeRealTap` 是在 `onSingleTap:` 里加的，而 `onSingleTap:` 同样会被**我们自己
+///    合成的**触摸触发。于是第一次点球成功就把「系统真触摸已通」坐实 → 不再喂合成触摸
+///    → 球彻底死掉（「只有第一下有用」）。「关于」页的自喂测试按钮也踩同一个雷。
+///
+/// **0.1.19（加 `sSysAskBallAt`）—— 还是自熔断，换了个姿势**
+///    以为 `FBProbeTouchHit`（pointInside 调的）能证明「这一下是系统派发的」。
+///    可 pointInside **根本分不清是谁问的** —— 我们自己那条
+///    `[window hitTest:winPt withEvent:nil]` 也会走到它。于是第一次点击成功后
+///    三个条件全部满足 → **连点只有第一下有反应，间隔 1~2 秒才恢复**（用户实测）。
+///
+/// **0.1.20（现在）—— 只认「非合成」的手势**
+///    合成的触摸在喂 Began 时会调 `FBBallHapticTouchDown()`，那里记 `sSynthTapAt`；
+///    `onSingleTap` 触发时距那个时刻只有 0.3 秒（等双击判定失败），远小于 grace，
+///    一律排除。`sGestureAt` 只会被**真正来自系统**的手势填上。
+///
+/// 至于「系统到底会不会派发真触摸给我们」：0.1.8~0.1.17 的自检「窗口问=0」是硬证据，
+/// 说 iOS 15.1+ 不会。所以这条熔断在真机上**永远不会触发** —— 它只是保险。
+/// 真要彻底去掉熔断也不影响功能，只是将来万一换了系统版本就没有双击保护了。
 BOOL FBRealTouchWorks(void)
 {
-    if (sProbeRealTap <= 0) return NO;
+    if (sGestureAt <= 0) return NO;               // 从来没有非合成的手势 → 系统真触摸不存在
     NSTimeInterval now = [NSDate timeIntervalSinceReferenceDate];
-    if (sSysAskBallAt <= 0) return NO;                 // 从来没有被系统问过 → 不是系统派发的
-    if (now - sSysAskBallAt > kRealTouchGrace) return NO;  // 系统不再问了 → 回退
-    if (sGestureAt <= 0) return NO;
-    return (now - sGestureAt) <= kRealTouchGrace;
+    if (now - sGestureAt > kRealTouchGrace) return NO;   // 太久没有真触摸了 → 回退合成
+    return YES;
 }
 
 /// 两条路（BKS 回调 / 监视客户端）**共用**的处理函数。
@@ -694,6 +724,11 @@ static void FBHandleHIDEvent(int route, void *target, void *refcon, IOHIDService
 
         // ⭐ 按下去就震（0.1.12）：最早、最不依赖手势的那一刻给一下「迎客」
         if (isNewTouch) {
+            // 0.1.20：记下「这一下是我们合成的」。只有走得到这里的触摸才是合成的 ——
+            // 系统真触摸根本进不来这个函数。FBProbeRealTapDidFire 靠它把
+            // 「合成来的 onSingleTap」从「系统真触摸的证据」里排除掉
+            // （0.1.19 正是因为没排除，连点只有第一下有反应）。
+            sSynthTapAt = now;
             FBBallHapticTouchDown();
             // 盲喂模式下每一次都可能是误触：只让它记账/震一下，不执行绑定动作
             if (gFBBlindFeed) {

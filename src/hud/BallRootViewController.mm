@@ -530,13 +530,21 @@ void FBBallHapticTouchDown(void)
     //    这里保留调用没问题，但**别再把它当成「系统派发了触摸」的证据**。
     FBProbeRealTapDidFire();
 
+    // ⚠️ 0.1.20 删掉这里的震动。原来这里有 `[self haptic:FBHapticTap]`，
+    //    而**起手那一刻 `FBBallHapticTouchDown()` 已经震过一下**（HUDApp.mm 喂 Began 时调的）。
+    //    单击手势要等双击判定失败才触发 ≈ 0.3 秒之后 —— 于是用户听到的是
+    //    「按下去震一下 → 停半秒 → 又震一下」，两下还强度不同（轻/轻），
+    //    听起来像两次不相干的敲门，又拖沓又错位（用户 2026-10-18 原话：「比较拖拉的
+    //    2 次震动 … 突兀和不一致的错位感」）。
+    //    现在「按下去震一下 + 缩一下」就是这一下的全部反馈，唯一且跟手。
+    //    真正**执行**了动作时才给 `FBHapticAction`（比如移动模式进出、显示/隐藏数字）。
+
     // 计数 +1 是「点到了」的证据：球浮在别的 App 上面时，这是唯一看得见的回执。
     // 真正干什么由设置里的「单击」绑定决定（默认 = 打开设置）。
     NSInteger count = [_prefs[@"TapCount"] integerValue] + 1;
     _prefs[@"TapCount"] = @(count);
     [self savePrefs];
     [self refreshLabel];
-    [self haptic:FBHapticTap];
 
     // 「关于」页的自喂测试（0.1.14）：计数、震一下、标签变 —— 都照做（这就是「有反应」的可见证据），
     // 但**不执行**绑定动作（否则点一下「测试」会顺手打开设置 App，容易吓人）。
@@ -731,7 +739,8 @@ void FBBallHapticTouchDown(void)
 
     NSString *target = [self gestureTarget:@"GestureDoubleTap"];
     FBLog(@"双击：绑定=%@", target);
-    [self haptic:FBHapticTap];
+    // ⚠️ 0.1.20 同样删掉 `haptic:FBHapticTap` —— 双击的第二次「按下」起手时已经震过了，
+    //    再补一下就是「双击听到四下」。（单击那处的原因写在 onSingleTap: 上面。）
     [self performTargetKey:target];
 }
 
@@ -742,7 +751,9 @@ void FBBallHapticTouchDown(void)
 
     NSString *target = [self gestureTarget:@"GestureLongPress"];
     FBLog(@"长按：绑定=%@", target);
-    [self haptic:FBHapticTap];
+    // 长按这里给「中」那一档而不是不再给：按下那一下是「轻」，0.5 秒后动作真的开始
+    // 是另一回事，用不同强度区分开（两下挨太近的话用户自己会提，别自作主张）。
+    [self haptic:FBHapticAction];
     [self performTargetKey:target];
 }
 
@@ -858,6 +869,16 @@ void FBBallHapticTouchDown(void)
     // 移动模式下先不显示数字：让用户知道「现在拖得动」
     _label.hidden = !_showText || _moveMode;
     _label.text = [NSString stringWithFormat:@"%ld", (long)[_prefs[@"TapCount"] integerValue]];
+    // ⚠️ 0.1.20：用户反馈「点了之后数字看着没变，切到别的 tab 再回来才发现 +1 了」。
+    //    UILabel 换 text 会自己 setNeedsDisplay，但我们在的是一个**影子 UIApplication**
+    //    （没有 SpringBoard 的渲染循环替我们提交），所以这里显式刷一次。
+    //    刷新条件里对比一下旧值：没变就不刷，省掉无谓的重绘。
+    if (![_label.text isEqualToString:[NSString stringWithFormat:@"%ld",
+                                       (long)[_prefs[@"TapCount"] integerValue]]]) {
+        [_label setNeedsDisplay];
+        [_label setNeedsLayout];
+        [_label.layer setNeedsDisplay];
+    }
 }
 
 - (void)applyLayout

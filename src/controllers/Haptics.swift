@@ -13,7 +13,7 @@
 //  三种震感，按「发生了什么」分：
 //    tap    识别到一次点击 / 选中了某个选项        —— 轻
 //    action 动作真的执行了（开关、落位、移动模式）  —— 中
-//    notice 「交代出去一件事」（刷新信号这种）      —— 两下
+//    notice 「交代出去一件事」（刷新信号这种）      —— 0.1.32 起也是一下
 //
 //  ⚠️ 手机上「设置 → 声音与触感 → 系统触感反馈」关掉的话，这里全部没感觉。
 //     这是系统开关，我们绕不过去，所以界面上要提示用户去查。
@@ -24,7 +24,7 @@
 //     HUD 那个常驻 root 进程里不靠谱。
 //     我们原来把它折中成「每 40ms 敲一下」拼时长（10ms = 1 下，300ms ≈ 8 下），
 //     用户实测后说「再改的效果一般」，于是**直接去掉**：一律就系统默认那一下（≈40ms）。
-//     ⚠️ 只有「交代出去一件事」（notice）保留**两下** —— 那是一个**信号**，不是时长。
+//     ⚠️ 0.1.32：连 notice 的「两下」也去掉了 —— 所有种类都只震一下。
 //     ⚠️ 老版本写进设置的 `HapticDurationMs` 键现在**没人读了**（不用清，不影响）。
 
 
@@ -40,11 +40,6 @@ enum Haptics {
     }
 
     // MARK: - 参数（⚠️ 与 HUD 侧 BallRootViewController.mm 保持一致）
-
-    /// 两下之间隔多少毫秒。
-    /// ⚠️ 0.1.12 起「时长」不再可调（一律系统默认那一下 ≈40ms），
-    ///    这个常量只用来给「两下」那种信号留间隔（notice）。
-    static let pulseSpacingMs = 40
 
     static let minIntensity: Double = 0.2
     static let maxIntensity: Double = 1.0
@@ -133,18 +128,9 @@ enum Haptics {
         guard force || enabled else { return }
         prepareGenerators()
 
-        // ⚠️ 0.1.12：时长不再可调 —— 一律**系统默认那一下**（≈40ms）。
-        //    只有「交代出去一件事」（notice）保留两下：那是一个**信号**，不是时长。
-        let n = (kind == .notice) ? 2 : 1
-
-        for i in 0..<n {
-            if i == 0 {
-                pulse(kind)
-                continue
-            }
-            let delay = Double(i * pulseSpacingMs) / 1000.0
-            DispatchQueue.main.asyncAfter(deadline: .now() + delay) { pulse(kind) }
-        }
+        // ⚠️ 0.1.32：**一律只震一下**。原来 notice（「交代出去一件事」）敲两下，
+        //    用户实测觉得拖拉（"只震动一次就行"），现在所有种类都只有一下。
+        pulse(kind)
 
         // 震完马上再预热一次，让引擎保持热的 —— 下一次按下去还是立刻有
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) { prepareGenerators() }

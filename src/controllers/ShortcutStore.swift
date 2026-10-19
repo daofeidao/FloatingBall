@@ -25,7 +25,9 @@ enum ShortcutAction: String, CaseIterable, Identifiable {
     case openMainApp        // 打开悬浮球主界面
     case quitBall           // 关闭悬浮球（把屏幕上的球收掉）
     case openAppList        // 打开快捷菜单（App 第 2 栏）
-    case moveBall           // 移动悬浮图标
+    // ~~moveBall~~ 0.1.36 删掉（用户 2026-10-20 要求：菜单项里的「移动悬浮图标」去掉）：
+    //   球本来就能直接拖，这个动作等于多一步开关，纯占地方。
+    //   rawValue "moveBall" 的老数据由 load() 里的迁移清掉（见 dropMoveBall）。
     case toggleLabel        // 显示 / 隐藏球上的数字
     case none               // 什么都不做
 
@@ -42,7 +44,6 @@ enum ShortcutAction: String, CaseIterable, Identifiable {
         case .openMainApp:   return "打开悬浮球"
         case .quitBall:      return "关闭悬浮球"
         case .openAppList:   return "打开快捷菜单"
-        case .moveBall:      return "移动悬浮图标"
         case .toggleLabel:   return "显示/隐藏数字"
         case .none:          return "什么都不做"
         }
@@ -57,7 +58,6 @@ enum ShortcutAction: String, CaseIterable, Identifiable {
         case .openMainApp:   return "回到悬浮球 App 的「启动」页"
         case .quitBall:      return "把屏幕上的球收掉（等于回 App 把「启动悬浮球」关一下），球没了这个菜单也就没了"
         case .openAppList:   return "回到悬浮球 App 的「快捷菜单」栏"
-        case .moveBall:      return "球变成可拖动状态，拖着放到顺手的位置"
         case .toggleLabel:   return "球上那个数字显示 / 不显示"
         case .none:          return "不做事"
         }
@@ -71,7 +71,6 @@ enum ShortcutAction: String, CaseIterable, Identifiable {
         case .openMainApp:   return "app.badge"
         case .quitBall:      return "power"
         case .openAppList:   return "square.grid.2x2"
-        case .moveBall:      return "hand.draw"
         case .toggleLabel:   return "textformat.123"
         case .none:          return "slash.circle"
         }
@@ -207,13 +206,31 @@ enum ShortcutStore {
     static let gestureKeys: [GestureSlot] = [
         GestureSlot(id: "GestureTap",       title: "单击", note: "默认打开「设置」"),
         GestureSlot(id: "GestureDoubleTap", title: "双击", note: "默认什么都不做"),
-        GestureSlot(id: "GestureLongPress", title: "长按", note: "默认进入移动模式"),
+        GestureSlot(id: "GestureLongPress", title: "长按", note: "默认什么都不做（「移动悬浮图标」0.1.36 删了，球直接拖就能挪）"),
     ]
 
     static let gestureDefaults: [String: String] = [
         "GestureTap":       "app:com.apple.Preferences",
         "GestureDoubleTap": "action:none",
-        "GestureLongPress": "action:moveBall",
+        "GestureLongPress": "action:none",
+    ]
+
+    // MARK: - 手势动作（0.1.36）
+
+    /// 打开某个手势（单击 / 双击 / 长按）时，那个选择菜单里能选什么 —— 就是这一栏。
+    ///
+    /// 用户 2026-10-20：「打开手势选项的时候…这个菜单里头挺乱的，需要整理一下」。
+    /// 原来那个菜单是「全部内置动作 + 快捷列表里所有 App/URL」平铺，几十项。
+    /// 现在改成用户自己维护的一小份清单：默认只放 4 条高频的，想加再点「添加手势项目」。
+    /// ⚠️ 菜单项（Shortcuts）和手势动作（GestureItems）是**两份独立数据**：
+    ///    删菜单项不影响手势，反之亦然。
+    static let gestureItemsKey = "GestureItems"
+
+    static let gestureItemDefaults: [ShortcutItem] = [
+        .make(action: .openAppList),
+        .make(action: .screenshot),
+        .make(action: .refreshSignal),
+        .make(action: .quitBall),
     ]
 
     /// 0.1.34：「打开悬浮球 → 关闭悬浮球」的一次性迁移标记。
@@ -224,19 +241,7 @@ enum ShortcutStore {
 
     static func load() -> [ShortcutItem] {
         let dict = UserDefaults().loadUserDefaults(forPath: BallSettings.path)
-        var items: [ShortcutItem] = defaults
-        if let raw = dict[shortcutsKey] as? [[String: Any]] {
-            let parsed: [ShortcutItem] = raw.compactMap { row in
-                guard let kindRaw = row["kind"] as? String,
-                      let kind = ShortcutItem.Kind(rawValue: kindRaw),
-                      let id = row["id"] as? String,
-                      let title = row["title"] as? String
-                else { return nil }
-                return ShortcutItem(kind: kind, id: id, title: title,
-                                    icon: row["icon"] as? String)
-            }
-            if !parsed.isEmpty { items = parsed }
-        }
+        var items: [ShortcutItem] = parse(dict[shortcutsKey]) ?? defaults
 
         // 0.1.34：老列表里的「打开悬浮球」换成「关闭悬浮球」（只做一次）
         if !BallSettings.bool(quitBallMigratedKey, default: false) {
@@ -252,11 +257,53 @@ enum ShortcutStore {
             items = converted
         }
 
+        // 0.1.36（用户要求）：菜单项里的「移动悬浮图标」删掉。
+        // 不用标记键：这个动作已经从 ShortcutAction 里移除了，留着只会变成一行认不出的死项。
+        if items.contains(where: { $0.kind == .action && $0.id == "moveBall" }) {
+            items = items.filter { !($0.kind == .action && $0.id == "moveBall") }
+            save(items)
+        }
+
+        // 0.1.36：手势绑在「移动悬浮图标」上的，就地改成「什么都不做」。
+        // 只改存过的那份值（没存过的走 gestureDefaults，已经是 action:none 了）。
+        for slot in gestureKeys where BallSettings.string(slot.id, default: "") == "action:moveBall" {
+            BallSettings.set("action:none", slot.id)
+        }
+
         return items
     }
 
-    static func save(_ items: [ShortcutItem]) {
-        let raw: [[String: Any]] = items.map { item in
+    /// 手势动作清单（0.1.36）：打开手势选择菜单时能选的就是这一份。
+    static func loadGestureItems() -> [ShortcutItem] {
+        let dict = UserDefaults().loadUserDefaults(forPath: BallSettings.path)
+        let parsed = parse(dict[gestureItemsKey])
+        if let parsed = parsed, !parsed.isEmpty {
+            return parsed.filter { !($0.kind == .action && $0.id == "moveBall") }
+        }
+        return gestureItemDefaults
+    }
+
+    static func saveGestureItems(_ items: [ShortcutItem]) {
+        BallSettings.set(encode(items), gestureItemsKey)
+    }
+
+    /// plist 里那一行行字典 → ShortcutItem（两份清单共用一套格式）
+    private static func parse(_ raw: Any?) -> [ShortcutItem]? {
+        guard let raw = raw as? [[String: Any]] else { return nil }
+        let parsed: [ShortcutItem] = raw.compactMap { row in
+            guard let kindRaw = row["kind"] as? String,
+                  let kind = ShortcutItem.Kind(rawValue: kindRaw),
+                  let id = row["id"] as? String,
+                  let title = row["title"] as? String
+            else { return nil }
+            return ShortcutItem(kind: kind, id: id, title: title,
+                                icon: row["icon"] as? String)
+        }
+        return parsed.isEmpty ? nil : parsed
+    }
+
+    private static func encode(_ items: [ShortcutItem]) -> [[String: Any]] {
+        items.map { item in
             // ⚠️ 「url」这类老版本没有的字段是**可选**的：老列表读进来 icon 是 nil，
             //    存回去就不写这个键（不会凭空多出一堆空字段）。
             var row: [String: Any] = ["kind": item.kind.rawValue,
@@ -265,7 +312,10 @@ enum ShortcutStore {
             if let icon = item.icon { row["icon"] = icon }
             return row
         }
-        BallSettings.set(raw, shortcutsKey)
+    }
+
+    static func save(_ items: [ShortcutItem]) {
+        BallSettings.set(encode(items), shortcutsKey)
     }
 
     // MARK: 手势绑定

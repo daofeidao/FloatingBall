@@ -224,7 +224,7 @@ static const CGFloat kMenuPadY     = 8.0;
 static const CGFloat kMenuCorner   = 14.0;
 static const CGFloat kMenuWidth    = 168.0;
 static const CGFloat kMenuGapFromBall = 10.0;
-static const CGFloat kMenuMaxRows  = 8.0;    // 超过就滚动不了，所以条数上限就是 8
+static const CGFloat kMenuMaxHeightGap = 76.0;   // 菜单最多占「屏高 − 76pt」（上面给刘海/状态栏 56、下面留 20）
 
 @interface FBQuietMenuItem : NSObject
 @property (nonatomic, copy) NSString *key;      // "app:xxx" / "action:xxx" / "url:xxx"
@@ -243,14 +243,33 @@ static const CGFloat kMenuMaxRows  = 8.0;    // 超过就滚动不了，所以�
     NSInteger _itemCount;
     NSInteger _pressedIndex;     // 按下时落在第几行（-1 = 没落在行上）
     NSTimeInterval _beganAt;
+    // 0.1.36（用户反馈「菜单项加了更多，球上只出来 8 个」）：
+    //   原来条数被 kMenuMaxRows=8 硬截断。现在条数不截，超过一屏就**上下拖着看**：
+    //   所有行挂在一个内容层上，拖动时整层上下挪，命中判定加上偏移量。
+    UIView *_contentView;
+    CGFloat _contentHeight;      // 内容总高（含上下内边距）
+    CGFloat _scrollOffset;       // 已经往上挪了多少（0 ~ _maxScroll）
+    CGFloat _maxScroll;
+    CGPoint _touchStart;
+    CGFloat _scrollStartOffset;
+    BOOL _scrolling;             // 这一下已经从「点」变成「拖」了
 }
 
 - (instancetype)initWithItems:(NSArray<FBQuietMenuItem *> *)items
 {
-    CGFloat h = kMenuPadY * 2 + items.count * kMenuRowH + MAX(0, (CGFloat)items.count - 1) * kMenuRowGap;
+    CGFloat contentH = kMenuPadY * 2 + items.count * kMenuRowH + MAX(0, (CGFloat)items.count - 1) * kMenuRowGap;
+
+    // 屏幕高度：HUD 是后台进程，UIScreen 一般拿得到；万一拿到个离谱值就按 13PM 兜底。
+    CGFloat screenH = CGRectGetHeight([UIScreen mainScreen].bounds);
+    if (screenH < 400.0) screenH = 926.0;
+    CGFloat maxH = MAX(kMenuRowH * 3.0, screenH - kMenuMaxHeightGap);
+    CGFloat h = MIN(contentH, maxH);
+
     if (self = [super initWithFrame:CGRectMake(0, 0, kMenuWidth, h)]) {
         _itemCount = (NSInteger)items.count;
         _pressedIndex = -1;
+        _contentHeight = contentH;
+        _maxScroll = MAX(0.0, contentH - h);
         self.backgroundColor = [UIColor colorWithWhite:0.12 alpha:0.92];
         self.layer.cornerRadius = kMenuCorner;
         self.layer.masksToBounds = YES;
@@ -269,6 +288,12 @@ static const CGFloat kMenuMaxRows  = 8.0;    // 超过就滚动不了，所以�
             self.transform = CGAffineTransformIdentity;
         }];
 
+        // 内容层（超一屏时整层上下挪；没超就正好一层铺满）
+        _contentView = [[UIView alloc] initWithFrame:CGRectMake(0, 0, kMenuWidth, contentH)];
+        _contentView.userInteractionEnabled = NO;   // 触摸一律由容器自己收
+        _contentView.backgroundColor = [UIColor clearColor];
+        [self addSubview:_contentView];
+
         CGFloat y = kMenuPadY;
         for (NSInteger i = 0; i < (NSInteger)items.count; i++) {
             FBQuietMenuItem *item = items[i];
@@ -282,7 +307,7 @@ static const CGFloat kMenuMaxRows  = 8.0;    // 超过就滚动不了，所以�
             UIView *row = [[UIView alloc] initWithFrame:CGRectMake(0, y, kMenuWidth, kMenuRowH)];
             row.userInteractionEnabled = NO;
             row.backgroundColor = [UIColor clearColor];
-            [self addSubview:row];
+            [_contentView addSubview:row];
 
             UIImageView *icon = [[UIImageView alloc] initWithImage:[UIImage systemImageNamed:item.symbol]];
             icon.tintColor = [UIColor whiteColor];
@@ -310,7 +335,8 @@ static const CGFloat kMenuMaxRows  = 8.0;    // 超过就滚动不了，所以�
 - (NSInteger)indexAtPoint:(CGPoint)p
 {
     if (p.x < 0.0 || p.x > CGRectGetWidth(self.bounds)) return -1;
-    CGFloat y = p.y - kMenuPadY;
+    // 0.1.36：加上滚动偏移 —— 屏幕上的 p 换算到「内容层」的坐标
+    CGFloat y = p.y + _scrollOffset - kMenuPadY;
     if (y < 0.0) return -1;
     CGFloat step = kMenuRowH + kMenuRowGap;
     NSInteger i = (NSInteger)(y / step);   // y >= 0，截断即 floor
@@ -323,12 +349,12 @@ static const CGFloat kMenuMaxRows  = 8.0;    // 超过就滚动不了，所以�
 - (void)setPressedIndex:(NSInteger)idx
 {
     if (idx == _pressedIndex) return;
-    if (_pressedIndex >= 0 && _pressedIndex < (NSInteger)self.subviews.count) {
-        self.subviews[_pressedIndex].backgroundColor = [UIColor clearColor];
+    if (_pressedIndex >= 0 && _pressedIndex < (NSInteger)_contentView.subviews.count) {
+        _contentView.subviews[_pressedIndex].backgroundColor = [UIColor clearColor];
     }
     _pressedIndex = idx;
-    if (idx >= 0 && idx < (NSInteger)self.subviews.count) {
-        self.subviews[idx].backgroundColor = [UIColor colorWithWhite:1.0 alpha:0.16];
+    if (idx >= 0 && idx < (NSInteger)_contentView.subviews.count) {
+        _contentView.subviews[idx].backgroundColor = [UIColor colorWithWhite:1.0 alpha:0.16];
     }
 }
 
@@ -337,6 +363,9 @@ static const CGFloat kMenuMaxRows  = 8.0;    // 超过就滚动不了，所以�
     UITouch *t = touches.anyObject;
     _beganAt = t.timestamp;
     CGPoint p = [t locationInView:self];
+    _touchStart = p;
+    _scrollStartOffset = _scrollOffset;
+    _scrolling = NO;
     NSInteger idx = [self indexAtPoint:p];
     FBLog(@"菜单触摸：按下 (%.1f,%.1f) → 第 %ld 行", p.x, p.y, (long)idx);
     [self setPressedIndex:idx];
@@ -345,11 +374,37 @@ static const CGFloat kMenuMaxRows  = 8.0;    // 超过就滚动不了，所以�
 - (void)touchesMoved:(NSSet<UITouch *> *)touches withEvent:(UIEvent *)event
 {
     UITouch *t = touches.anyObject;
-    [self setPressedIndex:[self indexAtPoint:[t locationInView:self]]];
+    CGPoint p = [t locationInView:self];
+
+    // 0.1.36：条数多到装不下时，上下拖 = 滚动（超过 10pt 才算拖，防手抖把点击吃掉）
+    if (_maxScroll > 0.0) {
+        CGFloat dy = p.y - _touchStart.y;
+        if (!_scrolling && fabs(dy) > 10.0) {
+            _scrolling = YES;
+            [self setPressedIndex:-1];
+            FBLog(@"菜单触摸：开始上下拖（可滚 %.0fpt）", _maxScroll);
+        }
+        if (_scrolling) {
+            CGFloat off = _scrollStartOffset - dy;
+            off = MAX(0.0, MIN(off, _maxScroll));
+            _scrollOffset = off;
+            _contentView.frame = CGRectMake(0, -_scrollOffset, kMenuWidth, _contentHeight);
+            return;
+        }
+    }
+
+    [self setPressedIndex:[self indexAtPoint:p]];
 }
 
 - (void)touchesEnded:(NSSet<UITouch *> *)touches withEvent:(UIEvent *)event
 {
+    if (_scrolling) {
+        _scrolling = NO;
+        [self setPressedIndex:-1];
+        FBLog(@"菜单触摸：这一下是拖动滚动，不执行任何一项");
+        return;
+    }
+
     UITouch *t = touches.anyObject;
     CGPoint end = [t locationInView:self];
     NSInteger up = [self indexAtPoint:end];
@@ -809,7 +864,6 @@ void FBBallHapticTouchDown(void)
                     : [self symbolForActionId:rid];
 
         [out addObject:item];
-        if (out.count >= (NSUInteger)kMenuMaxRows) break;   // 菜单放不下更多
     }
     return out;
 }
@@ -1069,7 +1123,8 @@ void FBBallHapticTouchDown(void)
 
     NSDictionary *defaults = @{ @"GestureTap":       @"app:com.apple.Preferences",
                                 @"GestureDoubleTap": @"action:none",
-                                @"GestureLongPress": @"action:moveBall" };
+                                // 0.1.36：moveBall 删了（用户要求），长按默认改成不做任何事
+                                @"GestureLongPress": @"action:none" };
     return defaults[key] ?: @"action:none";
 }
 

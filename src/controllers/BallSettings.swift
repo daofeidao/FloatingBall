@@ -22,7 +22,7 @@ enum BallSettings {
 
     /// ⚠️ 0.1.19：原来这里写的是 `v == 0 ? fallback : v` —— **无法表达 0 这个合法值**，
     ///    用户真的存了 0 也会被静默换成默认值（今天恰好无害：
-    ///    BallOpacity 被夹在 ≥0.3、HapticIntensity ≥0.2、BallSize 是 56，
+    ///    BallOpacity 被夹在 ≥0.2（0.1.38 起，原来 ≥0.3）、HapticIntensity ≥0.2、BallSize 是 56，
     ///    但只要哪天加一个「允许 0」的滑块就会炸）。
     ///    改成和下面的 `bool()` 一样先问 `hasKey`。
     static func double(_ key: String, `default` fallback: Double) -> Double {

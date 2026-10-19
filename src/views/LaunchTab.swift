@@ -27,20 +27,70 @@ struct LaunchTab: View {
     @State private var size = 56.0
     @State private var opacity = 1.0
     @State private var customImage: UIImage?
-    @State private var showPicker = false
 
-    // ⚠️ 长文案一律提成 static let：以前 Section(footer:) 里现拼长字符串，
-    //    CI 上的 Swift 编译器报过 `unable to type-check this expression in reasonable time`。
+    /// 0.1.38：相册 + 「选一块」两层弹窗合成一个 enum 控制。
+    /// 为什么：两层 sheet 连着弹（先关相册、立刻开裁剪）在 iOS 15 上会互相顶掉 ——
+    /// 表现是「相册关了、裁剪页没出来」。用一个 item 驱动，中间留一点时间就稳了。
+    @State private var iconSheet: IconSheet?
+    /// 0.1.38：用过的自定义图（最多 3 张，最近在前）—— 换错了能换回去
+    @State private var history: [UIImage] = []
+
+    /// 0.1.38：闲置自动淡化 + 缩小（用户 2026-10-20 要求）
+    @State private var idleDim = true
+    @State private var idleSeconds = 5
+
+    /// 图标那两层的弹窗（相册 / 选一块）
+    private enum IconSheet: Identifiable {
+        case picker
+        case crop(UIImage)
+
+        var id: String {
+            switch self {
+            case .picker: return "picker"
+            case .crop:   return "crop"
+            }
+        }
+    }
+
+    // ⚠️ 0.1.38（用户 2026-10-20 要求）：这些长说明不再摆在页面下面（太乱），
+    //    改成小节标题右边一个小 `*`，点开才看（见 HelpNote.swift）。
     private static let ballFooter = """
-    震动反馈：点球、执行动作、球落位时会震一下（屏幕上的球和这个 App 都会震）。关掉之后哪儿都不震。
+    震动反馈：**只在手指按下去那一下震** —— 单击震 1 下、双击震 2 下、长按震 1 下；
+    抬手、拖动落位、动作执行都不再震（0.1.38 起）。关掉之后哪儿都不震（屏幕上的球和这个 App 里的按钮都算）。
 
     · 强度 —— 0.2 到 1.0，拖滑块时当场就能感觉出来。
     · 时长固定是**系统默认那一下**（约 40ms），不给调了：iOS 不让第三方直接给毫秒级的振动波形（Taptic 引擎「敲一下」的长度是系统定死的），0.1.9 的「连敲几下拼时长」实测效果一般，所以去掉。
 
-    0.1.31 起球上的振动改走**系统声音服务**（后台进程也能震）。⚠️ 0.1.32 起强度不再靠系统那个 `Intensity` 参数（iOS 15 真机上它不生效，20% 和 100% 区别听不出来），改成**用震动时长表达强弱**：20% ≈ 14ms、50% ≈ 24ms、100% = 40ms，而且**只震一下**（"刷新信号"也不敲两下了）。App 自己的按钮反馈仍是 Taptic 那种细腻震动。
+    0.1.31 起球上的振动改走**系统声音服务**（后台进程也能震）。0.1.32 起强度不再靠系统那个 `Intensity` 参数（iOS 15 真机上它不生效），改成**用震动时长表达强弱**：20% ≈ 14ms、50% ≈ 24ms、100% = 40ms。App 自己的按钮反馈仍是 Taptic 那种细腻震动。
+
+    ⚠️ **长按没反应**，先看「快捷菜单」页 →「手势」→ 长按右边绑的是什么。
+    如果写着「未设置」，那它本来就不会做任何事 —— 选一个动作就好（长按要按住 0.5 秒）。
+    """
+
+    /// 「图标」这一节的说明（0.1.38 起收进 `*`）
+    private static let iconFooter = """
+    这里设的就是屏幕上那个球。改完立刻生效，不用重启。桌面图标固定是第一个（小圆点）。
+
+    · 形状 —— 「自定义」用的是你自己相册里的图：选完会出来一页「选一块」，拖动 + 双指缩放到想要的那部分，点「用这张」。球是圆的，圆圈外面那圈不会显示。
+    · 颜色 —— 只对「小圆点 / 纯色」有用（白点和自定义图颜色固定）。
+    · 大小 / 不透明度 —— 直接作用到屏幕上的球，不用重画贴图。不透明度最低 20%（再低就看不见了）。
+    · 闲置时淡化缩小 —— 一段时间没碰球，它自己淡到最淡、缩到最小（省地方、不挡视线）；手指一碰或者开菜单立刻恢复。下面选的秒数就是「多久没动算闲置」。
+
+    换过的自定义图会留着 3 张（在「自定义」那一栏里，点一下就换回去）—— 换错了不用回相册重找。
+    """
+
+    /// 「排障」这一节的说明（0.1.38 起收进 `*`）
+    private static let troubleFooter = """
+    日志文件：/tmp/FloatingBall.log
+
+    球不出来 / 点不动 / 某个动作没反应时，用手机上的终端 cat 这个文件，
+    能看到 HUD 进程走到哪一步了。
+
+    ⚠️ 这个文件每起一次球就重写一轮，要给我看的时候就现 cat 一次。
     """
 
     private static let versionFooter = """
+    0.1.38：**震动改成「只在按下去那一下」** —— 单击震 1 下、双击震 2 下、长按震 1 下；抬手不再震（用户 2026-10-20：「点下去它震一下手，抬起来它震一下」）。**修长按不执行**：按住不动时数字器不发事件，我们那个 0.18 秒的兜底会提前把触点交还，长按（要 0.5 秒）永远等不到 —— 现在按住不动时放宽到 0.6 秒，并把「同一根手指还在按着」的伪起手排除掉（不再每隔一秒震一下）；长按的容错距离从 10pt 放到 26pt，手抖也不会失败。**不透明度最低改 20%**（原来 30%）。**新增「闲置时淡化缩小」**：一段时间没碰球就自己淡到最淡、缩到最小，手指一碰立刻恢复（秒数可选 3/5/10/30）。**自定义图标能「选一块」了**：选完相册里那张图会出来一页裁剪，拖动 + 双指缩放，把要的部分对进圆圈（以前只能自动居中填满）；换过的图还留 3 张，点一下就换回去。**每一页下面的长说明收成小节标题右边的 `*`**，点开才看，页面整齐。
     0.1.37：「打开邮箱收件箱」的等待改成**轮询** —— 开机就动手，不再固定等 1.6 秒（热启动时原来那 1.6 秒纯属白等）。判断「Mail 到前台了」用系统的前台查询，一到就点一下空白再划返回；要是等了 2.5 秒 Mail 都没起来，这一下就干脆不注入（免得瞎点到别的界面）。
     0.1.36：**快捷菜单页整理 + 球上菜单不再只出 8 项 + 新增「打开邮箱收件箱」**。「添加」挪到菜单项列表末尾；手势下面新增「手势动作」，那里列的就是点单击/双击/长按时能选的东西，觉得菜单乱就左滑删几条；「移动悬浮图标」删掉了（球直接拖就能挪）；球上的快捷菜单原来最多只出 8 项，现在有多少出多少，装不下可以上下拖着看。新增「打开邮箱收件箱」：把 Mail 拉到前台，点一下上方空白，再划一次返回 —— 专门治「Mail 停在带附件的邮件详情页，光划返回划不动」。
     0.1.35：**截屏不带球了**。系统截图抓的是整块屏幕，球挂在窗口上就一定会被拍进去，所以改成「先把球藏起来 → 0.3 秒后让系统截 → 1.2 秒后把球放回」；藏起来的这一小会儿，球那一片的触摸也会放过去，不会吃了你的手指。
@@ -72,8 +122,7 @@ struct LaunchTab: View {
     var body: some View {
         NavigationView {
             Form {
-                Section(header: Text("悬浮球"),
-                        footer: Text(Self.ballFooter)) {
+                Section(header: helpHeader("悬浮球", Self.ballFooter)) {
                     Toggle("启动悬浮球", isOn: Binding(
                         get: { enabled },
                         set: { want in setEnabled(want) }
@@ -120,8 +169,7 @@ struct LaunchTab: View {
                     Button("刷新") { refresh() }.hapticOnPress(.tap)
                 }
 
-                Section(header: Text("图标"),
-                        footer: Text("这里设的就是屏幕上那个球。改完立刻生效，不用重启。桌面图标固定是第一个（小圆点）。")) {
+                Section(header: helpHeader("图标", Self.iconFooter)) {
                     // ---- 形状 ----
                     VStack(alignment: .leading, spacing: 8) {
                         Text("形状").font(.footnote).foregroundColor(.secondary)
@@ -134,20 +182,48 @@ struct LaunchTab: View {
                     }
                     .padding(.vertical, 2)
 
-                    // ---- 自定义图片 ----
+                    // ---- 自定义图片（0.1.38：选完先「选一块」，并留 3 张历史）----
                     if shape == .custom {
-                        HStack(spacing: 12) {
-                            if let img = customImage {
-                                Image(uiImage: img)
-                                    .resizable()
-                                    .scaledToFill()
-                                    .frame(width: 44, height: 44)
-                                    .clipShape(Circle())
+                        VStack(alignment: .leading, spacing: 10) {
+                            HStack(spacing: 12) {
+                                if let img = customImage {
+                                    Image(uiImage: img)
+                                        .resizable()
+                                        .scaledToFill()
+                                        .frame(width: 44, height: 44)
+                                        .clipShape(Circle())
+                                }
+                                Button(customImage == nil ? "从相册选一张图片…" : "换一张图片") {
+                                    iconSheet = .picker
+                                }
+                                .hapticOnPress(.tap)
                             }
-                            Button(customImage == nil ? "从相册选一张图片…" : "换一张图片") {
-                                showPicker = true
+
+                            // 换图之前那几张留着（最多 3 张），点一下换回去
+                            if !history.isEmpty {
+                                VStack(alignment: .leading, spacing: 6) {
+                                    Text("用过的（点一下换回去）")
+                                        .font(.caption2)
+                                        .foregroundColor(.secondary)
+                                    HStack(spacing: 10) {
+                                        ForEach(history.indices, id: \.self) { i in
+                                            Button {
+                                                restoreHistory(i)
+                                            } label: {
+                                                Image(uiImage: history[i])
+                                                    .resizable()
+                                                    .scaledToFill()
+                                                    .frame(width: 40, height: 40)
+                                                    .clipShape(Circle())
+                                                    .overlay(Circle()
+                                                        .stroke(Color(UIColor.separator), lineWidth: 0.5))
+                                            }
+                                            .buttonStyle(.plain)
+                                        }
+                                        Spacer(minLength: 0)
+                                    }
+                                }
                             }
-                            .hapticOnPress(.tap)
                         }
                     }
 
@@ -190,9 +266,30 @@ struct LaunchTab: View {
                             Spacer()
                             Text("\(Int((opacity * 100).rounded()))%").foregroundColor(.secondary)
                         }
-                        Slider(value: $opacity, in: 0.3...1.0, step: 0.05)
+                        // 0.1.38（用户 2026-10-20 要求）：最高 100%、最低 20%（原来下限是 30%）
+                        Slider(value: $opacity, in: 0.2...1.0, step: 0.05)
                             // 同理：透明度是 HUD 那边给视图设 alpha，也不用重画
                             .onChange(of: opacity) { _ in saveAppearance(redraw: false) }
+                    }
+
+                    // ---- 闲置：自动淡化 + 缩小（0.1.38，用户要求）----
+                    // 用户原话：「手势长时间没有动的话，应该变透明度最低缩到最小」
+                    Toggle("闲置时淡化缩小", isOn: Binding(
+                        get: { idleDim },
+                        set: { want in setIdleDim(want) }
+                    ))
+
+                    if idleDim {
+                        Picker("多久没动算闲置", selection: Binding(
+                            get: { idleSeconds },
+                            set: { v in setIdleSeconds(v) }
+                        )) {
+                            Text("3 秒").tag(3)
+                            Text("5 秒").tag(5)
+                            Text("10 秒").tag(10)
+                            Text("30 秒").tag(30)
+                        }
+                        .pickerStyle(.menu)
                     }
 
                     // ---- 预览：和屏幕上一样大（走的是同一个画图函数）----
@@ -215,30 +312,36 @@ struct LaunchTab: View {
                     .hapticOnPress(.action)
                 }
 
-                Section(header: Text("排障")) {
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text("日志文件").font(.footnote)
-                        Text("/tmp/FloatingBall.log")
-                            .font(.system(size: 12, design: .monospaced))
-                        Text("球不出来时，用手机上的终端 cat 这个文件，能看到 HUD 进程走到哪一步了。")
-                            .font(.caption)
-                            .foregroundColor(.secondary)
-                    }
+                Section(header: helpHeader("排障", Self.troubleFooter)) {
+                    EmptyView()
                 }
 
-                Section(footer: Text(Self.versionFooter)) {
+                Section(header: helpHeader("版本记录", Self.versionFooter)) {
                     EmptyView()
                 }
             }
             .navigationTitle("悬浮球")
         }
         .onAppear { refresh() }
-        .sheet(isPresented: $showPicker) {
-            CustomImagePicker { image in
-                customImage = image
-                _ = BallRenderer.saveCustomImage(image)
-                shape = .custom
-                saveAppearance(redraw: true)
+        // 0.1.38：相册 + 「选一块」两层合成一个 sheet（见 IconSheet 的说明）
+        .sheet(item: $iconSheet) { sheet in
+            switch sheet {
+            case .picker:
+                CustomImagePicker { image in
+                    // 先收掉相册这层，再弹「选一块」—— 中间留一点时间，
+                    // 不然两层 sheet 会互相顶掉（相册关了、裁剪页不出来）。
+                    iconSheet = nil
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) {
+                        iconSheet = .crop(image)
+                    }
+                }
+            case .crop(let source):
+                IconCropView(source: source,
+                             onCancel: { iconSheet = nil },
+                             onDone: { cropped in
+                                 applyCustomImage(cropped)
+                                 iconSheet = nil
+                             })
             }
         }
     }
@@ -278,7 +381,7 @@ struct LaunchTab: View {
         Button {
             shape = s
             if s == .custom && customImage == nil {
-                showPicker = true      // 选了「自定义」但还没图，直接把相册弹出来
+                iconSheet = .picker      // 选了「自定义」但还没图，直接把相册弹出来
             } else {
                 saveAppearance(redraw: true)
             }
@@ -364,6 +467,44 @@ struct LaunchTab: View {
         Haptics.fire(.action, force: true)
     }
 
+    // MARK: - 自定义图（0.1.38：选一块 + 3 张历史）
+
+    /// 裁剪页点了「用这张」：存下来 + 换到「自定义」+ 重画贴图。
+    /// ⚠️ 存进去的是**裁好的那张**（正方形），球上按原样铺满 + 圆形裁切，
+    ///    所以画面上看到的圆就是用户在裁剪页里对的那个圆。
+    private func applyCustomImage(_ image: UIImage) {
+        customImage = image
+        if !BallRenderer.saveCustomImage(image) {
+            trouble = "自定义图写不进 \(BallRenderer.customSourcePath)"
+        }
+        shape = .custom
+        history = BallRenderer.loadCustomHistory()
+        saveAppearance(redraw: true)
+    }
+
+    /// 点历史里的一张 → 换回那一张（当前这张会被收进历史，来回切不会丢）
+    private func restoreHistory(_ index: Int) {
+        guard BallRenderer.restoreCustomImage(fromHistory: index) else { return }
+        customImage = BallRenderer.loadCustomImage()
+        history = BallRenderer.loadCustomHistory()
+        shape = .custom
+        saveAppearance(redraw: true)
+    }
+
+    /// 闲置淡化缩小：开关
+    private func setIdleDim(_ want: Bool) {
+        idleDim = want
+        BallSettings.set(want, "IdleDim")
+        BallSettings.notifyReload()
+    }
+
+    /// 闲置淡化缩小：多久没动算闲置（秒）
+    private func setIdleSeconds(_ value: Int) {
+        idleSeconds = value
+        BallSettings.set(value, "IdleDimSeconds")
+        BallSettings.notifyReload()
+    }
+
     // MARK: - 读写设置
 
     private func refresh() {
@@ -380,8 +521,13 @@ struct LaunchTab: View {
         shape = BallRenderer.loadShape()
         color = BallRenderer.loadColor()
         size = BallSettings.double("BallSize", default: 56)
-        opacity = min(1.0, max(0.3, BallSettings.double("BallOpacity", default: 1.0)))
+        // 0.1.38：下限从 0.3 改成 0.2（用户要求最低 20%）
+        opacity = min(1.0, max(0.2, BallSettings.double("BallOpacity", default: 1.0)))
         customImage = BallRenderer.loadCustomImage()
+        history = BallRenderer.loadCustomHistory()
+        // 0.1.38：闲置淡化缩小（没设过 = 开）
+        idleDim = BallSettings.bool("IdleDim", default: true)
+        idleSeconds = BallSettings.integer("IdleDimSeconds", default: 5)
     }
 
     /// 启动 / 关闭悬浮球。

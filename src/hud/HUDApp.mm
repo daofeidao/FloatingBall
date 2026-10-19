@@ -103,6 +103,23 @@ void FBHUDSetConsumeWholeScreen(BOOL consume)
           consume ? @"是" : @"否");
 }
 
+// ---- 0.1.38：长按按住不动时，别把「我们补的交还」当成新的一下 ----
+//
+// 用户 2026-10-20 反馈「长按没法执行它该做的操作」。根子在这儿：
+//   手指按住不动时，数字器**不产生任何事件**（0.1.22 已经查明这一点），
+//   而下面的兜底定时器会在 0.18 秒（0.1.17 的「抬起事件送不到」保险）
+//   直接把 UITouch 结束掉 —— 长按要 0.5 秒才成立，识别器永远等不到那一刻。
+//   之后每条迟到的 HID 事件又会把我们**已经补过抬起的触点**当成「新起手」，
+//   于是「震一下 → 又被补抬起 → 又起手 → 又震一下」＝ 0.1.22 报过的
+//   「长按每隔一秒震一下」。
+//
+// 现在两处一起改：
+//   ① 兜底延迟：起手在球上、且这一轮一条 Moved 都没收到（= 按住不动）→ 放宽到 0.6 秒；
+//   ② 下面「起手」那一刻：如果上一次结束是**我们自己补的**（不是真抬起）且间隔很近，
+//      就认作「同一根手指还在按着」，不再震、不再缩球。
+static BOOL sLastEndWasWatchdog = NO;      // 上一次触点结束是不是我们补的
+static NSTimeInterval sLastWatchdogEndAt = 0;
+
 // ============================================================================
 // 触摸自检（2026-10-17 加：用户报「点球直接穿透、球没反应」）
 //
@@ -730,6 +747,7 @@ static void FBHandleHIDEvent(int route, void *target, void *refcon, IOHIDService
                           sLastFedPoint.x, sLastFedPoint.y, winPt.x, winPt.y,
                           (long)gFBActivePointer);
                     sLastEndReason = @"跳点补抬起";
+                    sLastEndWasWatchdog = NO;
                     gFBActivePointer = 0;
                 }
             }
@@ -858,12 +876,16 @@ static void FBHandleHIDEvent(int route, void *target, void *refcon, IOHIDService
             if (lifted) {
                 phase = axCancel ? UITouchPhaseCancelled : UITouchPhaseEnded;
                 sLastEndReason = axCancel ? @"取消信号" : @"抬起信号";
+                sLastEndWasWatchdog = NO;   // 0.1.38：真抬起 → 下一次起手是新的一下
             } else if (timeout) {
                 phase = axCancel ? UITouchPhaseCancelled : UITouchPhaseEnded;
                 sLastEndReason = @"超时";
+                sLastEndWasWatchdog = YES;  // 0.1.38：这是我们自己补的
+                sLastWatchdogEndAt = now;
             } else if (tooFarFromBall) {
                 phase = UITouchPhaseEnded;
                 sLastEndReason = @"盲喂：离球太远，放手";
+                sLastEndWasWatchdog = NO;
             } else if (bogusPoint) {
                 phase = UITouchPhaseMoved;
                 reuseLastPoint = YES;      // 坐标这一帧不可信，沿用上一帧
@@ -934,8 +956,18 @@ static void FBHandleHIDEvent(int route, void *target, void *refcon, IOHIDService
             //    → 用户看到的是「点哪里球都缩一下」的全局反馈（用户 2026-10-19 原话：
             //    「没法点击，而且出现全局点击的反馈现象」）。菜单自己的行有按下高亮，
             //    整屏接管只是为了接「点菜单外面 → 关菜单」，不该有球的反馈。
-            if (onBall || gFBBlindFeed) {
+            //
+            // ⚠️⚠️ 0.1.38（用户 2026-10-20 要求「有手点下去震一下，抬起来不震」）：
+            //    这里还要再排掉一种**伪起手** —— 按住不动时我们会补交还触点（见下面定时兜底），
+            //    下一条迟到的事件于是又成了「起手」，可手指其实一直按着。
+            //    这种「还按着」的伪起手如果也震/缩，就是用户报过的
+            //    「长按每隔一秒震一下」。判据：上一次结束是我们自己补的 + 间隔很短。
+            BOOL continuingHold = sLastEndWasWatchdog
+                               && (now - sLastWatchdogEndAt) < 1.5;
+            if ((onBall || gFBBlindFeed) && !continuingHold) {
                 FBBallHapticTouchDown();
+            } else if (continuingHold && onBall) {
+                FBLog(@"触摸：这次起手接在「补交还」后面（同一根手指还按着）→ 不震、不缩球");
             }
             // 盲喂模式下每一次都可能是误触：只让它记账/震一下，不执行绑定动作
             if (gFBBlindFeed) {
@@ -955,11 +987,18 @@ static void FBHandleHIDEvent(int route, void *target, void *refcon, IOHIDService
 
         // 0.1.17：**定时兜底**（0.42 → 0.18 秒）。真机上抬起事件送不到，光靠「等下一条事件」
         // 永远等不到结束：一直攥着假触点，后面的点击全被吃掉 —— 就是「只有第一下有用」。
-        // 0.18 秒没有新事件就自己交还：单击立即生效、双击不会被第一下吞掉。
-        // 手指动的时候事件流不断（每来一条就换一代），所以拖动不会被误杀；
-        // 只有「按住不动」时才会 0.18 秒交还 —— 长按要 0.5 秒，真机上能不能活看事件流是否持续。
+        // 手指动的时候事件流不断（每来一条就换一代），所以拖动不会被误杀。
+        //
+        // ⚠️⚠️ 0.1.38：这个延迟要**分情况**（用户 2026-10-20 反馈「长按没法执行它该做的操作」）。
+        //    按住不动时数字器**一条事件都不发**，于是 0.18 秒这里就会把 UITouch 结束掉 ——
+        //    而长按要 0.5 秒才成立，UILongPressGestureRecognizer 永远等不到那一刻，
+        //    长按绑的动作自然永远不执行（按下那一下的震动还在：它给在起手时，跟手势无关）。
+        //    现在：起手在球上 + 这一轮一条 Moved 都没收到（= 按住不动，可能就是长按）
+        //    → 放宽到 0.6 秒（够 0.5 秒长按成立，又不至于把「抬起信号丢了」的点击卡太久）；
+        //    其余情况照旧 0.18 秒 —— 单击立刻生效、双击不会被第一下吞掉。
+        NSTimeInterval watchdogDelay = (onBall && !sSawMoveSinceBegin) ? 0.6 : 0.18;
         NSUInteger gen = ++sFeedGeneration;
-        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.18 * NSEC_PER_SEC)),
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(watchdogDelay * NSEC_PER_SEC)),
                        dispatch_get_main_queue(), ^{
             if (gen != sFeedGeneration) return;       // 期间又来事件了 → 交给最新那一代
             if (gFBActivePointer == 0) return;
@@ -968,9 +1007,11 @@ static void FBHandleHIDEvent(int route, void *target, void *refcon, IOHIDService
                               withTouchPhase:UITouchPhaseEnded
                                     inWindow:window
                                       onView:ball];
-            FBLog(@"触摸：0.18 秒没新事件，自己交还触点 %ld（抬起事件没送到）",
-                  (long)gFBActivePointer);
+            FBLog(@"触摸：%.2f 秒没新事件，自己交还触点 %ld（抬起事件没送到）",
+                  watchdogDelay, (long)gFBActivePointer);
             sLastEndReason = @"定时器";
+            sLastEndWasWatchdog = YES;                // 0.1.38：这是我们补的，不是真抬起
+            sLastWatchdogEndAt = [NSDate timeIntervalSinceReferenceDate];
             gFBActivePointer = 0;
             FBProbeWrite(NO);
         });

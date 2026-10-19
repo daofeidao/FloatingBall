@@ -22,6 +22,31 @@ struct AboutTab: View {
     哪个数不涨，断点就在哪。
     """
 
+    // 0.1.38（用户 2026-10-20 要求）：各小节的说明都收进标题右边的 `*`（见 HelpNote.swift）。
+    // ⚠️ 和上面 probeFooter 同一个规矩：长文案提成 static let，别内联在 body 里。
+    private static let helpTapDiag = """
+    去屏幕上**点一下球**，然后回这里看结论 —— 不用读数。
+    它显示的是球进程收到的最近一条真实触摸：点在哪儿、球在哪儿、有没有被认成「按在球上」。每秒自动刷新。
+    """
+
+    private static let helpActionLog = """
+    这两个动作靠「往系统注入按键/触摸」实现，手机上看不见任何提示，出问题只能看日志。
+    先在屏幕上试一次，再点下面的刷新。
+    """
+
+    private static let helpStyle = """
+    “图=包里的默认小圆点” 说明 App 画的贴图**没被球读到**（那就是写文件/通知那条链断了）；
+    “图=App 画的贴图” 才是正常。点下面的按钮可以立刻重画一次并让球重读。
+
+    （0.1.38 起「球直径」改报**实际用了多大** —— 闲置淡化的那几秒里它会比设定值小。）
+    """
+
+    private static let helpSelfTest = """
+    它绕过 HID 检测，直接让球自己往球心喂一次「按下 + 抬起」。
+    球会震一下 / 计数 +1 就是成功。这一步能把「检测层」和「喂球层」分开 ——
+    点球没反应时先做这个，结论只有两种，都不用你读数。
+    """
+
     /// 触摸自检：悬浮球进程（root 那个）把「HID 回调这条链子走到哪一步」写在 /tmp 里，
     /// App 直接读出来显示 —— 这样点球没反应时，不用开终端也能把这一行念出来。
     private var probeText: String {
@@ -191,8 +216,7 @@ struct AboutTab: View {
                     }
                 }
 
-                Section(header: Text("真实点球诊断（0.1.15）"),
-                        footer: Text("去屏幕上**点一下球**，然后回这里看结论 —— 不用读数。它显示的是球进程收到的最近一条真实触摸：点在哪儿、球在哪儿、有没有被认成「按在球上」。每秒自动刷新。")) {
+                Section(header: helpHeader("真实点球诊断（0.1.15）", Self.helpTapDiag)) {
                     Text(Self.verdict(diag))
                         .font(.footnote)
 
@@ -203,8 +227,7 @@ struct AboutTab: View {
                     }
                 }
 
-                Section(header: Text("截屏 / 全局返回 的执行记录（0.1.23）"),
-                        footer: Text("这两个动作靠「往系统注入按键/触摸」实现，手机上看不见任何提示，出问题只能看日志。先在屏幕上试一次，再点下面的刷新。")) {
+                Section(header: helpHeader("截屏 / 全局返回 的执行记录（0.1.23）", Self.helpActionLog)) {
                     if actionLog.isEmpty {
                         Text("还没有相关记录 —— 先在屏幕上用一次「截屏」或「全局返回」。")
                             .font(.footnote)
@@ -234,8 +257,7 @@ struct AboutTab: View {
                         }
                 }
 
-                Section(header: Text("外观诊断（0.1.16）"),
-                        footer: Text("“图=包里的默认小圆点” 说明 App 画的贴图**没被球读到**（那就是写文件/通知那条链断了）；“图=App 画的贴图” 才是正常。点下面的按钮可以立刻重画一次并让球重读。")) {
+                Section(header: helpHeader("外观诊断（0.1.16）", Self.helpStyle)) {
                     if styleDiag.isEmpty {
                         Text("还没读到（球进程没起来？）").font(.footnote)
                     } else {
@@ -251,8 +273,7 @@ struct AboutTab: View {
                     }
                 }
 
-                Section(header: Text("自喂测试（先点这个）"),
-                        footer: Text("它绕过 HID 检测，直接让球自己往球心喂一次「按下 + 抬起」。球会震一下 / 计数 +1 就是成功。这一步能把「检测层」和「喂球层」分开——点球没反应时先做这个，结论只有两种，都不用你读数。")) {
+                Section(header: helpHeader("自喂测试（先点这个）", Self.helpSelfTest)) {
                     Button {
                         runSelfTest()
                     } label: {
@@ -271,8 +292,7 @@ struct AboutTab: View {
                     }
                 }
 
-                Section(header: Text("触摸自检（点球没反应时看这里）"),
-                        footer: Text(Self.probeFooter)) {
+                Section(header: helpHeader("触摸自检（点球没反应时看这里）", Self.probeFooter)) {
                     Text(probeText)
                         .font(.system(.caption, design: .monospaced))
                     Button("刷新") { probeTick += 1 }

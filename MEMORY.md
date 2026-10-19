@@ -718,7 +718,18 @@ send([r"...\FloatingBall.tipa"],
 | 0.1.31 | 2026-10-19 | `E:\下载\FloatingBall_0.1.31.tipa`（邮件已发，to sz202610@126.com / cc lion.2026.10@proton.me） | 444,933 | `d9fceca0` |
 | 0.1.32 | 2026-10-19 | `E:\下载\FloatingBall_0.1.32.tipa`（邮件已发 22:57，to sz202610@126.com / cc lion.2026.10@proton.me，收件箱核验附件 432.7 KB / 整封 600.5 KB） | 443,054 | `dcacc8de` |
 | 0.1.33 | 2026-10-19 | `E:\下载\FloatingBall_0.1.33.tipa`（邮件已发 23:19，to sz202610@126.com / cc lion.2026.10@proton.me，收件箱核验附件 432.8 KB / 整封 599.2 KB） | 443,201 | `6ee46a15` |
-| 0.1.34 | 2026-10-19 | `E:\下载\FloatingBall_0.1.34.tipa`（邮件已发，to sz202610@126.com / cc lion.2026.10@proton.me） | @@BYTES34@@ | `@@SHA34@@` |
+| 0.1.34 | 2026-10-19 | 未交付（仅 CI 产物，代码已并入 0.1.35） | — | — |
+| 0.1.35 | 2026-10-19 | `E:\下载\FloatingBall_0.1.35.tipa`（邮件已发，to sz202610@126.com / cc lion.2026.10@proton.me） | @@BYTES35@@ | `@@SHA35@@` |
+
+- 0.1.35：**截屏不带球了**（用户 0.1.33 真机原话：「截图成功了。0.1.33。相册里头也有图，就是截图的时候把这个悬浮球截到里头了」）。
+  · 为什么会带球：系统截图抓的是**整块屏幕的帧缓冲**，球是另一个进程里的远程窗口，挂在窗口上就一定会被拍进去；
+    iOS 没有 macOS `NSWindow.sharingType = .none` 那种「这次别截我」的开关（`CALayer.secure` 那套是文字安全输入的，覆盖不了整窗）。
+  · 做法（`takeScreenshotHidingBall`）：点「截屏」→ 立刻 `_ball.hidden = YES`，同时把 `FBPassThroughView.interactiveSubview` 置 nil
+    （否则球那一片的触摸会被我们吃掉、屏幕上却什么都没有）→ 0.30s 后 `FBTakeScreenshot()` → 再等 1.20s 还原 hidden/alpha 并
+    `updatePassThroughRegion` 重算可点区域。`_shotHidingBall` 挡连点，不会叠窗口。
+  · 时间余量：AX 路一般 200~400ms 出图；退到「音量加 + 电源」注入那条自己 ~500ms 才按完，1.2s 够。
+  · 若某次截图恰好比 1.2s 还慢（极罕见），结果只是「这张图里还是有球」，不会丢功能。
+  · 版本 0.1.35 / build 36。⚠️ 待真机验：截出来的图里球没了；球藏起来那一秒多点屏幕不会被吞。
 
 - 0.1.34：**「打开悬浮球」改成「关闭悬浮球」**（用户 2026-10-19 原话：「打开悬浮球，我觉得这个快捷菜单项应该改成关闭悬浮球吧」）。
   · 新增 `ShortcutAction.quitBall`（title「关闭悬浮球」、图标 `power`、detail 说明「等于回 App 把开关关一下」）。

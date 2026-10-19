@@ -400,6 +400,8 @@ static const CGFloat kMenuMaxRows  = 8.0;    // 超过就滚动不了，所以�
     UITapGestureRecognizer *_doubleTap;
     BOOL _tapNeedsDoubleWait;     // 当前单击是否在等双击失败
     NSTimeInterval _lastSingleTapAt;   // 0.1.32：连击去抖（不等双击时，防止双击变两次单击）
+    // 0.1.35：截屏期间把球藏起来（用户 0.1.33 反馈「截图把球也截进去了」）
+    BOOL _shotHidingBall;         // 一次「藏球 → 截 → 放回」正在进行
 }
 
 #pragma mark - 震动
@@ -1099,6 +1101,55 @@ void FBBallHapticTouchDown(void)
     FBLog(@"⚠️ 认不出的绑定写法：%@", key);
 }
 
+/// 截屏（0.1.35）：先把球从画面上撤掉，截完再放回。
+///
+/// 为什么只能这么干（用户 0.1.33 真机反馈「截图把球也截进去了」）：
+///   系统截图抓的是**整块屏幕的帧缓冲** —— 只要球还挂在窗口上就一定会被拍进去。
+///   球是另一个进程里的远程窗口，没有任何「这次别截我」的开关可用
+///   （macOS 上靠 NSWindow.sharingType，iOS 没有等价物）。
+///   所以要的是一个很短的时间窗：藏球 → 发起截图 → 留够时间让系统出图 → 放回。
+///
+/// ⚠️ 球藏起来的这一秒出头，球那一片的触摸也要一起放过（interactiveSubview = nil），
+///    不然用户手快一点，点上去会被我们悄悄吃掉，屏幕上却什么都没有。
+- (void)takeScreenshotHidingBall
+{
+    if (_shotHidingBall) {
+        FBLog(@"截屏：上一次还在等系统出图，忽略这一下");
+        return;
+    }
+    if (!_ball) return;
+    _shotHidingBall = YES;
+
+    [self haptic:FBHapticAction];
+
+    BOOL oldHidden = _ball.hidden;
+    CGFloat oldAlpha = _ball.alpha;
+    _ball.hidden = YES;
+    if ([self.view isKindOfClass:[FBPassThroughView class]]) {
+        ((FBPassThroughView *)self.view).interactiveSubview = nil;
+    }
+    FBLog(@"截屏：先把球藏起来，0.3 秒后发起（0.1.35 起截图不带球）");
+
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.30 * NSEC_PER_SEC)),
+                   dispatch_get_main_queue(), ^{
+        int route = FBTakeScreenshot();
+        FBLog(@"绑定动作=截屏 -> %@",
+              route == 1 ? @"已发起（优先让 SpringBoard 截；不通会自动退按键注入）"
+                         : @"没发起（上一次请求还没回来，或日志里有原因）");
+
+        // 留 1.2 秒再放回来：AX 那条一般 200~400ms 出图；
+        // 万一退到「音量加 + 电源」注入，那条自己就要 ~500ms 才按完。
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.20 * NSEC_PER_SEC)),
+                       dispatch_get_main_queue(), ^{
+            self->_ball.hidden = oldHidden;
+            self->_ball.alpha = oldAlpha;
+            [self updatePassThroughRegion];   // 按「现在有没有菜单」重算可点区域
+            self->_shotHidingBall = NO;
+            FBLog(@"截屏：球放回来了");
+        });
+    });
+}
+
 - (void)performAction:(NSString *)action
 {
     if ([action isEqualToString:@"none"]) {
@@ -1153,11 +1204,8 @@ void FBBallHapticTouchDown(void)
         // 【截屏】0.1.33 起主路是「让 SpringBoard 自己截」（AXSpringBoardServer 的 XPC，
         //   辅助触控「截屏」用的同一条）；不行才注入一次「音量加 + 电源」组合键。
         //   ⚠️ 0.1.32 的 ScreenshotServices 那条已删：用户实测点了球就没了（进程崩）。
-        [self haptic:FBHapticAction];
-        int route = FBTakeScreenshot();
-        FBLog(@"绑定动作=截屏 -> %@",
-              route == 1 ? @"已发起（优先让 SpringBoard 截；不通会自动退按键注入）"
-                         : @"没发起（上一次请求还没回来，或日志里有原因）");
+        // 0.1.35（用户反馈）：截图里带上了球 —— 见 takeScreenshotHidingBall 的说明。
+        [self takeScreenshotHidingBall];
         return;
     }
 

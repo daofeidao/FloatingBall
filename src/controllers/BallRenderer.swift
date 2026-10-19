@@ -214,15 +214,64 @@ enum BallRenderer {
         }
     }
 
-    /// 把用户选的图存下来（原图留着，换颜色时不用重选）
+    // MARK: - 自定义图的历史（0.1.38，用户要求）
+
+    /// 换图之前把用过的留几张：最多 3 张，越靠前越新。
+    ///
+    /// 为什么要有：用户挑图时经常「换了一张发现还是上一张好看」，
+    /// 而相册里那张是随手划到的，回头就找不到了。
+    /// 放在 Preferences 目录（和 customSourcePath 同一个地方，都是 png，
+    /// cfprefsd 不管它）。
+    static let customHistoryPaths: [String] = (1...3).map {
+        "/var/mobile/Library/Preferences/com.daofeidao.floatingball.custom.\($0).png"
+    }
+
+    /// 用过的自定义图（最近在前，最多 3 张；没有就是空数组）
+    static func loadCustomHistory() -> [UIImage] {
+        customHistoryPaths.compactMap { path in
+            FileManager.default.fileExists(atPath: path) ? UIImage(contentsOfFile: path) : nil
+        }
+    }
+
+    /// 把 `path` 那张挤进历史最前面（.1→.2、.2→.3，最老那张丢掉）
+    private static func pushIntoHistory(from path: String) {
+        let fm = FileManager.default
+        guard fm.fileExists(atPath: path) else { return }
+        for i in stride(from: customHistoryPaths.count - 1, through: 1, by: -1) {
+            let dst = customHistoryPaths[i]
+            let src = customHistoryPaths[i - 1]
+            guard fm.fileExists(atPath: src) else { continue }
+            try? fm.removeItem(atPath: dst)
+            try? fm.copyItem(atPath: src, toPath: dst)
+        }
+        let first = customHistoryPaths[0]
+        try? fm.removeItem(atPath: first)
+        try? fm.copyItem(atPath: path, toPath: first)
+    }
+
+    /// 把用户选的图存下来（原图留着，换颜色时不用重选）。
+    ///
+    /// ⚠️ 0.1.38：写新图之前，先**把当前这张收进历史**（用户要求「换图之前留 3 张」）。
     static func saveCustomImage(_ image: UIImage) -> Bool {
         guard let data = image.pngData() else { return false }
+        pushIntoHistory(from: customSourcePath)
         do {
-            try data.write(to: URL(fileURLWithPath: customSourcePath))
+            // .atomic：球进程可能正在读这张图（applyBallStyle 每 2 秒读一次贴图；
+            // 原图虽然只有 App 读，但同一套写法，别留半截文件）
+            try data.write(to: URL(fileURLWithPath: customSourcePath), options: .atomic)
             return true
         } catch {
             return false
         }
+    }
+
+    /// 用历史里的某一张当当前图（`index` 从 0 开始 = 最近一张）。
+    /// 当前这张也会被收进历史 —— 来回切不会把哪张弄丢。
+    static func restoreCustomImage(fromHistory index: Int) -> Bool {
+        let existing = customHistoryPaths.filter { FileManager.default.fileExists(atPath: $0) }
+        guard index >= 0, index < existing.count,
+              let image = UIImage(contentsOfFile: existing[index]) else { return false }
+        return saveCustomImage(image)
     }
 }
 

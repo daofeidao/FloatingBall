@@ -26,11 +26,35 @@ struct AppsTab: View {
     @State private var message = ""
     @State private var showMessage = false
 
+    // ⚠️ 0.1.38（用户 2026-10-20 要求）：长说明不再摆在页面下面（太乱），
+    //    改成小节标题右边一个小 `*`，点开才看（见 HelpNote.swift）。
+    private static let menuFooter = """
+    点一下就执行。想换顺序：**长按**一行（那三条横线的位置最好使）往上拖，松手就定位置。左滑一行可以删除。
+
+    这一栏就是球上双击弹出来的快捷菜单（有几条就出几条，装不下可以在球上上下拖着看）。
+    """
+
+    private static let gestureFooter = """
+    每条手势各绑一个动作，右边就是当前绑的是哪个。默认：单击 = 打开「设置」，双击 / 长按 = 什么都不做。
+    拖动固定是移动球（不用绑）。球上的数字是「点到了」的回执。
+
+    ⚠️ **长按没反应**先看这里：长按右边如果写着「未设置」，它本来就不会做任何事 —— 选一个动作就好。
+    长按要按住 0.5 秒；按住不动时手指那点抖动不会让它失败（0.1.38 起容错放宽到 26pt）。
+
+    能选的东西就是下面「手势动作」那一栏列出来的 —— 觉得菜单乱，就去那里删几条。
+    """
+
+    private static let gestureItemFooter = """
+    这里列出来的，就是点「单击 / 双击 / 长按」右边时那个菜单里能选的东西。
+    左滑删除；想加新的点「添加手势项目」（App、URL 协议、系统快捷指令都能加）。
+
+    ⚠️ 和上面「菜单项」是两份独立的清单：删这里的不会动球的快捷菜单，反之亦然。
+    """
+
     var body: some View {
         NavigationView {
             List {
-                Section(header: Text("菜单项"),
-                        footer: Text("点一下就执行。想换顺序：**长按**一行（那三条横线的位置最好使）往上拖，松手就定位置。左滑一行可以删除。\n这一栏就是球上双击弹出来的快捷菜单。")) {
+                Section(header: helpHeader("菜单项", Self.menuFooter)) {
                     if items.isEmpty {
                         Text("还是空的，点下面「添加」").foregroundColor(.secondary)
                     }
@@ -64,8 +88,7 @@ struct AppsTab: View {
                 //    手势和菜单项本来就是一件事的两个入口，放在一起改更顺。
                 //    绑定关系 / 默认值 / 存盘键都没变（还是 GestureTap / GestureDoubleTap /
                 //    GestureLongPress），老的绑定照常生效。
-                Section(header: Text("手势"),
-                        footer: Text("每条手势各绑一个动作，右边就是当前绑的是哪个。默认：单击 = 打开「设置」，双击 / 长按 = 什么都不做。拖动固定是移动球。球上的数字是「点到了」的回执。\n能选的东西就是下面「手势动作」那一栏列出来的 —— 觉得菜单乱，就去那里删几条。")) {
+                Section(header: helpHeader("手势", Self.gestureFooter)) {
                     ForEach(ShortcutStore.gestureKeys) { entry in
                         gestureRow(title: entry.title, key: entry.id)
                     }
@@ -80,10 +103,7 @@ struct AppsTab: View {
                 //    这一节就是「打开手势选择菜单时能选的动作」的清单 ——
                 //    原来那个菜单把全部内置动作 + 所有 App/URL 平铺，几十项，很乱。
                 //    现在只列这里有的；想加就点「添加手势项目」，想少就左滑删。
-                Section(header: Text("手势动作"),
-                        footer: Text("这里列出来的，就是点「单击 / 双击 / 长按」右边时那个菜单里能选的东西。\n"
-                                     + "左滑删除；想加新的点「添加手势项目」（App、URL 协议、系统快捷指令都能加）。\n"
-                                     + "⚠️ 和上面「菜单项」是两份独立的清单：删这里的不会动球的快捷菜单，反之亦然。")) {
+                Section(header: helpHeader("手势动作", Self.gestureItemFooter)) {
                     if gestureItems.isEmpty {
                         Text("空的 —— 点下面「添加手势项目」").foregroundColor(.secondary)
                     }
@@ -363,6 +383,14 @@ struct AddShortcutView: View {
 
     private var usedKeys: Set<String> { Set(existing.map { $0.key }) }
 
+    /// 「添加」这一节的说明（0.1.38 起收进 `*`）
+    private static let addFooter = """
+    系统快捷指令 = 「快捷指令」App 里那条指令，名字要写一样（中文、空格都算）。
+    URL 协议 = 别的 App 留的口子：下面几条是内置的，也可以自己填一条。
+
+    ⚠️ 只能知道「系统收下了这个请求」；名字写错时是「快捷指令」App 自己提示找不到。
+    """
+
     /// 搜索框里有字 → 只显示「已安装的 App」这一块（内置动作库/添加两块先收起来）。
     /// 用户搜的是 App 名字，把动作库顶在前面纯属挡路（2026-10-18 反馈）。
     private var isSearching: Bool {
@@ -411,10 +439,7 @@ struct AddShortcutView: View {
                     // ---- 新增的一栏（2026-10-17 用户要求）----
                     // 位置就在「内置动作库」和「已安装的 App」之间；
                     // 两块内容**都在这一页里**：不做二级页面、不做折叠页。
-                    Section(header: Text("添加"),
-                            footer: Text("系统快捷指令 = 「快捷指令」App 里那条指令，名字要写一样（中文、空格都算）。\n"
-                                         + "URL 协议 = 别的 App 留的口子：下面三条是内置的，也可以自己填一条。\n"
-                                         + "⚠️ 只能知道「系统收下了这个请求」；名字写错时是「快捷指令」App 自己提示找不到。")) {
+                    Section(header: helpHeader("添加", Self.addFooter)) {
                         systemShortcutRows
                         urlRows
                     }

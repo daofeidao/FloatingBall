@@ -723,6 +723,64 @@ send([r"...\FloatingBall.tipa"],
 | 0.1.36 | 2026-10-20 | `E:\下载\FloatingBall_0.1.36.tipa`（邮件已发 00:35，to sz202610@126.com / cc lion.2026.10@proton.me，收件箱核验附件 449.4 KB / 整封 622.9 KB） | 460,174 | `aa41acaa` |
 | 0.1.37 | 2026-10-20 | `E:\下载\FloatingBall_0.1.37.tipa`（邮件已发 01:00，to sz202610@126.com / cc lion.2026.10@proton.me，收件箱核验附件 450.1 KB / 整封 623.4 KB） | 460,907 | `42a3143e` |
 
+- 0.1.38（用户 2026-10-20 一次提的五件事）：
+  · ① **震动改成「只在按下去那一下」**（用户原话：「有手点下去震一下，抬起来不震」）。
+    删掉两处补震：`onPan:` 的 Ended 落位震动、`onLongPress:` 的 FBHapticAction。
+    新增 `performGestureTargetKey:` —— 手势触发的动作统一从这里进，内部把
+    `_suppressGestureActionHaptic = YES`，`haptic:` 开头直接返回；球上快捷菜单的项
+    不是手势触发的（没有「按下」那一下），照旧有自己的震动。
+    结果：单击震 1、双击震 2（两次按下）、长按震 1。
+  · ② **修「长按不执行」**（用户原话：「按长按没法执行他应该有的这个操作」）。
+    真因在 `HUDApp.mm`：**按住不动时数字器一条事件都不发**（0.1.22 已查明），
+    而 0.1.17 加的「抬起信号送不到」兜底定时器 0.18 秒就把 UITouch 结束掉了；
+    长按要 0.5 秒才成立 → `UILongPressGestureRecognizer` 永远等不到那一刻。
+    之后迟到的 HID 事件又把「已经补过抬起的触点」当新起手 → 0.1.22 报过的
+    「长按每隔一秒震一下」。两处一起改：
+      1) `watchdogDelay = (onBall && !sSawMoveSinceBegin) ? 0.6 : 0.18`
+         （按住不动才放宽；一动就照旧 0.18，不影响拖动/滑动）。
+      2) 新增 `sLastEndWasWatchdog` / `sLastWatchdogEndAt`；`isNewTouch` 那一步算
+         `continuingHold = sLastEndWasWatchdog && (now - sLastWatchdogEndAt) < 1.5`，
+         是就不震、不缩球。
+    另外：`longPress.allowableMovement` 10 → 26pt（坐标是 HID/AX 拼出来的，几 pt 抖动
+    就会判「动了」→ 长按失败）；加 1.5 秒去抖 `_lastLongPressAt`（按住 2 秒不会执行两遍）；
+    拖动中（`_ballDragging`，pan 已 Began）不认长按（容错放宽的代价）；单击
+    `requireGestureRecognizerToFail:_longPress`（否则按住 0.6 秒会「长按 + 抬手单击」
+    各执行一遍 —— 这是修好长按之后**新引入**的风险，必须一起堵）。
+    长按绑的是 `action:none`（0.1.36 删 moveBall 的迁移结果）时，日志明确写
+    「这一下不会做任何事」，**不自动改用户绑定**。
+  · ③ **不透明度下限 0.3 → 0.2**（三处一起改：`LaunchTab` 滑块 `in: 0.2...1.0`、
+    读取时 `max(0.2, …)`、HUD `applyBallStyle` 的夹取）。
+  · ④ **闲置自动淡化 + 缩小**（用户原话：「手势长时间没有动的话，应该变透明度最低缩到最小」）。
+    共享键 `IdleDim`（Bool，没设过=开）/ `IdleDimSeconds`（Int，默认 5，可选 3/5/10/30）。
+    HUD 侧：`idleTick`（1 秒一次）比较 `_lastActivityAt`；闲置尺寸 = `MAX(26, userSize*0.6)`，
+    闲置 alpha = 0.2；`noteUserActivity` 在按下/拖动/长按/开菜单/选项回调里调用。
+    ⚠️ 缩小**走 `applyLayout` 改 frame**，不能用 `transform` —— `pressFeedback` 按一下
+    就把 transform 抹平了。`applyBallStyle` / `applyLayout` 都用 effective 值，
+    所以外观重读（2 秒巡检）不会把闲置球弹回原样。
+    ⚠️ `IdleDim`/`IdleDimSeconds` **必须加进 `pollAppearanceFiles` 的 look 判据**：
+    不列进去的话改开关时 look 不变 → 不 loadPrefs → idleTick 一直读旧值。
+  · ⑤ **自定义图标能「选一块」+ 留 3 张历史**。新增 `src/views/IconCropView.swift`：
+    圆形提示 + 圆外压暗（`mask` + `blendMode(.destinationOut)` + `compositingGroup`）、
+    拖动 `DragGesture`、双指 `MagnificationGesture` 1~5 倍、复位；
+    `UIGraphicsImageRenderer` 出 1024×1024 正方形（`format.scale = 1`）。
+    相册 + 裁剪两层弹窗合成一个 `IconSheet` enum（`sheet(item:)`）——
+    **两层 sheet 连着弹在 iOS 15 上会互相顶掉**（表现：相册关了、裁剪页不出来），
+    所以选完先把 `iconSheet = nil`，0.35 秒后再 `.crop(image)`。
+    历史：`BallRenderer.customHistoryPaths`（`floatingball.custom.1~3.png`），
+    `saveCustomImage` 写新图前先 `pushIntoHistory`（.1→.2、.2→.3，最老丢掉），
+    `loadCustomHistory` / `restoreCustomImage(fromHistory:)`（恢复时当前那张也会被收进历史，
+    来回切不会丢）。`LaunchTab` 在「自定义」那一栏显示缩略图，点一下换回去。
+  · ⑥ **每一页下面的长说明收成小节标题右边的 `*`**（用户原话：「每一页下面有一个那个文字的说明，这个可以把它收起来」）。
+    新增 `src/views/HelpNote.swift`：`helpHeader(title, text)`（标题 + `*`）+ `HelpNoteButton`
+    （点开是 sheet，`*` 的点击范围靠 padding + `contentShape` 撑到约 28×26pt）。
+    改了 12 处 footer：`LaunchTab`（悬浮球 / 图标 / 排障 / 版本记录）、`AppsTab`（菜单项 / 手势 / 手势动作 / 添加）、
+    `AboutTab`（真实点球诊断 / 执行记录 / 外观诊断 / 自喂测试 / 触摸自检）。
+    ⚠️ **「穿透」「盲喂」两个开关的警告故意留在页面上没藏**：整屏变哑巴要强制重启，
+    这种警告放到 `*` 后面等于让人不看。
+    ⚠️ `AboutTab` 里原本有 4 处长文案是内联在 `Section(footer:)` 里的，这次一并提成
+    `private static let`（仓库老规矩：内联拼接会让 Swift 类型检查超时）。
+  · 版本 0.1.38 / build 39。
+
 - 0.1.37（用户 2026-10-20 对「打开邮箱收件箱」的参数建议）：
   · 启动等待从「固定 1.6s」改成**轮询**：`FBWaitMailFrontmostThenFlow(ballRect, waitedMs)`，
     每 100ms 调 `FBFrontmostBundleID()`（dlopen SpringBoardServices 的

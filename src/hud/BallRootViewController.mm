@@ -47,6 +47,15 @@
 - (void)rebuildTapRecognizers;
 // 0.1.36：注入类动作（全局返回 / 打开邮箱收件箱）都要知道球在屏幕上的矩形
 - (CGRect)ballRectOnScreenForInject;
+// 0.1.38：闲置自动淡化缩小（1 秒一次巡检）
+- (void)idleTick;
+- (void)noteUserActivity;
+- (void)setIdleShrunk:(BOOL)shrunk;
+- (CGFloat)effectiveBallSize;
+- (CGFloat)userBallOpacity;
+- (CGFloat)effectiveBallAlpha;
+// 0.1.38：手势触发的动作统一走这里（按下时已经震过，动作不再补震）
+- (void)performGestureTargetKey:(NSString *)key;
 @end
 
 // 默认值
@@ -455,10 +464,19 @@ static const CGFloat kMenuMaxHeightGap = 76.0;   // 菜单最多占「屏高 −
     // 0.1.32：点击 / 双击识别器（按需重建，见 rebuildTapRecognizers）
     UITapGestureRecognizer *_singleTap;
     UITapGestureRecognizer *_doubleTap;
+    // 0.1.38：长按识别器留个引用 —— 单击要 requireGestureRecognizerToFail:它
+    UILongPressGestureRecognizer *_longPress;
+    BOOL _ballDragging;           // 0.1.38：手指正在拖球（拖动中就不认长按）
     BOOL _tapNeedsDoubleWait;     // 当前单击是否在等双击失败
     NSTimeInterval _lastSingleTapAt;   // 0.1.32：连击去抖（不等双击时，防止双击变两次单击）
     // 0.1.35：截屏期间把球藏起来（用户 0.1.33 反馈「截图把球也截进去了」）
     BOOL _shotHidingBall;         // 一次「藏球 → 截 → 放回」正在进行
+    // 0.1.38（用户要求）：震动只在「手指按下去」那一下
+    BOOL _suppressGestureActionHaptic;   // 手势触发的动作不再补震（见 performGestureTargetKey:）
+    // 0.1.38（用户要求）：闲置自动淡化 + 缩小
+    BOOL _idleShrunk;                    // 现在是「闲置」状态吗（变了才动视图）
+    NSTimeInterval _lastActivityAt;      // 上一次有人碰球是什么时候
+    NSTimeInterval _lastLongPressAt;     // 长按去抖（见 onLongPress:）
 }
 
 #pragma mark - 震动
@@ -490,8 +508,18 @@ static const CGFloat kMenuMaxHeightGap = 76.0;   // 菜单最多占「屏高 −
 /// 走开关的震动：设置里 `HapticsEnabled` 是 false 就什么都不做。
 /// ⚠️ 用「没设过 = 开」的语义：老版本升上来时这个键不存在，不该变成静音。
 /// ⚠️ 0.1.12 起不再有「敲几下」——时长不可调（见文件顶部）。
+/// ⚠️ 0.1.38（用户要求）：**手指按下去那一下负责震，动作执行不再补震**。
+///    手势触发的动作走 performGestureTargetKey:，那边会把 _suppressGestureActionHaptic 立起来，
+///    这里直接返回 —— 否则单击会听到「按下一下 + 抬手一下」两声
+///    （用户 2026-10-20 原话：「点下去它震一下手，抬起来它震一下」）。
+///    菜单项（球上的快捷菜单）不是手势触发的，仍然照震 —— 那里没有「按下」这一下。
 - (void)haptic:(FBHapticKind)kind
 {
+    if (_suppressGestureActionHaptic) {
+        FBLog(@"震动：这一下是手势触发的动作，按下时已经震过 → 不补震");
+        return;
+    }
+
     [self reloadHapticPrefs];
 
     NSNumber *on = _prefs[@"HapticsEnabled"];
@@ -513,6 +541,8 @@ void FBBallHapticTouchDown(void)
     //         都会真的发生；缩球仍然保留：系统「触感反馈」总开关被关掉时它是唯一反馈。
     [sBallVC haptic:FBHapticTap];
     [sBallVC pressFeedback];
+    // 0.1.38：有人碰球了 → 闲置计时重来（闲置时球是淡化 + 缩小的，这一下就恢复）
+    [sBallVC noteUserActivity];
 }
 
 /// 2 秒一次的巡检：外观文件有没有变（0.1.16 用户反馈：改形状/颜色/大小/透明度都没反应）。
@@ -542,8 +572,11 @@ void FBBallHapticTouchDown(void)
     NSDictionary *imgAttrs = [fm attributesOfItemAtPath:BALL_IMAGE_PATH error:NULL];
 
     NSMutableString *look = [NSMutableString string];
+    // ⚠️ 0.1.38：`IdleDim` / `IdleDimSeconds` 也要在这里 —— 不列进来的话，
+    //    用户改「闲置」开关时 look 不变 → 不会 loadPrefs → idleTick 一直读旧值。
     for (NSString *k in @[@"BallShape", @"BallColor", @"BallSize",
-                          @"BallOpacity", @"ShowLabel", @"CustomImage"]) {
+                          @"BallOpacity", @"ShowLabel", @"CustomImage",
+                          @"IdleDim", @"IdleDimSeconds"]) {
         [look appendFormat:@"%@=%@;", k, onDisk[k] ?: @"-"];
     }
     [look appendFormat:@"img=%.0f/%llu;",
@@ -596,7 +629,8 @@ void FBBallHapticTouchDown(void)
         source,
         _prefs[@"BallShape"] ?: @"(没设)",
         _prefs[@"BallColor"] ?: @"(没设)",
-        [self ballSize], [self windowSide], _ball.alpha,
+        // 0.1.38：报**实际用了多大的球**（闲置缩小时和用户设的不一样）
+        [self effectiveBallSize], [self windowSide], _ball.alpha,
         _ball.frame.origin.x, _ball.frame.origin.y,
         _ball.frame.size.width, _ball.frame.size.height,
         cfg, img,
@@ -738,6 +772,16 @@ void FBBallHapticTouchDown(void)
                                    userInfo:nil
                                     repeats:YES];
 
+    // 0.1.38（用户要求）：1 秒一次的「闲置」巡检 —— 长时间没人碰球就淡化 + 缩小。
+    // ⚠️ 单独一个定时器（不是捡那个 2 秒的）：2 秒的间隔叠在 5 秒的闲置时间上，
+    //    最坏要 7 秒才降下去，用户会觉得「说好的闲置变淡呢」。
+    _lastActivityAt = [NSDate timeIntervalSinceReferenceDate];
+    [NSTimer scheduledTimerWithTimeInterval:1.0
+                                     target:self
+                                   selector:@selector(idleTick)
+                                   userInfo:nil
+                                    repeats:YES];
+
     // 数字显示不显示，存在共享设置里（App 那边的「显示/隐藏数字」动作也改这个键）
     NSNumber *showLabel = _prefs[@"ShowLabel"];
     _showText = showLabel ? [showLabel boolValue] : YES;
@@ -782,16 +826,24 @@ void FBBallHapticTouchDown(void)
     [self refreshLabel];
 
     // ---- 手势：点击 / 双击 / 滑动（拖动） / 长按 ----
-    // 0.1.32：点击 / 双击识别器由 rebuildTapRecognizers 建（要不要等双击是动态的）
-    [self rebuildTapRecognizers];
-
     UIPanGestureRecognizer *pan = [[UIPanGestureRecognizer alloc] initWithTarget:self action:@selector(onPan:)];
-    UILongPressGestureRecognizer *longPress = [[UILongPressGestureRecognizer alloc] initWithTarget:self action:@selector(onLongPress:)];
-    longPress.minimumPressDuration = 0.5;
+    _longPress = [[UILongPressGestureRecognizer alloc] initWithTarget:self action:@selector(onLongPress:)];
+    _longPress.minimumPressDuration = 0.5;
+    // ⚠️ 0.1.38：默认 `allowableMovement` 是 10pt —— 我们这条链上的坐标是从 HID/AX 事件
+    //    拼出来的（这台机器上 `[rep location]` 恒 (0,0)，真坐标得翻子事件），
+    //    按住时几 pt 的抖动很容易被算成「动了」→ 长按被判失败。
+    //    放宽到 26pt：不动手指正常抖不会失败；想拖球还是得拖出去（拖动那条路是 pan，各判各的）。
+    _longPress.allowableMovement = 26.0;
 
-    for (UIGestureRecognizer *g in @[pan, longPress]) {
+    for (UIGestureRecognizer *g in @[pan, _longPress]) {
         [_ball addGestureRecognizer:g];
     }
+
+    // 0.1.32：点击 / 双击识别器由 rebuildTapRecognizers 建（要不要等双击是动态的）
+    // ⚠️ 0.1.38：**必须放在长按识别器建好之后** —— 单击要 requireGestureRecognizerToFail:长按
+    //    （不然按住 0.6 秒这一下：长按在 0.5 秒时执行了动作，抬手时单击又执行一遍）。
+    [self rebuildTapRecognizers];
+
 
     // 设置被改了 -> 重读
     int token;
@@ -897,6 +949,7 @@ void FBBallHapticTouchDown(void)
 
 - (void)openQuickMenu
 {
+    [self noteUserActivity];   // 0.1.38：开菜单也算「有动静」，闲置的球立刻恢复
     NSArray<FBQuietMenuItem *> *items = [self loadMenuItems];
     if (items.count == 0) {
         FBLog(@"菜单是空的（设置里还没加过任何快捷项）—— 先去 App 的「快捷菜单」页加几个");
@@ -973,6 +1026,7 @@ void FBBallHapticTouchDown(void)
 - (void)quickMenuDidSelectIndex:(NSInteger)idx
 {
     if (idx < 0 || idx >= (NSInteger)_menuItems.count) return;
+    [self noteUserActivity];
     FBQuietMenuItem *item = _menuItems[idx];
     NSString *key = item.key;
     [self closeQuickMenu];
@@ -1039,6 +1093,13 @@ void FBBallHapticTouchDown(void)
     // 双击是「什么都不做」：不用等，点完立刻响应。
     if (doubleMeansSomething) {
         [_singleTap requireGestureRecognizerToFail:_doubleTap];
+    }
+
+    // ⚠️ 0.1.38：单击还要等**长按**判定失败 —— 长按要 0.5 秒才成立，如果单击不等它，
+    //    「按住不动」这一下会变成：0.5 秒时执行长按的动作，抬手时单击又执行一遍单击的动作。
+    //    （快速轻点不受影响：手指抬起 → 长按当场失败 → 单击立刻触发，时刻和以前一样。）
+    if (_longPress) {
+        [_singleTap requireGestureRecognizerToFail:_longPress];
     }
 
     [_ball addGestureRecognizer:_singleTap];
@@ -1113,7 +1174,21 @@ void FBBallHapticTouchDown(void)
 
     NSString *target = [self gestureTarget:@"GestureTap"];
     FBLog(@"轻点：计数=%ld 绑定=%@", (long)count, target);
-    [self performTargetKey:target];
+    [self performGestureTargetKey:target];
+}
+
+/// 手势（单击 / 双击 / 长按）触发动作时的统一入口。
+///
+/// ⚠️ 0.1.38（用户 2026-10-20 要求：「有手点下去震一下，抬起来不震」）：
+///    震动只给**按下去**那一下（FBBallHapticTouchDown，起手时就给）。
+///    动作本身不再补震 —— 否则单击就是「按下一下 + 抬手一下」两声。
+///    于是：单击震 1 次、双击震 2 次、长按震 1 次，全都只数「按下去的几下」。
+///    球上快捷菜单的项不是手势触发的（那里没有「按下」这一下），照旧有各自的震动。
+- (void)performGestureTargetKey:(NSString *)key
+{
+    _suppressGestureActionHaptic = YES;
+    [self performTargetKey:key];
+    _suppressGestureActionHaptic = NO;
 }
 
 #pragma mark - 绑定动作
@@ -1181,7 +1256,6 @@ void FBBallHapticTouchDown(void)
     [self haptic:FBHapticAction];
 
     BOOL oldHidden = _ball.hidden;
-    CGFloat oldAlpha = _ball.alpha;
     _ball.hidden = YES;
     if ([self.view isKindOfClass:[FBPassThroughView class]]) {
         ((FBPassThroughView *)self.view).interactiveSubview = nil;
@@ -1200,7 +1274,9 @@ void FBBallHapticTouchDown(void)
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.20 * NSEC_PER_SEC)),
                        dispatch_get_main_queue(), ^{
             self->_ball.hidden = oldHidden;
-            self->_ball.alpha = oldAlpha;
+            // 0.1.38：用有效透明度而不是藏球那一刻的旧值 —— 万一这 1.5 秒里
+            //         刚好进了「闲置淡化」，写回旧值会把球又点亮一次。
+            self->_ball.alpha = [self effectiveBallAlpha];
             [self updatePassThroughRegion];   // 按「现在有没有菜单」重算可点区域
             self->_shotHidingBall = NO;
             FBLog(@"截屏：球放回来了");
@@ -1381,20 +1457,54 @@ void FBBallHapticTouchDown(void)
     FBLog(@"双击：绑定=%@", target);
     // ⚠️ 0.1.20 同样删掉 `haptic:FBHapticTap` —— 双击的第二次「按下」起手时已经震过了，
     //    再补一下就是「双击听到四下」。（单击那处的原因写在 onSingleTap: 上面。）
-    [self performTargetKey:target];
+    // ⚠️ 0.1.38：动作也不再补震（见 performGestureTargetKey:）。
+    [self performGestureTargetKey:target];
 }
 
 - (void)onLongPress:(UILongPressGestureRecognizer *)g
 {
+    // ⚠️ 长按是**连续手势**：Began 之后只要手指还在动，就会不停给 Changed。
+    //    这一句必须在最前面 —— 只认「刚开始按住」那一下，其余状态一律不管。
     if (g.state != UIGestureRecognizerStateBegan) return;
+
+    // 0.1.38：长按去抖。按住不动时我们会补交还触点（HUDApp 的定时兜底），
+    //   迟到的 HID 事件会让识别器**又**判出一次 Began；
+    //   不去抖的话，按住 2 秒会执行两遍动作。
+    NSTimeInterval now = [NSDate timeIntervalSinceReferenceDate];
+    if (now - _lastLongPressAt < 1.5) {
+        FBLog(@"长按：%.2f 秒内又判出来一次（按住不动时触点被补交还过），这一下忽略",
+              now - _lastLongPressAt);
+        return;
+    }
+    _lastLongPressAt = now;
+    [self noteUserActivity];
+
+    // 0.1.38：手指正在拖球 → 这一下不算长按。
+    //   为什么：0.1.38 把长按的容错距离放宽到 26pt（治手抖），代价是「按住慢慢拖」
+    //   这类动作里长按也可能成立 —— 拖到一半突然执行了长按绑的动作（比如弹出菜单）会很烦。
+    if (_ballDragging) {
+        FBLog(@"长按：手指正在拖球（pan 已经起来）→ 忽略这一下");
+        return;
+    }
+
     if (_moveMode) { [self setMoveMode:NO]; return; }
 
     NSString *target = [self gestureTarget:@"GestureLongPress"];
     FBLog(@"长按：绑定=%@", target);
-    // 长按这里给「中」那一档而不是不再给：按下那一下是「轻」，0.5 秒后动作真的开始
-    // 是另一回事，用不同强度区分开（两下挨太近的话用户自己会提，别自作主张）。
-    [self haptic:FBHapticAction];
-    [self performTargetKey:target];
+
+    // 0.1.38：把「没绑动作」这件事写清楚。
+    //   用户 2026-10-20 报「长按没法执行它该做的操作」时，其中一种情况就是
+    //   0.1.36 删掉「移动悬浮图标」之后，存过的绑定被迁移成了 action:none
+    //   （那时候长按默认就是「移动悬浮图标」），于是长按什么也不做。
+    if (target.length == 0 || [target isEqualToString:@"action:none"]) {
+        FBLog(@"⚠️ 长按现在没有绑任何动作（绑定=%@）→ 这一下不会做任何事。"
+              @"想让它干活：App →「快捷菜单」页 →「手势」→ 长按右边 → 选一个动作。", target);
+    }
+
+    // ⚠️ 0.1.38：这里原来还有一句 `haptic:FBHapticAction`（0.1.22 起给「中」档，
+    //    用来区分「按下」和「动作真的开始了」）。用户要求**长按只震一下** ——
+    //    就是按下去那一下，所以删掉。现在长按全程只有起手时那一次震动。
+    [self performGestureTargetKey:target];
 }
 
 - (void)onPan:(UIPanGestureRecognizer *)g
@@ -1417,17 +1527,25 @@ void FBBallHapticTouchDown(void)
 
     if (g.state == UIGestureRecognizerStateBegan) {
         _grabOffset = CGPointMake(p.x - _ball.center.x, p.y - _ball.center.y);
+        _ballDragging = YES;      // 0.1.38：已经在拖了，长按这一下不该再执行动作
+        [self noteUserActivity];
     } else if (g.state == UIGestureRecognizerStateChanged) {
         // 空点 / 跑到屏幕外的坐标一律忽略（0.1.17 那两道闸保留）
         CGRect sb = [self screenBounds];
         if (p.x <= 1.0 && p.y <= 1.0) return;
         if (!CGRectContainsPoint(CGRectInset(sb, -40.0, -40.0), p)) return;
 
+        [self noteUserActivity];
         CGPoint c = CGPointMake(p.x - _grabOffset.x, p.y - _grabOffset.y);
         _ball.center = [self clampedCenter:c];
     } else if (g.state == UIGestureRecognizerStateEnded || g.state == UIGestureRecognizerStateCancelled) {
         FBLog(@"拖动结束，球心=(%.0f,%.0f)", _ball.center.x, _ball.center.y);
-        [self haptic:FBHapticTap];   // 松手那一下轻震：告诉用户「落这儿了」
+        _ballDragging = NO;
+        [self noteUserActivity];
+        // ⚠️ 0.1.38：删掉这里的 `haptic:FBHapticTap`（原来叫「松手那一下轻震：告诉用户落这儿了」）。
+        //    用户 2026-10-20 明确要求「有手点下去震一下，抬起来不震」。
+        //    顺带它也是「轻点一下却听到两声」的一个来源：手指按下时有抖动 →
+        //    pan 会真的开始并结束 → 松手再来一下。
         [self snapToEdge];
         // 移动模式：拖完就自动退出，不用再点一下
         if (_moveMode) [self setMoveMode:NO];
@@ -1458,6 +1576,96 @@ void FBBallHapticTouchDown(void)
     _prefs[@"BallY"] = @(_ball.center.y);
     [self savePrefs];
     FBLog(@"位置已存：球心=(%.0f, %.0f)", _ball.center.x, _ball.center.y);
+}
+
+#pragma mark - 闲置：自动淡化 + 缩小（0.1.38，用户要求）
+
+// 用户 2026-10-20 原话：「手势长时间没有动的话，应该变透明度最低缩到最小」。
+//
+// 规则：
+//   · 最后一次有人碰球之后 `IdleDimSeconds` 秒（默认 5 秒）没有动静 → 降下去：
+//     透明度压到最低（20%）、直径缩到用户设定值的 60%（不低于 26pt）。
+//   · 任何一次碰球（按下、拖动、长按、点菜单、开菜单）立刻恢复，并重新开始计时。
+//   · 开关是共享设置里的 `IdleDim`（默认开）；秒数是 `IdleDimSeconds`。
+//
+// 为什么「缩」不用 transform 而改尺寸：pressFeedback 按下去会把 transform 设成
+// 0.86 再弹回 identity —— 用 transform 做闲置缩小的话，按一下就被它抹平了。
+// 所以缩小走 applyLayout（改 frame），和用户拖的「大小」滑块同一条路。
+
+/// 球的**有效**直径：闲置时是缩小后的那个值，其余时候就是用户设的尺寸。
+- (CGFloat)effectiveBallSize
+{
+    CGFloat user = [self ballSize];
+    if (!_idleShrunk) return user;
+    return MAX(26.0, user * 0.6);
+}
+
+/// 用户设的不透明度（夹在 0.2~1.0）
+- (CGFloat)userBallOpacity
+{
+    NSNumber *stored = _prefs[@"BallOpacity"];
+    if (![stored isKindOfClass:[NSNumber class]]) return 1.0;
+    return MAX(0.2, MIN(1.0, [stored doubleValue]));
+}
+
+/// 球的**有效**透明度：闲置时压到最低（0.2）
+- (CGFloat)effectiveBallAlpha
+{
+    CGFloat user = [self userBallOpacity];
+    return _idleShrunk ? MIN(user, 0.2) : user;
+}
+
+/// 有人碰球了：恢复原样，并把闲置计时清零。
+- (void)noteUserActivity
+{
+    _lastActivityAt = [NSDate timeIntervalSinceReferenceDate];
+    if (!_idleShrunk) return;
+    [self setIdleShrunk:NO];
+}
+
+/// 进 / 出「闲置」状态。幂等：状态没变就什么都不做。
+- (void)setIdleShrunk:(BOOL)shrunk
+{
+    if (shrunk == _idleShrunk) return;
+    _idleShrunk = shrunk;
+
+    [UIView animateWithDuration:0.35 delay:0.0
+                        options:UIViewAnimationOptionBeginFromCurrentState | UIViewAnimationOptionAllowUserInteraction
+                     animations:^{
+        [self applyLayout];
+        self->_ball.alpha = [self effectiveBallAlpha];
+    } completion:^(BOOL finished) {
+        [self updateShadowPath];
+    }];
+
+    FBLog(@"闲置：%@（直径 %.0fpt，透明度 %.2f）",
+          shrunk ? @"没人动球，降下去" : @"有动静了，恢复",
+          [self effectiveBallSize], [self effectiveBallAlpha]);
+}
+
+/// 1 秒一次：够「长时间没动」就降下去。
+- (void)idleTick
+{
+    NSNumber *on = _prefs[@"IdleDim"];
+    BOOL enabled = on ? [on boolValue] : YES;        // 没设过 = 开（用户要求的行为）
+    if (!enabled) {
+        if (_idleShrunk) [self setIdleShrunk:NO];
+        return;
+    }
+
+    NSNumber *secs = _prefs[@"IdleDimSeconds"];
+    NSTimeInterval idle = secs ? [secs doubleValue] : 5.0;
+    if (idle < 1.0) idle = 5.0;
+
+    // 正忙着（移动模式 / 菜单开着）就不算闲置 —— 那两种状态下用户正看着球
+    if (_moveMode || _menuView) {
+        [self noteUserActivity];
+        return;
+    }
+
+    if (!_idleShrunk && ([NSDate timeIntervalSinceReferenceDate] - _lastActivityAt) >= idle) {
+        [self setIdleShrunk:YES];
+    }
 }
 
 #pragma mark - 视图刷新
@@ -1501,13 +1709,9 @@ void FBBallHapticTouchDown(void)
         _ball.layer.borderColor = [UIColor colorWithRed:0.0 green:0.48 blue:1.0 alpha:0.95].CGColor;
     }
 
-    // 不透明度：夹在 0.3~1.0，手改 plist 也不至于把球调成看不见
-    CGFloat opacity = 1.0;
-    NSNumber *stored = _prefs[@"BallOpacity"];
-    if ([stored isKindOfClass:[NSNumber class]]) {
-        opacity = MAX(0.3, MIN(1.0, [stored doubleValue]));
-    }
-    _ball.alpha = opacity;
+    // 不透明度：夹在 0.2~1.0（用户 2026-10-20 要求「最高 100%、最低 20%」）。
+    // 闲置淡化时还会再压到 0.2（见 effectiveBallAlpha）。
+    _ball.alpha = [self effectiveBallAlpha];
 
     [self updateShadowPath];
     [self writeStyleDiag:source];
@@ -1540,7 +1744,9 @@ void FBBallHapticTouchDown(void)
 - (void)applyLayout
 {
     // ⚠️ 0.1.18：窗口是全屏的，**球在窗口里移动**（以前是移动窗口）。
-    CGFloat ball = [self ballSize];
+    // 0.1.38：用 effectiveBallSize —— 闲置时球是缩小的那个尺寸，
+    //         这样「外观被重读一次」不会把闲置中的球又弹回大尺寸。
+    CGFloat ball = [self effectiveBallSize];
 
     CGPoint center = _ball.center;
     // ⚠️ 0.1.19：原来是 `if (center.x <= 0.0 && center.y <= 0.0)`。

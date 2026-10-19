@@ -294,7 +294,10 @@ static const CGFloat kMenuMaxRows  = 8.0;    // 超过就滚动不了，所以�
 {
     UITouch *t = touches.anyObject;
     _beganAt = t.timestamp;
-    [self setPressedIndex:[self indexAtPoint:[t locationInView:self]]];
+    CGPoint p = [t locationInView:self];
+    NSInteger idx = [self indexAtPoint:p];
+    FBLog(@"菜单触摸：按下 (%.1f,%.1f) → 第 %ld 行", p.x, p.y, (long)idx);
+    [self setPressedIndex:idx];
 }
 
 - (void)touchesMoved:(NSSet<UITouch *> *)touches withEvent:(UIEvent *)event
@@ -319,6 +322,9 @@ static const CGFloat kMenuMaxRows  = 8.0;    // 超过就滚动不了，所以�
     }
 
     [self setPressedIndex:-1];
+    FBLog(@"菜单触摸：抬起 (%.1f,%.1f) down=%ld up=%ld %@",
+          end.x, end.y, (long)down, (long)up,
+          (up >= 0 && up == down) ? @"→ 执行" : @"→ 取消");
     if (up < 0 || up != down) return;   // 没按在行上 / 按下抬起不是同一行 = 取消
 
     BallRootViewController *vc = (BallRootViewController *)self.menuTapHandler;

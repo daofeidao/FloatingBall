@@ -309,6 +309,16 @@ struct AppsTab: View {
                         + "如果一直这样，把 /tmp/FloatingBall.log 里「截屏：…」那几行发我。")
                 }
 
+            case .mailInbox:
+                // ⚠️ 和「全局返回」一样：这一条靠**往系统注入触摸**，而只有球那个 HUD 进程
+                //    才学得到这台机器的触摸身份（sender ID）；App 进程学不到，注入会被系统丢掉。
+                //    所以在这儿点它只会把 Mail 拉起来、后面两步不会发生 —— 不如直接指路。
+                Haptics.fire(.tap)
+                say("「打开邮箱收件箱」得在屏幕上的球上点才有意义 —— "
+                    + "它要做的是往系统里注入「点一下 + 划一次返回」，"
+                    + "而只有球的后台进程有这个身份。\n\n"
+                    + "想随手用：回「快捷菜单」页，把它加到「手势动作」里绑给长按，或者加到菜单项里。")
+
             case .toggleLabel:
                 Haptics.fire(.action)
                 let now = BallSettings.bool("ShowLabel", default: true)

@@ -22,6 +22,7 @@ enum ShortcutAction: String, CaseIterable, Identifiable {
     case refreshSignal      // 刷新蜂窝信号
     case goBack             // 全局返回（往系统注入一次「左缘往右划」）
     case screenshot         // 截屏（优先走系统截图服务，不行才注入「音量加 + 电源」）
+    case mailInbox          // 打开邮箱收件箱（把 Mail 拉到前台 → 点一下上方空白 → 划一次返回）
     case openMainApp        // 打开悬浮球主界面
     case quitBall           // 关闭悬浮球（把屏幕上的球收掉）
     case openAppList        // 打开快捷菜单（App 第 2 栏）
@@ -41,6 +42,7 @@ enum ShortcutAction: String, CaseIterable, Identifiable {
         case .refreshSignal: return "刷新信号"
         case .goBack:        return "全局返回"
         case .screenshot:    return "截屏"
+        case .mailInbox:     return "打开邮箱收件箱"
         case .openMainApp:   return "打开悬浮球"
         case .quitBall:      return "关闭悬浮球"
         case .openAppList:   return "打开快捷菜单"
@@ -55,6 +57,7 @@ enum ShortcutAction: String, CaseIterable, Identifiable {
         case .refreshSignal: return "卡贴机没信号 / 假信号时点一下，让基带重新搜网"
         case .goBack:        return "⚠️ 等于按「上一页」：往系统注入一次左缘右划。万一界面卡住点不动 → 强制重启即可恢复"
         case .screenshot:    return "让系统截当前屏幕，图进「相册 → 截屏」。走的是辅助触控「截屏」同一条系统通道；万一不通才注入「音量加 + 电源」"
+        case .mailInbox:     return "把邮箱拉到前台，点一下上方空白、再划一次返回 —— 退回收件箱列表。给「Mail 停在带附件的邮件详情页、光划返回划不动」这种情况用"
         case .openMainApp:   return "回到悬浮球 App 的「启动」页"
         case .quitBall:      return "把屏幕上的球收掉（等于回 App 把「启动悬浮球」关一下），球没了这个菜单也就没了"
         case .openAppList:   return "回到悬浮球 App 的「快捷菜单」栏"
@@ -68,6 +71,7 @@ enum ShortcutAction: String, CaseIterable, Identifiable {
         case .refreshSignal: return "antenna.radiowaves.left.and.right"
         case .goBack:        return "arrow.uturn.backward"
         case .screenshot:    return "camera.viewfinder"
+        case .mailInbox:     return "envelope.open"
         case .openMainApp:   return "app.badge"
         case .quitBall:      return "power"
         case .openAppList:   return "square.grid.2x2"
@@ -229,6 +233,7 @@ enum ShortcutStore {
     static let gestureItemDefaults: [ShortcutItem] = [
         .make(action: .openAppList),
         .make(action: .screenshot),
+        .make(action: .mailInbox),
         .make(action: .refreshSignal),
         .make(action: .quitBall),
     ]

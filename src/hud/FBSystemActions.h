@@ -57,6 +57,22 @@ BOOL FBOpenURL(NSString *urlString);
 ///   取不到 HID 符号 / 还没学到真机 sender ID / 0.6 秒内刚划过一次 → 返回 NO，**什么都没做**。
 BOOL FBGoBack(CGRect ballRectOnScreen);
 
+/// 【打开邮箱收件箱】（0.1.36，用户要求）
+///
+/// 场景很具体：Mail 上次停在**那封带 tipa 附件的邮件详情页**，点球之后要退回收件箱列表。
+/// 光划一次左缘返回**划不动** —— 那个页面在某些状态下识别器压根不认边缘返回，
+/// 所以用户实测出来的办法是「**先点一下上方 1/3 的空白**，再划」。
+///
+/// 这个函数把整条链路串起来（异步，立刻返回）：
+///   ① `FBOpenApplication(com.apple.mobilemail)` 把 Mail 拉到前台（在跑就切前台，上次那页还在）；
+///   ② 1.6 秒后注入一次「点一下」（屏幕 x 中点、y 30% 处）；
+///   ③ 再 0.4 秒后调 `FBGoBack(ballRectOnScreen)` 完成返回。
+///
+/// - Parameter ballRectOnScreen: 球的屏幕矩形，给最后那一下返回用（落点避开球）。
+/// - Returns: 有没有把 Mail 拉起来。NO = 后面两步都不会发生。
+///   （点一下那步如果因为「还没学到 sender ID」失败，日志里会写原因，不影响本函数返回值。）
+BOOL FBOpenMailInbox(CGRect ballRectOnScreen);
+
 /// 【截屏】
 ///
 /// 两条路，**先走安全的那条**：

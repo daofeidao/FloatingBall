@@ -722,6 +722,99 @@ BOOL FBGoBack(CGRect ballRectOnScreen)
     return YES;
 }
 
+#pragma mark - 打开邮箱收件箱（0.1.36）
+
+// ============================================================================
+// 用户 2026-10-20 要求的内置动作「打开邮箱收件箱」，场景很具体：
+//   Mail 上次停在**那封带 tipa 附件的邮件详情页** → 点球 → 退回收件箱列表。
+//
+// 为什么不只是「划一下返回」：那个详情页在附件预览 / 导航栏的某种状态下，
+// 左缘右滑根本划不动（识别器压根没进入可返回状态）。用户实测出来的办法是
+// **先点一下上方 1/3 的空白**，让它回到可返回的状态，再划。
+//
+// 复用同一套注入机制（FBMakeTouchEvent + 真机 sender ID），因此同样遵守
+// 本文件顶部那三条保命写法：造不全就一个都不发 / 用我们自己的虚拟身份 /
+// 发完留够时间，保证屏幕上不留下按着不放的手指。
+// ============================================================================
+
+/// 此刻注入一次「点一下」：按下 → 停 60ms → 抬起。
+/// 坐标是**屏幕 pt**（内部换算成归一化）。返回 NO = 没注入（符号取不到 / 还没学到 sender ID）。
+static BOOL FBTapAtScreenPoint(CGPoint pt, CGSize screen)
+{
+    FBPrepareHID();
+    if (!gFBHIDReady) {
+        FBLog(@"点一下：HID 这条路不通（符号取不到），什么都没做");
+        return NO;
+    }
+    if (gFBRealSenderID == 0) {
+        FBLog(@"点一下：还没学到真机 sender ID（得先摸一下屏幕），这次不点 —— 不冒险");
+        return NO;
+    }
+    if (screen.width < 100.0 || screen.height < 100.0) {
+        FBLog(@"点一下：屏幕尺寸拿不到，放弃");
+        return NO;
+    }
+
+    double nx = pt.x / screen.width;
+    double ny = pt.y / screen.height;
+
+    // 空跑预检：造不全就一个都不发（半串事件会让屏幕上留一根按着不放的手指）
+    IOHIDEventRef probeDown = FBMakeTouchEvent(0, nx, ny);
+    IOHIDEventRef probeUp   = FBMakeTouchEvent(2, nx, ny);
+    if (!probeDown || !probeUp) {
+        if (probeDown) CFRelease(probeDown);
+        if (probeUp) CFRelease(probeUp);
+        FBLog(@"⚠️ 点一下：事件造不出来 → 整体放弃（一个都不发）");
+        return NO;
+    }
+    CFRelease(probeDown);
+    CFRelease(probeUp);
+
+    // 现造现发（时间戳才是「此刻」）
+    IOHIDEventRef down = FBMakeTouchEvent(0, nx, ny);
+    if (down) {
+        fbSetSenderID(down, gFBRealSenderID);
+        fbDispatchHIDEvent(fbHIDClient, down);
+        CFRelease(down);
+    }
+    usleep(60 * 1000);   // 按住 60ms：太短的话有些界面认不出这是「点击」
+    IOHIDEventRef up = FBMakeTouchEvent(2, nx, ny);
+    if (up) {
+        fbSetSenderID(up, gFBRealSenderID);
+        fbDispatchHIDEvent(fbHIDClient, up);
+        CFRelease(up);
+    }
+
+    FBLog(@"点一下：(%.0f,%.0f) 已注入", pt.x, pt.y);
+    return YES;
+}
+
+BOOL FBOpenMailInbox(CGRect ballRectOnScreen)
+{
+    // ① 把 Mail 拉到前台。已经在跑就是切前台 —— 它上次停在哪个页面还在，
+    //    这正是这个动作的前提（停在带附件的那封邮件详情页）。
+    BOOL opened = FBOpenApplication(@"com.apple.mobilemail");
+    FBLog(@"打开邮箱：%@", opened ? @"已让 Mail 到前台" : @"拉不起来（Mail 被删了？/ 系统不让从这儿跳）");
+    if (!opened) return NO;
+
+    // ② 等它稳住，点一下上方 1/3 的空白
+    //    （x 取屏幕中点：球常年贴在左右边缘，避开它；就算撞上也只是这一次点不到）
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.6 * NSEC_PER_SEC)),
+                   dispatch_get_main_queue(), ^{
+        CGSize screen = [UIScreen mainScreen].bounds.size;
+        if (screen.width < 100.0) screen = CGSizeMake(428.0, 926.0);   // 13PM 的逻辑尺寸兜底
+        FBTapAtScreenPoint(CGPointMake(screen.width * 0.5, screen.height * 0.30), screen);
+
+        // ③ 再等 0.4 秒，左缘往右划一次 = 返回（复用 FBGoBack 那套参数 / 保命写法）
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.4 * NSEC_PER_SEC)),
+                       dispatch_get_main_queue(), ^{
+            FBLog(@"打开邮箱：接着划一次左缘返回");
+            FBGoBack(ballRectOnScreen);
+        });
+    });
+    return YES;
+}
+
 #pragma mark - 截屏（两条路，先安全的、再兜底的）
 // ============================================================================
 // 2026-10-17 用户追加要求。原来这条一直押着（旧结论：要么 dlopen SpringBoard

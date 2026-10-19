@@ -739,6 +739,18 @@ send([r"...\FloatingBall.tipa"],
      拖动整层上下挪（`_scrollOffset` / `_maxScroll`），`indexAtPoint:` 加偏移；
      `touchesMoved` 里位移 >10pt 判为滚动（不当点击），`touchesEnded` 在滚动态直接 return。
      `setPressedIndex:` 改用 `_contentView.subviews[...]`（行不再是 self 的直接子视图）。
+  ⑤ 新增内置动作「打开邮箱收件箱」`mailInbox` / `FBOpenMailInbox(CGRect ballRect)`：
+     Mail 停在带附件的邮件详情页时，左缘返回划不动 → 用户实测的办法是「先点一下上方 1/3 空白」。
+     实现：`FBOpenApplication("com.apple.mobilemail")` → 1.6s → 注入点一下（x=屏宽/2、y=屏高*0.30）
+     → 0.4s → `FBGoBack(ballRect)`。点击注入是新加的 `FBTapAtScreenPoint()`（static），
+     同样遵守三条保命写法（空跑预检 + 真机 sender ID + 60ms 按住再抬）。
+     **没有引 PTFakeTouch**：我们自己的 `FBMakeTouchEvent` 就是同一套 IOHIDEvent 注入，ent.plist 里
+     `com.apple.private.hid.client.event-dispatch/-monitor` 早就有。
+     App 里点它没意义（App 进程学不到 sender ID）→ AppsTab 里只给提示、指路到球上。
+     HUD 的 `ballRectOnScreenForInject` 抽出来给「全局返回 / 打开邮箱收件箱」共用。
+     默认「手势动作」里也放了这一条。
+     版本 0.1.36 / build 37。⚠️ 待真机验：Mail 在详情页 → 点球上的这条 → 是否退回收件箱；
+     y=30% 那个点会不会误触到别的控件（不行就把 0.30 调成 0.25 / 0.35）。
      版本 0.1.36 / build 37。⚠️ 待真机验：菜单 10+ 项能滚动、滚动后点得到、单击/双击/长按的菜单只剩池子里那几条。
 
 - 0.1.35：**截屏不带球了**（用户 0.1.33 真机原话：「截图成功了。0.1.33。相册里头也有图，就是截图的时候把这个悬浮球截到里头了」）。

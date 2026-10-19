@@ -90,7 +90,7 @@ void FBHUDSetMenuArea(CGRect rectInWindow)
           CGRectIsEmpty(rectInWindow) ? @"菜单已关" : @"菜单已开");
 }
 
-void FBHUDSetMenuView(UIView *menuView)
+void FBHUDSetMenuView(UIView * _Nullable menuView)
 {
     gFBMenuView = menuView;
     FBLog(@"菜单视图更新 = %@", menuView ? NSStringFromClass([menuView class]) : @"(nil)");

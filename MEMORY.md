@@ -716,7 +716,16 @@ send([r"...\FloatingBall.tipa"],
 | 0.1.29 | 2026-10-19 | ⚠️ 构建成功（CI run 39261783942 / Release v0.1.29）但**未交付**，被 0.1.30 取代（用户随后补充了「全局点击反馈」的现象） | — | — |
 | 0.1.30 | 2026-10-19 | `E:\下载\FloatingBall_0.1.30.tipa`（邮件已发，to sz202610@126.com / cc lion.2026.10@proton.me） | 444,089 | `ed47e9e8` |
 | 0.1.31 | 2026-10-19 | `E:\下载\FloatingBall_0.1.31.tipa`（邮件已发，to sz202610@126.com / cc lion.2026.10@proton.me） | 444,933 | `d9fceca0` |
+| 0.1.32 | 2026-10-19 | `E:\下载\FloatingBall_0.1.32.tipa`（邮件已发，to sz202610@126.com / cc lion.2026.10@proton.me） | @@BYTES32@@ | `@@SHA32@@` |
 
+- 0.1.32：**手势区搬家**（用户要求「把手势的菜单选项挪到快捷菜单这一栏」；问过一轮，确认是「整个手势区搬过去」）。
+  · `LaunchTab.swift`：删掉「手势」Section + `gestureRow` / `setGesture` + `gestures` / `shortcutItems` 两个 State 和 `refresh()` 里的加载（这些只给手势用）。
+  · `AppsTab.swift`：在「菜单项」和「添加」之间加「手势」Section —— 单击 / 双击 / 长按 三行 + 「拖动」说明；`gestureRow` / `setGesture` 原样搬过来，候选池从 `shortcutItems` 改成这一页的 `items`；`onAppear` 里一起读手势绑定。
+  · 顺手改两处指路文案：AppsTab 里「全局返回」的提示从「启动页 → 手势」改成「快捷菜单页 → 手势」；文件头注释同步。
+  · **数据零迁移**：绑定还是存 `GestureTap` / `GestureDoubleTap` / `GestureLongPress`，默认值、`ShortcutStore.gestureTarget` 一律不动 —— 老用户升级后绑定照旧。
+  · **震动收紧（用户 0.1.31 真机反馈）**：①「时长改成 40 毫秒、只震动一次」——`FBHapticPlay` 删掉 notice 的两下，所有种类都只敲一下；`VibePattern` 固定 `[@YES,@ms,@NO,@1]`，并在 `ms+20ms` 时显式 `AudioServicesStopSystemSound` 兜底（防私有接口把「开」段拖长）。②「强度 20% 和 100% 差别不明显」——`AudioServicesPlaySystemSoundWithVibration` 的 `Intensity` 键在 iOS 15 真机上**不生效**；改成用**时长**表达强度：`FBHapticMsForIntensity()` = 8 + 32×v（0.2 → 14ms，1.0 → 40ms，上限仍是 40ms）。
+  · **点球开菜单提速（用户同一条反馈）**：原来 `singleTap` 加了 `requireGestureRecognizerToFail:doubleTap`，单击要白等约 0.3 秒。现在按「双击绑定是不是 `action:none`」决定加不加这条依赖（`rebuildTapRecognizers`，绑定变了才重建识别器 —— UIKit 没有取消依赖的 API）；不等双击时用 `_lastSingleTapAt` 做 220ms 连击去抖，防止一次双击被当成两次单击。
+  版本 0.1.32 / build 33。⚠️ 待真机验：两页布局是否正常、「快捷菜单」页里改手势能否立刻生效、震动是不是「一下 + 强弱能分出来」、点球弹菜单是否明显更快。
 - 0.1.31：**震动换路**（用户 0.1.30 真机反馈：「点击的这个震动…强度设定和它这个并没有起作用」）。
   根因：HUD 是 `posix_spawn` 出来的后台 root 进程，`UIImpactFeedbackGenerator` 的 Taptic
   反馈**只在前台 App 有效** —— 后台进程调它系统直接吞掉（0.1.16 自喂测试「手势成功、计数 +1、

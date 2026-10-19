@@ -43,6 +43,8 @@
 - (NSArray<FBQuietMenuItem *> *)loadMenuItems;
 - (NSString *)symbolForActionId:(NSString *)actionId;
 - (void)quickMenuDidSelectIndex:(NSInteger)idx;
+// 0.1.32：按「双击有没有绑动作」决定单击要不要等
+- (void)rebuildTapRecognizers;
 @end
 
 // 默认值
@@ -61,17 +63,15 @@ static NSString *const kDefaultBallStyle = @"BallDot";   // 贴图名（见 scri
 typedef NS_ENUM(NSInteger, FBHapticKind) {
     FBHapticTap = 0,   // 识别到点击 / 球落位                —— 轻
     FBHapticAction,    // 动作真的执行了（移动模式、数字开关）—— 中
-    FBHapticNotice,    // 「交代出去一件事」（刷新信号）      —— 两下
+    FBHapticNotice,    // 「交代出去一件事」（刷新信号）      —— 0.1.32 起也是一下
 };
 
 // 震动参数（键名与 Haptics.swift 共用）：
-//   强度 `HapticIntensity`  0.2~1.0（默认 1.0）→ 直接交给系统声音的 Intensity
-//   ~~时长 `HapticDurationMs`~~ —— **0.1.12 起作废**：用户实测「连敲拼时长」效果一般，
-//        于是直接去掉，一律就系统默认那一下（≈40ms；Taptic 引擎敲一下的长度是系统定死的，
-//        想精确到毫秒得用 CoreHaptics，而它要求 App 在前台 + 有音频会话，HUD 里不靠谱）。
-//        ⚠️ 只有 `FBHapticNotice`（「交代出去一件事」）保留**两下** —— 那是信号，不是时长。
-//        ⚠️ 老版本写进设置的 `HapticDurationMs` 现在**没人读**了（不用清，不影响）。
-#define FBHapticPulseSpacingMs  40    // 两下之间隔多少毫秒（只给 notice 的两下用）
+//   强度 `HapticIntensity`  0.2~1.0（默认 1.0）
+//        → 0.1.32 起用来定**震动时长**（8~40ms）：系统声音振动的 `Intensity` 键
+//          iOS 15 真机上不生效，只能靠时长区分强弱。
+//   ~~时长 `HapticDurationMs`~~ —— **0.1.12 起作废**，老版本写进设置的值没人读（不用清）。
+//   ⚠️ 0.1.32 起**所有种类都只震一下**（含 notice），时长上限 40ms。
 
 /// 球控制器（viewDidLoad 时登记），给 FBBallHapticTouchDown() 用的。
 static BallRootViewController *sBallVC = nil;
@@ -86,15 +86,21 @@ static BallRootViewController *sBallVC = nil;
 //
 //   `AudioServicesPlaySystemSoundWithVibration` 是 AudioToolbox 里的私有函数，
 //   走**系统声音服务**：不需要前台、不需要音频会话，root 守护进程也能震
-//   （越狱环境里的 `vibrate` 命令行就是同一个调用）。它的 `Intensity` 参数
-//   正好能吃设置里的 0.2~1.0 —— 强度滑块从这一版起才真的有作用。
+//   （越狱环境里的 `vibrate` 命令行就是同一个调用）。
+//   它的 `Intensity` 参数**在 iOS 15 真机上不生效**（0.1.31 实测：设置 20% 和 100%
+//   没区别），所以 0.1.32 起改用 `VibePattern` 的**时长**来表达强弱（见 FBHapticMsForIntensity）。
 //
 //   用 dlsym 取符号而不是直接声明：这个函数不在公开头文件里。拿不到符号时退回
 //   `AudioServicesPlaySystemSound(kSystemSoundID_Vibrate)`（固定强度，至少能震）。
 typedef void (*FBVibrateWithPatternFn)(UInt32, id, NSDictionary *);
+typedef void (*FBStopSoundFn)(UInt32);
 
 static FBVibrateWithPatternFn sVibrateWithPattern = NULL;
+static FBStopSoundFn sStopSystemSound = NULL;
 static BOOL sVibrateSymbolLoaded = NO;
+
+/// 0.1.32（用户要求）：**最长 40 毫秒、只震一下**（强度低时更短）。
+#define FBHapticPulseMs 40
 
 static void FBLoadVibrateSymbol(void)
 {
@@ -104,6 +110,7 @@ static void FBLoadVibrateSymbol(void)
     void *h = dlopen("/System/Library/Frameworks/AudioToolbox.framework/AudioToolbox", RTLD_LAZY);
     if (h) {
         sVibrateWithPattern = (FBVibrateWithPatternFn)dlsym(h, "AudioServicesPlaySystemSoundWithVibration");
+        sStopSystemSound = (FBStopSoundFn)dlsym(h, "AudioServicesStopSystemSound");
     }
     FBLog(@"震动：系统声音通路%@（%@）",
           sVibrateWithPattern ? @"可用" : @"不可用，退回固定强度",
@@ -111,19 +118,44 @@ static void FBLoadVibrateSymbol(void)
                               : @"AudioServicesPlaySystemSound");
 }
 
+/// 强度 → 震动时长（毫秒）。
+///
+/// ⚠️ 为什么用「时长」表达强度：`AudioServicesPlaySystemSoundWithVibration` 的
+///    `Intensity` 键在 iOS 15 真机上**不生效**（0.1.31 实测：设置 20% 和 100% 没区别）。
+///    系统声音振动这条路上，唯一能被感知的变量就是「震多久」——
+///    所以低强度 = 短促一下，高强度 = 40ms 满一下。上限仍是用户要求的 40ms。
+static int FBHapticMsForIntensity(CGFloat intensity)
+{
+    double v = (double)MAX(0.05, MIN(intensity, 1.0));
+    int ms = (int)(8.0 + 32.0 * v + 0.5);   // 0.2 → 14ms，0.5 → 24ms，1.0 → 40ms
+    return MAX(8, MIN(ms, FBHapticPulseMs));
+}
+
 /// 敲一下（强度来自设置）
 static void FBHapticPulse(FBHapticKind kind, CGFloat intensity)
 {
-    (void)kind;   // 系统声音振动只有一种音色，轻 / 中不再区分（敲几下仍由 FBHapticPlay 决定）
+    (void)kind;   // 系统声音振动只有一种音色，轻 / 中不再区分
 
     FBLoadVibrateSymbol();
 
     double v = (double)MAX(0.05, MIN(intensity, 1.0));
+    int ms = FBHapticMsForIntensity(intensity);
+
     if (sVibrateWithPattern) {
-        // VibePattern 是「开/关 + 毫秒」交替的数组：这里震 40ms（系统默认那一下）
-        NSDictionary *pattern = @{ @"VibePattern": @[ @YES, @(FBHapticPulseSpacingMs) ],
+        // VibePattern 是「开/关 + 毫秒」交替的数组：
+        // 震 ms 毫秒 → 停 1ms，只发一次（0.1.31 的 notice 敲两下已被用户否掉）。
+        NSDictionary *pattern = @{ @"VibePattern": @[ @YES, @(ms), @NO, @(1) ],
                                    @"Intensity":   @(v) };
         sVibrateWithPattern((UInt32)kSystemSoundID_Vibrate, nil, pattern);
+
+        // 保险：这个私有接口在个别系统上会把「开」段拖长，播完 20ms 后显式停一下。
+        // 正常情况下这一段是空操作；真的拖长了，用户的感受仍然是「短促一下」。
+        if (sStopSystemSound) {
+            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)((ms + 20) * NSEC_PER_MSEC)),
+                           dispatch_get_main_queue(), ^{
+                sStopSystemSound((UInt32)kSystemSoundID_Vibrate);
+            });
+        }
         return;
     }
 
@@ -132,26 +164,13 @@ static void FBHapticPulse(FBHapticKind kind, CGFloat intensity)
 }
 
 /// - Parameters:
-///   - kind:      震感种类（决定敲几下；0.1.31 起系统声音只有一种音色）
-///   - intensity: 0.2~1.0（设置里的「强度」）
-///   ⚠️ 0.1.12 起没有「敲几下」这个入参了：时长不再可调，一律一下
-///      （只有 `FBHapticNotice` 例外，见下）。
+///   - kind:      震感种类（只作为日志/语义标记，0.1.31 起系统声音只有一种音色）
+///   - intensity: 0.2~1.0（设置里的「强度」）→ 决定**震多久**（8~40ms）
+/// ⚠️ 0.1.32：**一律只震一下**。原来 `FBHapticNotice`（「刷新信号」）会敲两下，
+///    用户实测觉得拖拉（"只震动一次就行"），现在所有种类都只有一下。
 static void FBHapticPlay(FBHapticKind kind, CGFloat intensity)
 {
-    // ⚠️ 一律「系统默认那一下」（≈40ms）；只有 FBHapticNotice（「交代出去一件事」）
-    //    敲两下 —— 那是一个**信号**，不是时长设置。
-    int n = (kind == FBHapticNotice) ? 2 : 1;
-
-    for (int i = 0; i < n; i++) {
-        if (i == 0) {
-            FBHapticPulse(kind, intensity);
-            continue;
-        }
-        dispatch_after(dispatch_time(DISPATCH_TIME_NOW,
-                                     (int64_t)((int64_t)i * FBHapticPulseSpacingMs * NSEC_PER_MSEC)),
-                       dispatch_get_main_queue(), ^{ FBHapticPulse(kind, intensity); });
-    }
-
+    FBHapticPulse(kind, intensity);
 }
 
 /// 只有球本身吃触摸，窗口里那圈余量（阴影/宽容区）的触摸对象返回 NO，
@@ -376,6 +395,11 @@ static const CGFloat kMenuMaxRows  = 8.0;    // 超过就滚动不了，所以�
     FBQuietMenuView *_menuView;
     NSArray<FBQuietMenuItem *> *_menuItems;
     UIView *_passThroughRegion;   // 球 ∪ 菜单 的包围矩形（只给 pointInside: 用，不参与绘制）
+    // 0.1.32：点击 / 双击识别器（按需重建，见 rebuildTapRecognizers）
+    UITapGestureRecognizer *_singleTap;
+    UITapGestureRecognizer *_doubleTap;
+    BOOL _tapNeedsDoubleWait;     // 当前单击是否在等双击失败
+    NSTimeInterval _lastSingleTapAt;   // 0.1.32：连击去抖（不等双击时，防止双击变两次单击）
 }
 
 #pragma mark - 震动
@@ -699,20 +723,14 @@ void FBBallHapticTouchDown(void)
     [self refreshLabel];
 
     // ---- 手势：点击 / 双击 / 滑动（拖动） / 长按 ----
-    UITapGestureRecognizer *singleTap = [[UITapGestureRecognizer alloc] initWithTarget:self action:@selector(onSingleTap:)];
-    singleTap.numberOfTapsRequired = 1;
-
-    UITapGestureRecognizer *doubleTap = [[UITapGestureRecognizer alloc] initWithTarget:self action:@selector(onDoubleTap:)];
-    doubleTap.numberOfTapsRequired = 2;
-
-    // 单击必须等双击判定失败，否则双击会被当成两次单击
-    [singleTap requireGestureRecognizerToFail:doubleTap];
+    // 0.1.32：点击 / 双击识别器由 rebuildTapRecognizers 建（要不要等双击是动态的）
+    [self rebuildTapRecognizers];
 
     UIPanGestureRecognizer *pan = [[UIPanGestureRecognizer alloc] initWithTarget:self action:@selector(onPan:)];
     UILongPressGestureRecognizer *longPress = [[UILongPressGestureRecognizer alloc] initWithTarget:self action:@selector(onLongPress:)];
     longPress.minimumPressDuration = 0.5;
 
-    for (UIGestureRecognizer *g in @[singleTap, doubleTap, pan, longPress]) {
+    for (UIGestureRecognizer *g in @[pan, longPress]) {
         [_ball addGestureRecognizer:g];
     }
 
@@ -932,8 +950,58 @@ void FBBallHapticTouchDown(void)
 
 #pragma mark - 动作
 
+/// 0.1.32：点球开菜单慢 —— 根因是「单击要等双击判定失败」≈0.3 秒
+/// （用户反馈：点按悬浮球之后，菜单出来得比较慢）。
+///
+/// 只有**双击真的绑了别的动作**时才值得等；默认双击是 `action:none`，
+/// 这 0.3 秒就纯粹是白等。UIGestureRecognizer 没有「取消失败依赖」的公开 API，
+/// 所以这里按需重建两个识别器（只在绑定真的变了时重建，不是每帧）。
+- (void)rebuildTapRecognizers
+{
+    if (!_ball) return;
+
+    NSString *d = [self gestureTarget:@"GestureDoubleTap"];
+    BOOL doubleMeansSomething = d.length > 0 && ![d isEqualToString:@"action:none"];
+
+    if (_singleTap && _doubleTap && _tapNeedsDoubleWait == doubleMeansSomething) return;
+    _tapNeedsDoubleWait = doubleMeansSomething;
+
+    if (_singleTap) [_ball removeGestureRecognizer:_singleTap];
+    if (_doubleTap) [_ball removeGestureRecognizer:_doubleTap];
+
+    _singleTap = [[UITapGestureRecognizer alloc] initWithTarget:self action:@selector(onSingleTap:)];
+    _singleTap.numberOfTapsRequired = 1;
+
+    _doubleTap = [[UITapGestureRecognizer alloc] initWithTarget:self action:@selector(onDoubleTap:)];
+    _doubleTap.numberOfTapsRequired = 2;
+
+    // 双击绑了东西：单击必须等它判定失败，否则双击会被当成两次单击。
+    // 双击是「什么都不做」：不用等，点完立刻响应。
+    if (doubleMeansSomething) {
+        [_singleTap requireGestureRecognizerToFail:_doubleTap];
+    }
+
+    [_ball addGestureRecognizer:_singleTap];
+    [_ball addGestureRecognizer:_doubleTap];
+
+    FBLog(@"单击识别：%@（双击绑定=%@）",
+          doubleMeansSomething ? @"等双击判定（约 0.3s）" : @"不等双击，立即触发",
+          d ?: @"(空)");
+}
+
 - (void)onSingleTap:(UITapGestureRecognizer *)g
 {
+    // 0.1.32：双击没绑动作时不再等双击判定失败（见 rebuildTapRecognizers），
+    // 代价是一次双击会走两遍单击 —— 这里去抖，220ms 内的第二下直接忽略。
+    // （双击**绑了**动作时不会走到这里：单击本来就要等双击失败。）
+    NSTimeInterval now = CFAbsoluteTimeGetCurrent();
+    if (now - _lastSingleTapAt < 0.22) {
+        FBLog(@"轻点：%.0fms 内的第二下，忽略（防双击被当成两次单击）",
+              (now - _lastSingleTapAt) * 1000.0);
+        return;
+    }
+    _lastSingleTapAt = now;
+
     // ⚠️ 0.1.22：菜单开着的时候，轻点的语义是「关掉菜单」，
     //    **不执行**单击绑定的动作 —— 否则用户想关菜单，结果顺手打开了设置。
     if (_menuView) {
@@ -1384,6 +1452,9 @@ void FBBallHapticTouchDown(void)
     if (showLabel) _showText = [showLabel boolValue];
 
     [self refreshLabel];
+
+    // 0.1.32：手势绑定可能刚被改过 —— 双击从「有」变「无」时，单击就不必再等 0.3s
+    [self rebuildTapRecognizers];
 }
 
 @end

@@ -29,10 +29,6 @@ struct LaunchTab: View {
     @State private var customImage: UIImage?
     @State private var showPicker = false
 
-    // 手势绑定
-    @State private var gestures: [String: String] = [:]
-    @State private var shortcutItems: [ShortcutItem] = []
-
     // ⚠️ 长文案一律提成 static let：以前 Section(footer:) 里现拼长字符串，
     //    CI 上的 Swift 编译器报过 `unable to type-check this expression in reasonable time`。
     private static let ballFooter = """
@@ -41,10 +37,11 @@ struct LaunchTab: View {
     · 强度 —— 0.2 到 1.0，拖滑块时当场就能感觉出来。
     · 时长固定是**系统默认那一下**（约 40ms），不给调了：iOS 不让第三方直接给毫秒级的振动波形（Taptic 引擎「敲一下」的长度是系统定死的），0.1.9 的「连敲几下拼时长」实测效果一般，所以去掉。
 
-    0.1.31 起球上的振动改走**系统声音服务**（后台进程也能震），强度滑块这时才真的有效；拖到 0.2 和拖到 1.0 应该能感觉出差别。App 自己的按钮反馈仍是 Taptic 那种细腻震动。
+    0.1.31 起球上的振动改走**系统声音服务**（后台进程也能震）。⚠️ 0.1.32 起强度不再靠系统那个 `Intensity` 参数（iOS 15 真机上它不生效，20% 和 100% 区别听不出来），改成**用震动时长表达强弱**：20% ≈ 14ms、50% ≈ 24ms、100% = 40ms，而且**只震一下**（"刷新信号"也不敲两下了）。App 自己的按钮反馈仍是 Taptic 那种细腻震动。
     """
 
     private static let versionFooter = """
+    0.1.32：① 把手势区从「启动」页搬到「快捷菜单」页（菜单项列表下面）—— 这一页本来就是「菜单项 + 手势候选池」，放一起改更顺。绑定关系、默认值、存盘键都不变，老绑定照用。② 震动改短：**只震一下、最长 40ms**（"刷新信号"也不再敲两下）；强度改用**时长**区分（20% ≈ 14ms / 100% = 40ms），因为系统声音振动的 `Intensity` 参数在 iOS 15 上不生效。③ 点球开菜单更快：原来单击必须等双击判定失败（约 0.3 秒），现在**双击没绑动作时不再等**，点完立刻弹出。
     0.1.31：**修「震动强度设定没作用」—— 其实从来就没震过**：球是后台 root 进程，UIImpactFeedbackGenerator 的反馈只在前台有效、后台会被系统吞掉（所以强度滑块怎么拖都没用）。改成系统声音振动（AudioServicesPlaySystemSoundWithVibration），后台也能震、强度真的可调；每次震动前还从磁盘重读一次开关和强度。
     0.1.30：**0.1.29 的补强（直接发这版）** —— ① 菜单上的触摸不再缩球：原来菜单开着时整屏接管，每根手指落下都走 FBBallHapticTouchDown()，表现为「点哪里球都缩一下」的全局反馈；现在只有按在球上才缩。② 菜单行按下高亮；容器加触摸日志（按下/抬起/行号），点不动时能直接看出触摸有没有进来。
     0.1.29：**修「快捷菜单点不动」** —— 菜单项原来是 UIControl，靠 touchUpInside 触发；合成触摸的「抬起」坐标在本机经常丢（[rep location] 恒 (0,0)），UIControl 严格要求「抬起时还在这一行」，坐标一丢就判成在外面松手。改成：菜单容器自己收触摸（touchesBegan/Ended），按坐标算行号；HUD 侧把菜单上的触摸直接喂给容器，不依赖 hitTest；所有 Ended 统一喂在最后一次好坐标上。菜单行按下有高亮。
@@ -213,18 +210,6 @@ struct LaunchTab: View {
                     .hapticOnPress(.action)
                 }
 
-                Section(header: Text("手势"),
-                        footer: Text("每条手势各绑一个动作，右边就是当前绑的是哪个。默认：单击 = 打开「设置」，双击 = 什么都不做，长按 = 移动悬浮图标。拖动固定是移动球。球上的数字是「点到了」的回执。")) {
-                    ForEach(ShortcutStore.gestureKeys) { entry in
-                        gestureRow(title: entry.title, key: entry.id)
-                    }
-                    HStack {
-                        Text("拖动")
-                        Spacer()
-                        Text("移动球，松手吸边").foregroundColor(.secondary)
-                    }
-                }
-
                 Section(header: Text("排障")) {
                     VStack(alignment: .leading, spacing: 4) {
                         Text("日志文件").font(.footnote)
@@ -352,59 +337,6 @@ struct LaunchTab: View {
         .buttonStyle(.plain)
     }
 
-    /// 一条手势的绑定行：**右边直接显示现在绑的是哪个动作**（2026-10-17 要求），
-    /// 点开是个菜单，里面是「内置动作 + 快捷列表里的 App」。
-    private func gestureRow(title: String, key: String) -> some View {
-        let current = gestures[key] ?? ShortcutStore.gestureTarget(key)
-
-        // ⚠️ 只列「App」和「URL」类的快捷项：内置动作下面已经单列了。
-        //    （同一个 tag 在菜单里出现两次，会分不清勾中的是哪一个。）
-        //    0.1.10 起 URL 项（微信扫一扫、系统快捷指令…）也能绑手势了。
-        let appItems = shortcutItems.filter { $0.kind != .action }
-
-        // 菜单里勾出当前这条：Menu 里的按钮不吃 Picker 的选中态，自己画个 ✓
-        func marked(_ target: String) -> String { target == current ? "✓ " : "" }
-        let noneMark = marked("")
-
-        return Menu {
-            Button("\(noneMark)未设置") { setGesture(key, "") }
-
-            Divider()
-
-            ForEach(ShortcutAction.allCases) { action in
-                let target = "action:\(action.rawValue)"
-                Button("\(marked(target))\(action.title)") { setGesture(key, target) }
-            }
-
-            if !appItems.isEmpty {
-                Divider()
-                ForEach(appItems) { item in
-                    Button("\(marked(item.key))\(item.displayTitle)") { setGesture(key, item.key) }
-                }
-            }
-        } label: {
-            HStack {
-                Text(title)
-                    .foregroundColor(.primary)
-                Spacer()
-                Text(ShortcutStore.title(forKey: current, in: shortcutItems))
-                    .foregroundColor(.accentColor)
-                    .lineLimit(1)
-                Image(systemName: "chevron.up.chevron.down")
-                    .font(.system(size: 11, weight: .semibold))
-                    .foregroundColor(.secondary)
-            }
-            .contentShape(Rectangle())
-        }
-    }
-
-    /// 改一条手势的绑定（存起来 + 通知球进程重读）
-    private func setGesture(_ key: String, _ target: String) {
-        gestures[key] = target
-        ShortcutStore.setGestureTarget(key, target)
-        Haptics.fire(.tap)
-    }
-
     /// 震动开关。写进共享设置（球进程也读这个键），并通知它重读。
     private func setHaptics(_ want: Bool) {
         hapticsOn = want
@@ -445,11 +377,6 @@ struct LaunchTab: View {
         size = BallSettings.double("BallSize", default: 56)
         opacity = min(1.0, max(0.3, BallSettings.double("BallOpacity", default: 1.0)))
         customImage = BallRenderer.loadCustomImage()
-
-        shortcutItems = ShortcutStore.load()
-        for entry in ShortcutStore.gestureKeys {
-            gestures[entry.id] = ShortcutStore.gestureTarget(entry.id)
-        }
     }
 
     /// 启动 / 关闭悬浮球。

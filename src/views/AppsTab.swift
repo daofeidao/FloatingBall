@@ -7,7 +7,7 @@ import SwiftUI
 ///   · 内置动作库里的动作（刷新信号 / 全局返回 / 截屏 / 移动悬浮图标 / 打开菜单…）
 ///   · URL 协议 / 系统快捷指令（微信扫一扫、shortcuts://run-shortcut?name=…）
 ///
-/// 这一栏既是「手动点一下」的清单，也是手势绑定的候选池（见「启动」页的手势一节）。
+/// 这一栏既是「手动点一下」的清单，也是手势绑定的候选池（手势那一节就在下面，0.1.32 起）。
 ///
 /// ⚠️ 排序**不用系统的「编辑」模式**（2026-10-17 用户要求），也**不走 `.onDrag`/`.onDrop`**
 ///    （那条在 2026-10-18 被真机证伪：手柄显示出来了，但拖动调不了顺序）。
@@ -18,6 +18,7 @@ import SwiftUI
 struct AppsTab: View {
 
     @State private var items: [ShortcutItem] = []
+    @State private var gestures: [String: String] = [:]
     @State private var showAdd = false
     @State private var message = ""
     @State private var showMessage = false
@@ -47,6 +48,23 @@ struct AppsTab: View {
                     }
                 }
 
+                // ⚠️ 0.1.32（用户要求）：手势绑定从「启动」页搬到这一页。
+                //    理由：这一页既是「点一下」的清单，也是手势的候选池；
+                //    手势和菜单项本来就是一件事的两个入口，放在一起改更顺。
+                //    绑定关系 / 默认值 / 存盘键都没变（还是 GestureTap / GestureDoubleTap /
+                //    GestureLongPress），老的绑定照常生效。
+                Section(header: Text("手势"),
+                        footer: Text("每条手势各绑一个动作，右边就是当前绑的是哪个。默认：单击 = 打开「设置」，双击 = 什么都不做，长按 = 移动悬浮图标。拖动固定是移动球。球上的数字是「点到了」的回执。")) {
+                    ForEach(ShortcutStore.gestureKeys) { entry in
+                        gestureRow(title: entry.title, key: entry.id)
+                    }
+                    HStack {
+                        Text("拖动")
+                        Spacer()
+                        Text("移动球，松手吸边").foregroundColor(.secondary)
+                    }
+                }
+
                 Section {
                     Button {
                         showAdd = true
@@ -61,7 +79,13 @@ struct AppsTab: View {
             }
             .navigationTitle("快捷菜单")
         }
-        .onAppear { items = ShortcutStore.load() }
+        .onAppear {
+            items = ShortcutStore.load()
+            // 0.1.32：手势绑定也搬到这一页了，一起读
+            for entry in ShortcutStore.gestureKeys {
+                gestures[entry.id] = ShortcutStore.gestureTarget(entry.id)
+            }
+        }
         .sheet(isPresented: $showAdd) {
             AddShortcutView(existing: items) { item in
                 items.append(item)
@@ -95,6 +119,61 @@ struct AppsTab: View {
                 .font(.system(size: 14, weight: .semibold))
                 .foregroundColor(.secondary)
         }
+    }
+
+    // MARK: - 手势绑定（0.1.32 从「启动」页搬来）
+
+    /// 一条手势的绑定行：**右边直接显示现在绑的是哪个动作**（2026-10-17 要求），
+    /// 点开是个菜单，里面是「内置动作 + 快捷列表里的 App」。
+    private func gestureRow(title: String, key: String) -> some View {
+        let current = gestures[key] ?? ShortcutStore.gestureTarget(key)
+
+        // ⚠️ 只列「App」和「URL」类的快捷项：内置动作下面已经单列了。
+        //    （同一个 tag 在菜单里出现两次，会分不清勾中的是哪一个。）
+        //    0.1.10 起 URL 项（微信扫一扫、系统快捷指令…）也能绑手势了。
+        let appItems = items.filter { $0.kind != .action }
+
+        // 菜单里勾出当前这条：Menu 里的按钮不吃 Picker 的选中态，自己画个 ✓
+        func marked(_ target: String) -> String { target == current ? "✓ " : "" }
+        let noneMark = marked("")
+
+        return Menu {
+            Button("\(noneMark)未设置") { setGesture(key, "") }
+
+            Divider()
+
+            ForEach(ShortcutAction.allCases) { action in
+                let target = "action:\(action.rawValue)"
+                Button("\(marked(target))\(action.title)") { setGesture(key, target) }
+            }
+
+            if !appItems.isEmpty {
+                Divider()
+                ForEach(appItems) { item in
+                    Button("\(marked(item.key))\(item.displayTitle)") { setGesture(key, item.key) }
+                }
+            }
+        } label: {
+            HStack {
+                Text(title)
+                    .foregroundColor(.primary)
+                Spacer()
+                Text(ShortcutStore.title(forKey: current, in: items))
+                    .foregroundColor(.accentColor)
+                    .lineLimit(1)
+                Image(systemName: "chevron.up.chevron.down")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundColor(.secondary)
+            }
+            .contentShape(Rectangle())
+        }
+    }
+
+    /// 改一条手势的绑定（存起来 + 通知球进程重读）
+    private func setGesture(_ key: String, _ target: String) {
+        gestures[key] = target
+        ShortcutStore.setGestureTarget(key, target)
+        Haptics.fire(.tap)
     }
 
     // MARK: - 执行
@@ -144,7 +223,7 @@ struct AppsTab: View {
                 //    这个动作只在屏幕上的球上触发才有意义（那边走 HUD 的 performAction）。
                 Haptics.fire(.tap)
                 say("「全局返回」得在屏幕上的球上触发才有意义——在 App 自己里划「返回」没意义。\n\n"
-                    + "绑到手势上：回「启动」页 →「手势」那一栏，点单击/双击/长按的右边，选「全局返回」。")
+                    + "绑到手势上：回「快捷菜单」页 →「手势」那一栏，点单击/双击/长按的右边，选「全局返回」。")
 
             case .screenshot:
                 // 【截屏】在 App 里也能截（同一个二进制、同一份 entitlements）。

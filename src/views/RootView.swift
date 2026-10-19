@@ -23,7 +23,12 @@ struct RootView: View {
                 .tabItem { Label("关于", systemImage: "info.circle") }
                 .tag(2)
         }
-        .onAppear { consumePendingTab() }
+        .onAppear {
+            consumePendingTab()
+            // 0.1.34：把老列表里的「打开悬浮球」换成「关闭悬浮球」（只迁一次）。
+            // 放在这里是为了 App 一启动就迁完，不用等用户先点开「快捷菜单」页。
+            _ = ShortcutStore.load()
+        }
         .onReceive(NotificationCenter.default.publisher(for: UIApplication.didBecomeActiveNotification)) { _ in
             consumePendingTab()
         }

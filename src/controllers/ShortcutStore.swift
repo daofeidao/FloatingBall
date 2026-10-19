@@ -23,6 +23,7 @@ enum ShortcutAction: String, CaseIterable, Identifiable {
     case goBack             // 全局返回（往系统注入一次「左缘往右划」）
     case screenshot         // 截屏（优先走系统截图服务，不行才注入「音量加 + 电源」）
     case openMainApp        // 打开悬浮球主界面
+    case quitBall           // 关闭悬浮球（把屏幕上的球收掉）
     case openAppList        // 打开快捷菜单（App 第 2 栏）
     case moveBall           // 移动悬浮图标
     case toggleLabel        // 显示 / 隐藏球上的数字
@@ -39,6 +40,7 @@ enum ShortcutAction: String, CaseIterable, Identifiable {
         case .goBack:        return "全局返回"
         case .screenshot:    return "截屏"
         case .openMainApp:   return "打开悬浮球"
+        case .quitBall:      return "关闭悬浮球"
         case .openAppList:   return "打开快捷菜单"
         case .moveBall:      return "移动悬浮图标"
         case .toggleLabel:   return "显示/隐藏数字"
@@ -53,6 +55,7 @@ enum ShortcutAction: String, CaseIterable, Identifiable {
         case .goBack:        return "⚠️ 等于按「上一页」：往系统注入一次左缘右划。万一界面卡住点不动 → 强制重启即可恢复"
         case .screenshot:    return "让系统截当前屏幕，图进「相册 → 截屏」。走的是辅助触控「截屏」同一条系统通道；万一不通才注入「音量加 + 电源」"
         case .openMainApp:   return "回到悬浮球 App 的「启动」页"
+        case .quitBall:      return "把屏幕上的球收掉（等于回 App 把「启动悬浮球」关一下），球没了这个菜单也就没了"
         case .openAppList:   return "回到悬浮球 App 的「快捷菜单」栏"
         case .moveBall:      return "球变成可拖动状态，拖着放到顺手的位置"
         case .toggleLabel:   return "球上那个数字显示 / 不显示"
@@ -66,6 +69,7 @@ enum ShortcutAction: String, CaseIterable, Identifiable {
         case .goBack:        return "arrow.uturn.backward"
         case .screenshot:    return "camera.viewfinder"
         case .openMainApp:   return "app.badge"
+        case .quitBall:      return "power"
         case .openAppList:   return "square.grid.2x2"
         case .moveBall:      return "hand.draw"
         case .toggleLabel:   return "textformat.123"
@@ -212,21 +216,43 @@ enum ShortcutStore {
         "GestureLongPress": "action:moveBall",
     ]
 
+    /// 0.1.34：「打开悬浮球 → 关闭悬浮球」的一次性迁移标记。
+    ///
+    /// 用户 2026-10-19 提的：球就在屏幕上，这个菜单项拿来「把球收掉」比「打开 App」有用。
+    /// 只迁一次 —— 之后用户自己再从动作库里把「打开悬浮球」加回来，就不再动它。
+    static let quitBallMigratedKey = "ShortcutsQuitBallMigrated"
+
     static func load() -> [ShortcutItem] {
         let dict = UserDefaults().loadUserDefaults(forPath: BallSettings.path)
-        guard let raw = dict[shortcutsKey] as? [[String: Any]] else {
-            return defaults
+        var items: [ShortcutItem] = defaults
+        if let raw = dict[shortcutsKey] as? [[String: Any]] {
+            let parsed: [ShortcutItem] = raw.compactMap { row in
+                guard let kindRaw = row["kind"] as? String,
+                      let kind = ShortcutItem.Kind(rawValue: kindRaw),
+                      let id = row["id"] as? String,
+                      let title = row["title"] as? String
+                else { return nil }
+                return ShortcutItem(kind: kind, id: id, title: title,
+                                    icon: row["icon"] as? String)
+            }
+            if !parsed.isEmpty { items = parsed }
         }
-        let items: [ShortcutItem] = raw.compactMap { row in
-            guard let kindRaw = row["kind"] as? String,
-                  let kind = ShortcutItem.Kind(rawValue: kindRaw),
-                  let id = row["id"] as? String,
-                  let title = row["title"] as? String
-            else { return nil }
-            return ShortcutItem(kind: kind, id: id, title: title,
-                                icon: row["icon"] as? String)
+
+        // 0.1.34：老列表里的「打开悬浮球」换成「关闭悬浮球」（只做一次）
+        if !BallSettings.bool(quitBallMigratedKey, default: false) {
+            let converted = items.map { item -> ShortcutItem in
+                (item.kind == .action && item.id == "openMainApp")
+                    ? .make(action: .quitBall)
+                    : item
+            }
+            if converted.map(\.key) != items.map(\.key) {
+                save(converted)
+            }
+            BallSettings.set(true, quitBallMigratedKey)
+            items = converted
         }
-        return items.isEmpty ? defaults : items
+
+        return items
     }
 
     static func save(_ items: [ShortcutItem]) {

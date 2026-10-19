@@ -718,6 +718,17 @@ send([r"...\FloatingBall.tipa"],
 | 0.1.31 | 2026-10-19 | `E:\下载\FloatingBall_0.1.31.tipa`（邮件已发，to sz202610@126.com / cc lion.2026.10@proton.me） | 444,933 | `d9fceca0` |
 | 0.1.32 | 2026-10-19 | `E:\下载\FloatingBall_0.1.32.tipa`（邮件已发 22:57，to sz202610@126.com / cc lion.2026.10@proton.me，收件箱核验附件 432.7 KB / 整封 600.5 KB） | 443,054 | `dcacc8de` |
 | 0.1.33 | 2026-10-19 | `E:\下载\FloatingBall_0.1.33.tipa`（邮件已发 23:19，to sz202610@126.com / cc lion.2026.10@proton.me，收件箱核验附件 432.8 KB / 整封 599.2 KB） | 443,201 | `6ee46a15` |
+| 0.1.34 | 2026-10-19 | `E:\下载\FloatingBall_0.1.34.tipa`（邮件已发，to sz202610@126.com / cc lion.2026.10@proton.me） | @@BYTES34@@ | `@@SHA34@@` |
+
+- 0.1.34：**「打开悬浮球」改成「关闭悬浮球」**（用户 2026-10-19 原话：「打开悬浮球，我觉得这个快捷菜单项应该改成关闭悬浮球吧」）。
+  · 新增 `ShortcutAction.quitBall`（title「关闭悬浮球」、图标 `power`、detail 说明「等于回 App 把开关关一下」）。
+  · HUD 侧 `performAction` 加 `quitBall`：先震一下 → `SetHUDEnabled(NO)` → 发解散通知（HUD 淡出 0.25s）+ spawn `-exit` 杀进程、清 pid 文件。
+    **必须走 -exit 子进程**：自己 SIGKILL 自己不会执行 atexit，pid 文件会留成脏值。
+  · App 侧点它：`IsHUDEnabledBridger()` 在跑就 `SetHUDEnabledBridger(false)`，否则提示「球本来就没开」。
+  · 迁移：`ShortcutStore.load()` 里加了 `ShortcutsQuitBallMigrated` 一次性迁移 —— 老列表里的 `openMainApp` 就地换成 `quitBall`；
+    迁移在 `RootView.onAppear` 也调一次，App 一启动就迁完，不用先点开「快捷菜单」页。
+    `openMainApp` 本身保留在动作库里（用户想加回来随时能加）。
+  · 版本 0.1.34 / build 35。⚠️ 待真机验：球上的菜单点「关闭悬浮球」→ 球是否淡出并消失；App 的开关是否变回关；再打开开关球是否回来。
 
 - 0.1.33：**截屏换路 + 不再把球弄没**（用户 0.1.32 真机反馈：「点击截屏，它会把小白点直接弄掉，不出现了」）。
   根因：球消失 = HUD 进程死了。0.1.32 走的是 `ScreenshotServices` 的 `SSScreenCapturer`，

@@ -821,6 +821,7 @@ void FBBallHapticTouchDown(void)
                  @"goBack":        @"arrow.uturn.backward",
                  @"screenshot":    @"camera.viewfinder",
                  @"openMainApp":   @"app.badge",
+                 @"quitBall":      @"power",
                  @"openAppList":   @"square.grid.2x2",
                  @"moveBall":      @"hand.draw",
                  @"toggleLabel":   @"number",
@@ -1125,6 +1126,16 @@ void FBBallHapticTouchDown(void)
 
     if ([action isEqualToString:@"openMainApp"]) {
         [self requestAppTab:NO];
+        return;
+    }
+
+    if ([action isEqualToString:@"quitBall"]) {
+        // 0.1.34（用户要求）：「关闭悬浮球」= 把球收掉。
+        // 自己杀自己不行（SIGKILL 之后 pid 文件没人清），走现成的 -exit 子进程：
+        // 它读 pid 文件 → kill 本进程 → 文件里还是这个 pid 就删掉。
+        FBLog(@"绑定动作=关闭悬浮球 -> spawn -exit 收尾");
+        [self haptic:FBHapticAction];     // 先给一下「按到了」，再走
+        SetHUDEnabled(NO);
         return;
     }
 

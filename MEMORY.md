@@ -713,6 +713,7 @@ send([r"...\FloatingBall.tipa"],
 | 0.1.26 | 2026-10-19 | GitHub Release `v0.1.26` + 邮件已发（to sz202610@126.com / cc lion.2026.10@proton.me） | 441,206 | `5a714d5a` |
 | 0.1.27 | 2026-10-19 | ⚠️方向错误、已被 0.1.28 撤回。原 Release `v0.1.27` + 邮件已发（本地 `D:\wb\downloads\FloatingBall-0.1.27\FloatingBall.tipa`） | 441,332 | `87596c92f305d0b9e77c5848d5482760d140b448191c10f72e32ec173f3d10c6` |
 | 0.1.28 | 2026-10-19 | GitHub Release `v0.1.28` + 邮件已发（to sz202610@126.com / cc lion.2026.10@proton.me，附件 430.4 KB，本地 `D:\wb\downloads\FloatingBall-0.1.28\FloatingBall.tipa`）。推翻 0.1.27 错误改动 + 删锁存抬起信号修「松手后再点接不到」 | 440,765 | `a4b14fe3f8d7eb61011a2f47e0dafeba575df213321eedba46b00b1e567a3299` |
+| 0.1.29 | 2026-10-19 | `E:\下载\FloatingBall_0.1.29.tipa`（邮件已发，to sz202610@126.com / cc lion.2026.10@proton.me） | @@BYTES29@@ | `@@SHA29@@` |
 
 - 0.1.25：基于用户 0.1.24 最新代码（`origin/main` = `a8f0e06`）出的一行修复：
   **`sLastFedPoint = winPt` → `= feedPt`**（`src/hud/HUDApp.mm`）。

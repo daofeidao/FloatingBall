@@ -197,12 +197,18 @@ static const CGFloat kMenuMaxRows  = 8.0;    // 超过就滚动不了，所以�
 - (instancetype)initWithItems:(NSArray<FBQuietMenuItem *> *)items;
 @end
 
-@implementation FBQuietMenuView
+@implementation FBQuietMenuView {
+    NSInteger _itemCount;
+    NSInteger _pressedIndex;     // 按下时落在第几行（-1 = 没落在行上）
+    NSTimeInterval _beganAt;
+}
 
 - (instancetype)initWithItems:(NSArray<FBQuietMenuItem *> *)items
 {
     CGFloat h = kMenuPadY * 2 + items.count * kMenuRowH + MAX(0, (CGFloat)items.count - 1) * kMenuRowGap;
     if (self = [super initWithFrame:CGRectMake(0, 0, kMenuWidth, h)]) {
+        _itemCount = (NSInteger)items.count;
+        _pressedIndex = -1;
         self.backgroundColor = [UIColor colorWithWhite:0.12 alpha:0.92];
         self.layer.cornerRadius = kMenuCorner;
         self.layer.masksToBounds = YES;
@@ -225,10 +231,15 @@ static const CGFloat kMenuMaxRows  = 8.0;    // 超过就滚动不了，所以�
         for (NSInteger i = 0; i < (NSInteger)items.count; i++) {
             FBQuietMenuItem *item = items[i];
 
-            UIControl *row = [[UIControl alloc] initWithFrame:CGRectMake(0, y, kMenuWidth, kMenuRowH)];
-            row.tag = 1000 + i;                     // tag 装索引，回调时取
+            // ⚠️ 0.1.29：行改成**不参与交互**的普通 UIView。
+            //    原因：合成触摸的「抬起」坐标经常丢（本机 [rep location] 恒 (0,0)），
+            //    而 UIControl 的 touchUpInside 要求「抬起时手指还在这一行」——
+            //    坐标一丢就被判成「在外面松手」，动作永远不触发（用户实测：菜单点不动）。
+            //    现在整块菜单由容器自己收触摸（touchesBegan/Ended），按坐标算行号；
+            //    行不参与 hitTest，命中测试也只会落在容器上。
+            UIView *row = [[UIView alloc] initWithFrame:CGRectMake(0, y, kMenuWidth, kMenuRowH)];
+            row.userInteractionEnabled = NO;
             row.backgroundColor = [UIColor clearColor];
-            [row addTarget:self action:@selector(onRow:) forControlEvents:UIControlEventTouchUpInside];
             [self addSubview:row];
 
             UIImageView *icon = [[UIImageView alloc] initWithImage:[UIImage systemImageNamed:item.symbol]];
@@ -253,15 +264,74 @@ static const CGFloat kMenuMaxRows  = 8.0;    // 超过就滚动不了，所以�
     return self;
 }
 
-- (void)onRow:(UIControl *)sender
+/// 本视图坐标 → 行号；不在任何一行上返回 -1
+- (NSInteger)indexAtPoint:(CGPoint)p
 {
-    BallRootViewController *vc = (BallRootViewController *)self.menuTapHandler;
-    NSInteger idx = sender.tag - 1000;
-    // 事件走的是 UIButton/UIControl 的 target-action，和手势一样由 UIKit 派发，
-    // 所以合成触摸喂进来时它们照样会被调到。
-    if ([vc respondsToSelector:@selector(quickMenuDidSelectIndex:)]) {
-        [vc quickMenuDidSelectIndex:idx];
+    if (p.x < 0.0 || p.x > CGRectGetWidth(self.bounds)) return -1;
+    CGFloat y = p.y - kMenuPadY;
+    if (y < 0.0) return -1;
+    CGFloat step = kMenuRowH + kMenuRowGap;
+    NSInteger i = (NSInteger)(y / step);   // y >= 0，截断即 floor
+    CGFloat within = y - (CGFloat)i * step;
+    if (within > kMenuRowH) return -1;          // 落在行间距里
+    if (i < 0 || i >= _itemCount) return -1;
+    return i;
+}
+
+- (void)setPressedIndex:(NSInteger)idx
+{
+    if (idx == _pressedIndex) return;
+    if (_pressedIndex >= 0 && _pressedIndex < (NSInteger)self.subviews.count) {
+        self.subviews[_pressedIndex].backgroundColor = [UIColor clearColor];
     }
+    _pressedIndex = idx;
+    if (idx >= 0 && idx < (NSInteger)self.subviews.count) {
+        self.subviews[idx].backgroundColor = [UIColor colorWithWhite:1.0 alpha:0.16];
+    }
+}
+
+- (void)touchesBegan:(NSSet<UITouch *> *)touches withEvent:(UIEvent *)event
+{
+    UITouch *t = touches.anyObject;
+    _beganAt = t.timestamp;
+    [self setPressedIndex:[self indexAtPoint:[t locationInView:self]]];
+}
+
+- (void)touchesMoved:(NSSet<UITouch *> *)touches withEvent:(UIEvent *)event
+{
+    UITouch *t = touches.anyObject;
+    [self setPressedIndex:[self indexAtPoint:[t locationInView:self]]];
+}
+
+- (void)touchesEnded:(NSSet<UITouch *> *)touches withEvent:(UIEvent *)event
+{
+    UITouch *t = touches.anyObject;
+    CGPoint end = [t locationInView:self];
+    NSInteger up = [self indexAtPoint:end];
+    NSInteger down = _pressedIndex;
+
+    // 抬起坐标丢了（(0,0) 或跑到菜单外很远）→ 按「按下时那一行」算。
+    // 菜单行 40pt 高，正常点击不会拖出很远；只有坐标坏掉才会跳那么远。
+    BOOL bogusEnd = (end.x == 0.0 && end.y == 0.0)
+                 || !CGRectContainsPoint(CGRectInset(self.bounds, -80.0, -80.0), end);
+    if (up < 0 && bogusEnd && down >= 0 && (t.timestamp - _beganAt) < 0.8) {
+        up = down;
+    }
+
+    [self setPressedIndex:-1];
+    if (up < 0 || up != down) return;   // 没按在行上 / 按下抬起不是同一行 = 取消
+
+    BallRootViewController *vc = (BallRootViewController *)self.menuTapHandler;
+    // 走的是 UIResponder 的触摸派发，和手势一样由 UIKit 送来；
+    // 合成触摸喂进来时照样会被调到（所以这里不再用 UIControl 的 target-action）。
+    if ([vc respondsToSelector:@selector(quickMenuDidSelectIndex:)]) {
+        [vc quickMenuDidSelectIndex:up];
+    }
+}
+
+- (void)touchesCancelled:(NSSet<UITouch *> *)touches withEvent:(UIEvent *)event
+{
+    [self setPressedIndex:-1];
 }
 
 @end
@@ -752,8 +822,13 @@ void FBBallHapticTouchDown(void)
 
     // 告诉 HUD 的触摸回调：菜单占哪块（判定接管用），并且**整屏接管**，
     // 好接住「点菜单外面 → 关菜单」那一下。
-    CGRect menuInWindow = [menu convertRect:menu.bounds toView:self.view.window];
+    //
+    // ⚠️ 0.1.29：矩形用 `menu.frame` 换算，**不要**用 `convertRect:menu.bounds` ——
+    //    菜单出现动画是 0.86→1.0 的 transform，`convertRect:` 会把缩放算进去，
+    //    存下来的矩形比真实菜单小一圈，靠近边缘的行会被判成「菜单外」。
+    CGRect menuInWindow = [self.view convertRect:menu.frame toView:self.view.window];
     FBHUDSetMenuArea(menuInWindow);
+    FBHUDSetMenuView(menu);
     FBHUDSetConsumeWholeScreen(YES);
 
     FBLog(@"菜单已打开：%lu 项，位置 %@", (unsigned long)items.count, NSStringFromCGRect(menu.frame));
@@ -768,6 +843,7 @@ void FBBallHapticTouchDown(void)
 
     [self updatePassThroughRegion];
     FBHUDSetMenuArea(CGRectZero);
+    FBHUDSetMenuView(nil);
     FBHUDSetConsumeWholeScreen(NO);
 
     [UIView animateWithDuration:0.12 animations:^{

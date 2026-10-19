@@ -80,12 +80,20 @@ void FBHUDSetBallView(UIView *ballView)
 // ---- 快捷菜单浮层（0.1.22）----
 static CGRect gFBMenuArea = CGRectZero;
 static BOOL   gFBConsumeWholeScreen = NO;
+/// 0.1.29：菜单视图本身。菜单上的触摸直接喂给它（不靠 hitTest 走到某一行）。
+static __weak UIView *gFBMenuView = nil;
 
 void FBHUDSetMenuArea(CGRect rectInWindow)
 {
     gFBMenuArea = rectInWindow;
     FBLog(@"菜单区域更新 = %@（%@）", NSStringFromCGRect(rectInWindow),
           CGRectIsEmpty(rectInWindow) ? @"菜单已关" : @"菜单已开");
+}
+
+void FBHUDSetMenuView(UIView *menuView)
+{
+    gFBMenuView = menuView;
+    FBLog(@"菜单视图更新 = %@", menuView ? NSStringFromClass([menuView class]) : @"(nil)");
 }
 
 void FBHUDSetConsumeWholeScreen(BOOL consume)
@@ -615,8 +623,15 @@ static void FBHandleHIDEvent(int route, void *target, void *refcon, IOHIDService
         BOOL onBall = NO;
         int matched = -1;
         // ⚠️ 0.1.22：菜单开着时，除了球还要认菜单的矩形。
-        CGRect menuTouch = CGRectInset(gFBMenuArea, -10.0, -10.0);   // 同样放宽 10pt 给手指
-        BOOL hasMenu = !CGRectIsEmpty(gFBMenuArea);
+        //
+        // 0.1.29：菜单矩形优先**现场问视图**（gFBMenuView）。
+        //    原来用打开那一刻算好的 gFBMenuArea，但菜单有 0.86→1.0 的出现动画，
+        //    `convertRect:` 会把缩放算进去 → 存下来的矩形比真实菜单小一圈，
+        //    点靠近边缘的行会被判成「菜单外」。现场算不受动画影响。
+        UIView *menuView = gFBMenuView;
+        CGRect menuRect = menuView ? [menuView convertRect:menuView.bounds toView:nil] : gFBMenuArea;
+        CGRect menuTouch = CGRectInset(menuRect, -10.0, -10.0);   // 同样放宽 10pt 给手指
+        BOOL hasMenu = !CGRectIsNull(menuRect) && !CGRectIsEmpty(menuRect);
 
         // ---- 第一轮：球 / 菜单里的点（决定 onBall、onMenu）----
         for (int i = 0; i < candCount; i++) {
@@ -742,6 +757,15 @@ static void FBHandleHIDEvent(int route, void *target, void *refcon, IOHIDService
         UIView *hit = nil;
         if (takeOverArea) hit = [window hitTest:winPt withEvent:nil];
         UIView *feedView = (hit && hit != window) ? hit : ball;
+
+        // ⚠️ 0.1.29：菜单上的触摸**直接喂给菜单容器**。
+        //    别依赖 hitTest 走到哪一行 —— 合成触摸的抬起坐标可能丢（本机常见），
+        //    而 UIControl 的 touchUpInside 严格要求「抬起时还在这一行」，一丢就不触发。
+        //    改成：容器自己实现 touchesBegan/Ended，按坐标算行号，抬起坐标坏了也能用
+        //    「按下时那一行」兜底。见 BallRootViewController 的 FBQuietMenuView。
+        if (onMenu && menuView) {
+            feedView = menuView;
+        }
 
         // ---- 「抬起」判据（0.1.28 重做）----
         //   · 只认 AX 明说的三个信号：lift / cancel / inRangeLift。
@@ -884,8 +908,10 @@ static void FBHandleHIDEvent(int route, void *target, void *refcon, IOHIDService
         // ⚠️ 超时补的那个「抬起」要用**上一次喂过的点**：UITapGestureRecognizer 会因为
         //    「抬起位置离按下位置太远」判失败，而超时时手上这条事件的坐标很可能在别处。
         CGPoint feedPt = winPt;
-        if (gFBActivePointer != 0 && !lifted && sLastFedPoint.x != 0 && sLastFedPoint.y != 0
-            && (reuseLastPoint                              // 0.1.21：这一帧坐标不可信
+        BOOL ending = (phase == UITouchPhaseEnded || phase == UITouchPhaseCancelled);
+        if (gFBActivePointer != 0 && sLastFedPoint.x != 0 && sLastFedPoint.y != 0
+            && (ending                                          // 0.1.29：抬起永远用最后一次好坐标
+                || reuseLastPoint                               // 0.1.21：这一帧坐标不可信
                 || (sLastFedAt > 0 && now - sLastFedAt > limit))) {   // 与超时用同一个 limit（0.1.24）
             feedPt = sLastFedPoint;
         }

@@ -29,6 +29,10 @@ OBJC_EXTERN void FBHUDSetBallView(UIView *ballView);
 /// 由 BallRootViewController 在菜单显示/隐藏时更新。
 OBJC_EXTERN void FBHUDSetMenuArea(CGRect rectInWindow);
 
+/// 0.1.29：菜单视图本身（weak）。菜单上的触摸会**直接喂给它**，
+/// 由它自己按坐标算行号 —— 不依赖 hitTest / UIControl 的严格抬起判定。
+OBJC_EXTERN void FBHUDSetMenuView(UIView *menuView);
+
 /// 菜单打开时置 YES：这时**整个屏幕**的触摸都接管，
 /// 用来接「点菜单外面 → 关菜单」那一下。菜单关掉后立刻置回 NO。
 OBJC_EXTERN void FBHUDSetConsumeWholeScreen(BOOL consume);

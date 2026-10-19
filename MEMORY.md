@@ -721,7 +721,7 @@ send([r"...\FloatingBall.tipa"],
 | 0.1.34 | 2026-10-19 | 未交付（仅 CI 产物，代码已并入 0.1.35） | — | — |
 | 0.1.35 | 2026-10-19 | `E:\下载\FloatingBall_0.1.35.tipa`（邮件已发 2026-10-20 00:10，to sz202610@126.com / cc lion.2026.10@proton.me，收件箱核验附件 435.6 KB / 整封 602.3 KB） | 446,055 | `7ad585ca` |
 | 0.1.36 | 2026-10-20 | `E:\下载\FloatingBall_0.1.36.tipa`（邮件已发 00:35，to sz202610@126.com / cc lion.2026.10@proton.me，收件箱核验附件 449.4 KB / 整封 622.9 KB） | 460,174 | `aa41acaa` |
-| 0.1.37 | 2026-10-20 | `E:\下载\FloatingBall_0.1.37.tipa`（邮件已发，to sz202610@126.com / cc lion.2026.10@proton.me） | @@BYTES37@@ | `@@SHA37@@` |
+| 0.1.37 | 2026-10-20 | `E:\下载\FloatingBall_0.1.37.tipa`（邮件已发 01:00，to sz202610@126.com / cc lion.2026.10@proton.me，收件箱核验附件 450.1 KB / 整封 623.4 KB） | 460,907 | `42a3143e` |
 
 - 0.1.37（用户 2026-10-20 对「打开邮箱收件箱」的参数建议）：
   · 启动等待从「固定 1.6s」改成**轮询**：`FBWaitMailFrontmostThenFlow(ballRect, waitedMs)`，

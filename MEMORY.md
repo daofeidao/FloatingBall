@@ -716,7 +716,7 @@ send([r"...\FloatingBall.tipa"],
 | 0.1.29 | 2026-10-19 | ⚠️ 构建成功（CI run 39261783942 / Release v0.1.29）但**未交付**，被 0.1.30 取代（用户随后补充了「全局点击反馈」的现象） | — | — |
 | 0.1.30 | 2026-10-19 | `E:\下载\FloatingBall_0.1.30.tipa`（邮件已发，to sz202610@126.com / cc lion.2026.10@proton.me） | 444,089 | `ed47e9e8` |
 | 0.1.31 | 2026-10-19 | `E:\下载\FloatingBall_0.1.31.tipa`（邮件已发，to sz202610@126.com / cc lion.2026.10@proton.me） | 444,933 | `d9fceca0` |
-| 0.1.32 | 2026-10-19 | `E:\下载\FloatingBall_0.1.32.tipa`（邮件已发，to sz202610@126.com / cc lion.2026.10@proton.me） | @@BYTES32@@ | `@@SHA32@@` |
+| 0.1.32 | 2026-10-19 | `E:\下载\FloatingBall_0.1.32.tipa`（邮件已发 22:57，to sz202610@126.com / cc lion.2026.10@proton.me，收件箱核验附件 432.7 KB / 整封 600.5 KB） | 443,054 | `dcacc8de` |
 
 - 0.1.32：**手势区搬家**（用户要求「把手势的菜单选项挪到快捷菜单这一栏」；问过一轮，确认是「整个手势区搬过去」）。
   · `LaunchTab.swift`：删掉「手势」Section + `gestureRow` / `setGesture` + `gestures` / `shortcutItems` 两个 State 和 `refresh()` 里的加载（这些只给手势用）。

@@ -720,6 +720,26 @@ send([r"...\FloatingBall.tipa"],
 | 0.1.33 | 2026-10-19 | `E:\下载\FloatingBall_0.1.33.tipa`（邮件已发 23:19，to sz202610@126.com / cc lion.2026.10@proton.me，收件箱核验附件 432.8 KB / 整封 599.2 KB） | 443,201 | `6ee46a15` |
 | 0.1.34 | 2026-10-19 | 未交付（仅 CI 产物，代码已并入 0.1.35） | — | — |
 | 0.1.35 | 2026-10-19 | `E:\下载\FloatingBall_0.1.35.tipa`（邮件已发 2026-10-20 00:10，to sz202610@126.com / cc lion.2026.10@proton.me，收件箱核验附件 435.6 KB / 整封 602.3 KB） | 446,055 | `7ad585ca` |
+| 0.1.36 | 2026-10-20 | `E:\下载\FloatingBall_0.1.36.tipa`（邮件已发，to sz202610@126.com / cc lion.2026.10@proton.me） | @@BYTES36@@ | `@@SHA36@@` |
+
+- 0.1.36（用户 2026-10-20 四件事）：
+  ① 「添加」从页面最底下的独立 Section 挪进「菜单项」Section 末尾（加完一条不用再滑到底）。
+  ② 手势下面新增「手势动作」Section：这是**手势选择菜单的候选池**（用户原话：「打开手势选项的时候…菜单里头挺乱的，需要你整理一下」）。
+     存储键 `GestureItems`（和 `Shortcuts` 同格式，独立一份）；`ShortcutStore.loadGestureItems/saveGestureItems`。
+     默认 4 条：打开快捷菜单 / 截屏 / 刷新信号 / 关闭悬浮球。
+     `gestureRow` 的 Menu 只列这一份；当前绑定若不在池子里会临时补一条（否则看不到「现在绑的是它」）。
+     可左滑删、点「添加手势项目」复用 `AddShortcutView` 加（App / URL / 系统快捷指令都能加）。
+  ③ **删掉「移动悬浮图标」**（`ShortcutAction.moveBall` 整个移除）：
+     - 菜单列表迁移：`load()` 里过滤 `action:moveBall` 并写回（不需要标记键，幂等）。
+     - 手势迁移：存过的 `GestureLongPress == "action:moveBall"` 就地写成 `action:none`；
+       HUD 侧 `gestureTarget:` 的默认表里长按也改成 `action:none`（和 Swift 的 `gestureDefaults` 必须一致）。
+     - `symbolForActionId:` 里那条映射和 `performAction` 的 moveBall 分支保留（老数据进来时只是不再可达）。
+  ④ 球上快捷菜单只出 8 项：根因是 `loadMenuItems` 里 `out.count >= kMenuMaxRows(8)` 直接 break。
+     现在条数不截；`FBQuietMenuView` 高度 = `MIN(内容高, 屏高−76)`，超一屏时所有行挂在 `_contentView` 上，
+     拖动整层上下挪（`_scrollOffset` / `_maxScroll`），`indexAtPoint:` 加偏移；
+     `touchesMoved` 里位移 >10pt 判为滚动（不当点击），`touchesEnded` 在滚动态直接 return。
+     `setPressedIndex:` 改用 `_contentView.subviews[...]`（行不再是 self 的直接子视图）。
+     版本 0.1.36 / build 37。⚠️ 待真机验：菜单 10+ 项能滚动、滚动后点得到、单击/双击/长按的菜单只剩池子里那几条。
 
 - 0.1.35：**截屏不带球了**（用户 0.1.33 真机原话：「截图成功了。0.1.33。相册里头也有图，就是截图的时候把这个悬浮球截到里头了」）。
   · 为什么会带球：系统截图抓的是**整块屏幕的帧缓冲**，球是另一个进程里的远程窗口，挂在窗口上就一定会被拍进去；

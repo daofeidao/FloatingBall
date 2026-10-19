@@ -19,7 +19,10 @@ struct AppsTab: View {
 
     @State private var items: [ShortcutItem] = []
     @State private var gestures: [String: String] = [:]
+    /// 0.1.36：打开手势选择菜单时能选的东西（用户自己增删，见下面「手势动作」那一节）
+    @State private var gestureItems: [ShortcutItem] = []
     @State private var showAdd = false
+    @State private var showAddGesture = false
     @State private var message = ""
     @State private var showMessage = false
 
@@ -27,7 +30,7 @@ struct AppsTab: View {
         NavigationView {
             List {
                 Section(header: Text("菜单项"),
-                        footer: Text("点一下就执行。想换顺序：**长按**一行（那三条横线的位置最好使）往上拖，松手就定位置。左滑一行可以删除。这里的每一项也能绑到手势上。")) {
+                        footer: Text("点一下就执行。想换顺序：**长按**一行（那三条横线的位置最好使）往上拖，松手就定位置。左滑一行可以删除。\n这一栏就是球上双击弹出来的快捷菜单。")) {
                     if items.isEmpty {
                         Text("还是空的，点下面「添加」").foregroundColor(.secondary)
                     }
@@ -46,6 +49,14 @@ struct AppsTab: View {
                         items.remove(atOffsets: offsets)
                         ShortcutStore.save(items)
                     }
+
+                    // 0.1.36（用户要求）：「添加」从页面最底下挪到菜单项列表的末尾 ——
+                    // 加完一条就往回看，不用再滑到最下面。
+                    Button {
+                        showAdd = true
+                    } label: {
+                        Label("添加", systemImage: "plus.circle")
+                    }
                 }
 
                 // ⚠️ 0.1.32（用户要求）：手势绑定从「启动」页搬到这一页。
@@ -54,7 +65,7 @@ struct AppsTab: View {
                 //    绑定关系 / 默认值 / 存盘键都没变（还是 GestureTap / GestureDoubleTap /
                 //    GestureLongPress），老的绑定照常生效。
                 Section(header: Text("手势"),
-                        footer: Text("每条手势各绑一个动作，右边就是当前绑的是哪个。默认：单击 = 打开「设置」，双击 = 什么都不做，长按 = 移动悬浮图标。拖动固定是移动球。球上的数字是「点到了」的回执。")) {
+                        footer: Text("每条手势各绑一个动作，右边就是当前绑的是哪个。默认：单击 = 打开「设置」，双击 / 长按 = 什么都不做。拖动固定是移动球。球上的数字是「点到了」的回执。\n能选的东西就是下面「手势动作」那一栏列出来的 —— 觉得菜单乱，就去那里删几条。")) {
                     ForEach(ShortcutStore.gestureKeys) { entry in
                         gestureRow(title: entry.title, key: entry.id)
                     }
@@ -65,12 +76,45 @@ struct AppsTab: View {
                     }
                 }
 
-                Section {
-                    Button {
-                        showAdd = true
-                    } label: {
-                        Label("添加", systemImage: "plus.circle")
+                // ⚠️ 0.1.36（用户 2026-10-20 要求）：手势下面再加一节「手势动作」。
+                //    这一节就是「打开手势选择菜单时能选的动作」的清单 ——
+                //    原来那个菜单把全部内置动作 + 所有 App/URL 平铺，几十项，很乱。
+                //    现在只列这里有的；想加就点「添加手势项目」，想少就左滑删。
+                Section(header: Text("手势动作"),
+                        footer: Text("这里列出来的，就是点「单击 / 双击 / 长按」右边时那个菜单里能选的东西。\n"
+                                     + "左滑删除；想加新的点「添加手势项目」（App、URL 协议、系统快捷指令都能加）。\n"
+                                     + "⚠️ 和上面「菜单项」是两份独立的清单：删这里的不会动球的快捷菜单，反之亦然。")) {
+                    if gestureItems.isEmpty {
+                        Text("空的 —— 点下面「添加手势项目」").foregroundColor(.secondary)
                     }
+                    ForEach(gestureItems) { item in
+                        HStack(spacing: 12) {
+                            Image(systemName: item.symbol)
+                                .frame(width: 26)
+                                .foregroundColor(.accentColor)
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(item.displayTitle)
+                                Text(item.detail)
+                                    .font(.caption)
+                                    .foregroundColor(.secondary)
+                                    .lineLimit(1)
+                            }
+                            Spacer(minLength: 8)
+                        }
+                    }
+                    .onDelete { offsets in
+                        gestureItems.remove(atOffsets: offsets)
+                        ShortcutStore.saveGestureItems(gestureItems)
+                    }
+
+                    Button {
+                        showAddGesture = true
+                    } label: {
+                        Label("添加手势项目", systemImage: "hand.tap")
+                    }
+                }
+
+                Section {
                     Button("恢复默认三条") {
                         items = ShortcutStore.defaults
                         ShortcutStore.save(items)
@@ -81,6 +125,7 @@ struct AppsTab: View {
         }
         .onAppear {
             items = ShortcutStore.load()
+            gestureItems = ShortcutStore.loadGestureItems()
             // 0.1.32：手势绑定也搬到这一页了，一起读
             for entry in ShortcutStore.gestureKeys {
                 gestures[entry.id] = ShortcutStore.gestureTarget(entry.id)
@@ -90,6 +135,13 @@ struct AppsTab: View {
             AddShortcutView(existing: items) { item in
                 items.append(item)
                 ShortcutStore.save(items)
+            }
+        }
+        // 0.1.36：加的是「手势动作」，不是菜单项 —— 两份清单，各存各的。
+        .sheet(isPresented: $showAddGesture) {
+            AddShortcutView(existing: gestureItems) { item in
+                gestureItems.append(item)
+                ShortcutStore.saveGestureItems(gestureItems)
             }
         }
         .alert(isPresented: $showMessage) {
@@ -124,14 +176,21 @@ struct AppsTab: View {
     // MARK: - 手势绑定（0.1.32 从「启动」页搬来）
 
     /// 一条手势的绑定行：**右边直接显示现在绑的是哪个动作**（2026-10-17 要求），
-    /// 点开是个菜单，里面是「内置动作 + 快捷列表里的 App」。
+    /// 点开是个菜单 —— 0.1.36 起这里只列「手势动作」那一节里的东西（用户自己维护）。
     private func gestureRow(title: String, key: String) -> some View {
         let current = gestures[key] ?? ShortcutStore.gestureTarget(key)
 
-        // ⚠️ 只列「App」和「URL」类的快捷项：内置动作下面已经单列了。
-        //    （同一个 tag 在菜单里出现两次，会分不清勾中的是哪一个。）
-        //    0.1.10 起 URL 项（微信扫一扫、系统快捷指令…）也能绑手势了。
-        let appItems = items.filter { $0.kind != .action }
+        // 0.1.36：候选池 = 「手势动作」那一栏。
+        // 当前绑的如果不在池子里（老版本绑过、或者刚从池子里删掉），临时补一条进来，
+        // 不然菜单里看不到「现在绑的是它」，也没法把它改回未设置。
+        var pool = gestureItems
+        if !current.isEmpty, !pool.contains(where: { $0.key == current }) {
+            if let act = action(fromKey: current) {
+                pool.append(.make(action: act))
+            } else if let item = items.first(where: { $0.key == current }) {
+                pool.append(item)
+            }
+        }
 
         // 菜单里勾出当前这条：Menu 里的按钮不吃 Picker 的选中态，自己画个 ✓
         func marked(_ target: String) -> String { target == current ? "✓ " : "" }
@@ -140,16 +199,9 @@ struct AppsTab: View {
         return Menu {
             Button("\(noneMark)未设置") { setGesture(key, "") }
 
-            Divider()
-
-            ForEach(ShortcutAction.allCases) { action in
-                let target = "action:\(action.rawValue)"
-                Button("\(marked(target))\(action.title)") { setGesture(key, target) }
-            }
-
-            if !appItems.isEmpty {
+            if !pool.isEmpty {
                 Divider()
-                ForEach(appItems) { item in
+                ForEach(pool) { item in
                     Button("\(marked(item.key))\(item.displayTitle)") { setGesture(key, item.key) }
                 }
             }
@@ -167,6 +219,12 @@ struct AppsTab: View {
             }
             .contentShape(Rectangle())
         }
+    }
+
+    /// "action:xxx" → ShortcutAction（别的写法返回 nil）
+    private func action(fromKey key: String) -> ShortcutAction? {
+        guard key.hasPrefix("action:") else { return nil }
+        return ShortcutAction(rawValue: String(key.dropFirst("action:".count)))
     }
 
     /// 改一条手势的绑定（存起来 + 通知球进程重读）
@@ -250,10 +308,6 @@ struct AppsTab: View {
                     say("这次没发起：上一次截屏请求还没回来。等一两秒再点一次就行。\n\n"
                         + "如果一直这样，把 /tmp/FloatingBall.log 里「截屏：…」那几行发我。")
                 }
-
-            case .moveBall:
-                Haptics.fire(.tap)
-                say("「移动悬浮图标」得在屏幕上的球上触发才有意义——在 App 里挪不了球。")
 
             case .toggleLabel:
                 Haptics.fire(.action)

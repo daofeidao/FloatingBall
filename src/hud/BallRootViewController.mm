@@ -45,6 +45,8 @@
 - (void)quickMenuDidSelectIndex:(NSInteger)idx;
 // 0.1.32：按「双击有没有绑动作」决定单击要不要等
 - (void)rebuildTapRecognizers;
+// 0.1.36：注入类动作（全局返回 / 打开邮箱收件箱）都要知道球在屏幕上的矩形
+- (CGRect)ballRectOnScreenForInject;
 @end
 
 // 默认值
@@ -879,6 +881,7 @@ void FBBallHapticTouchDown(void)
                  @"openMainApp":   @"app.badge",
                  @"quitBall":      @"power",
                  @"openAppList":   @"square.grid.2x2",
+                 @"mailInbox":     @"envelope.open",
                  @"moveBall":      @"hand.draw",
                  @"toggleLabel":   @"number",
                  @"none":          @"minus.circle" };
@@ -1205,6 +1208,16 @@ void FBBallHapticTouchDown(void)
     });
 }
 
+/// 球在屏幕上的矩形（注入类动作都要它：落点必须避开球，
+/// 否则球会把自己注入的滑动当成「用户在拖它」，球乱跑甚至自己触发自己）。
+- (CGRect)ballRectOnScreenForInject
+{
+    if (!_ball || !_ball.window) return CGRectZero;
+    CGRect inWindow = [_ball convertRect:_ball.bounds toView:_ball.window];
+    CGRect onScreen = CGRectOffset(inWindow, _ball.window.frame.origin.x, _ball.window.frame.origin.y);
+    return CGRectInset(onScreen, -10.0, -10.0);   // 多留一点余量
+}
+
 - (void)performAction:(NSString *)action
 {
     if ([action isEqualToString:@"none"]) {
@@ -1269,15 +1282,22 @@ void FBBallHapticTouchDown(void)
         // ⚠️ 这是全项目唯一一个能伤到系统本身的动作（见 FBSystemActions.mm 顶部那三条保命写法）。
         // 球的屏幕矩形必须传进去：落点要避开球自己，
         // 否则球会把自己注入的划动当成「用户在拖它」（球乱跑，甚至自己触发自己）。
-        CGRect ballOnScreen = CGRectZero;
-        if (_ball && _ball.window) {
-            CGRect inWindow = [_ball convertRect:_ball.bounds toView:_ball.window];
-            ballOnScreen = CGRectOffset(inWindow, _ball.window.frame.origin.x, _ball.window.frame.origin.y);
-            ballOnScreen = CGRectInset(ballOnScreen, -10.0, -10.0);   // 多留一点余量
-        }
-        BOOL sent = FBGoBack(ballOnScreen);
+        BOOL sent = FBGoBack([self ballRectOnScreenForInject]);
         FBLog(@"绑定动作=全局返回 -> %@",
               sent ? @"已注入左缘右划（看界面回没回上一页）" : @"没注进去（原因看上一行日志）");
+        return;
+    }
+
+    if ([action isEqualToString:@"mailInbox"]) {
+        // 【打开邮箱收件箱】0.1.36（用户要求）：
+        //   把 Mail 拉到前台 → 1.6s 后点一下上方 1/3 空白 → 再 0.4s 划一次左缘返回。
+        //   为什么要先点一下：Mail 停在带附件的邮件详情页时，那个页面在某些状态下
+        //   左缘返回划不动；点一下空白让它回到可返回的状态，用户实测出来的办法。
+        [self haptic:FBHapticAction];
+        BOOL started = FBOpenMailInbox([self ballRectOnScreenForInject]);
+        FBLog(@"绑定动作=打开邮箱收件箱 -> %@",
+              started ? @"已发起（1.6s 后点一下空白，再 0.4s 划返回）"
+                      : @"没发起（Mail 拉不起来，原因看上一行）");
         return;
     }
 

@@ -227,19 +227,17 @@ struct AppsTab: View {
 
             case .screenshot:
                 // 【截屏】在 App 里也能截（同一个二进制、同一份 entitlements）。
-                //   ① 优先走系统截图服务（ScreenshotServices）—— 不注入任何输入，最安全；
-                //   ② 那条路走不通才注入「音量加 + 电源」组合键。
+                //   ① 优先让 SpringBoard 自己截（AXSpringBoardServer 的 XPC，辅助触控同一条）；
+                //   ② 那条路取不到才注入「音量加 + 电源」组合键。
                 Haptics.fire(.action)
                 let route = FBTakeScreenshot()
                 if route == 1 {
-                    say("截屏：走的是系统截图服务。画面会闪一下，图在「相册 → 截屏」。")
-                } else if route == 2 {
-                    say("截屏：走的是按键注入（音量加 + 电源）。画面闪一下、图进「相册 → 截屏」。\n\n"
-                        + "⚠️ 如果屏幕只是锁上了，说明这一下没被认成组合键 —— 解锁继续用就行，不丢东西。")
+                    say("截屏：已经交给系统了（走的是辅助触控「截屏」那条通道）。\n"
+                        + "画面会闪一下，图在「相册 → 截屏」。\n\n"
+                        + "如果没截到，看 /tmp/FloatingBall.log 里「截屏：…」那几行 —— 会自动退到按键注入。")
                 } else {
-                    say("这次没截成。如果系统本身在限制截屏（开了「屏幕使用时间」之类），\n"
-                        + "按设计我们不会绕过去 —— 那条限制是有意设的。\n\n"
-                        + "否则是两条路都取不到，详情在 /tmp/FloatingBall.log（「截屏：…」那几行）。")
+                    say("这次没发起：上一次截屏请求还没回来。等一两秒再点一次就行。\n\n"
+                        + "如果一直这样，把 /tmp/FloatingBall.log 里「截屏：…」那几行发我。")
                 }
 
             case .moveBall:

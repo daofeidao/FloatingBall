@@ -1139,16 +1139,14 @@ void FBBallHapticTouchDown(void)
     }
 
     if ([action isEqualToString:@"screenshot"]) {
-        // 【截屏】两条路，先安全的、再兜底的（详见 FBSystemActions.mm 顶部那一段）：
-        //   ① 系统自己的截图服务（ScreenshotServices，iOS 11 起截图能力就在那儿）——
-        //      不注入任何输入，最安全；
-        //   ② 不行就注入一次「音量加 + 电源」组合键（iOS 的截图快捷键）。
+        // 【截屏】0.1.33 起主路是「让 SpringBoard 自己截」（AXSpringBoardServer 的 XPC，
+        //   辅助触控「截屏」用的同一条）；不行才注入一次「音量加 + 电源」组合键。
+        //   ⚠️ 0.1.32 的 ScreenshotServices 那条已删：用户实测点了球就没了（进程崩）。
         [self haptic:FBHapticAction];
         int route = FBTakeScreenshot();
         FBLog(@"绑定动作=截屏 -> %@",
-              route == 1 ? @"走系统截图服务（ScreenshotServices）"
-            : route == 2 ? @"走按键注入（音量加 + 电源）"
-            : @"没截成（两条路都没走通；若是系统说「现在不允许截屏」，那就是被屏幕使用时间之类的限制挡了，按设计不会硬来。原因看上一行日志）");
+              route == 1 ? @"已发起（优先让 SpringBoard 截；不通会自动退按键注入）"
+                         : @"没发起（上一次请求还没回来，或日志里有原因）");
         return;
     }
 

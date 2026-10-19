@@ -51,7 +51,7 @@ enum ShortcutAction: String, CaseIterable, Identifiable {
         switch self {
         case .refreshSignal: return "卡贴机没信号 / 假信号时点一下，让基带重新搜网"
         case .goBack:        return "⚠️ 等于按「上一页」：往系统注入一次左缘右划。万一界面卡住点不动 → 强制重启即可恢复"
-        case .screenshot:    return "⚠️ 先走系统截图服务；不行就注入一次「音量加 + 电源」组合键。万一只把屏幕锁上 → 解锁继续用"
+        case .screenshot:    return "让系统截当前屏幕，图进「相册 → 截屏」。走的是辅助触控「截屏」同一条系统通道；万一不通才注入「音量加 + 电源」"
         case .openMainApp:   return "回到悬浮球 App 的「启动」页"
         case .openAppList:   return "回到悬浮球 App 的「快捷菜单」栏"
         case .moveBall:      return "球变成可拖动状态，拖着放到顺手的位置"

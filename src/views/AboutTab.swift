@@ -102,9 +102,9 @@ struct AboutTab: View {
 
 // ---- 真实点球诊断（0.1.15）----
     @State private var blindFeed = BallSettings.bool("BlindFeed", default: false)
-    /// 0.1.20：`_ignoresHitTest` 的开关（见 HUDMainWindow 里的注释）。
-    /// **默认 false = 不吃掉触摸**（宁可穿透，也不能整屏哑巴）。
-    @State private var swallowTouch = BallSettings.bool("SwallowTouch", default: false)
+    /// 0.1.26：`_ignoresHitTest` 的开关。默认 true = 吃掉触摸（不穿透），与 HUDMainWindow
+    /// 运行时默认对齐（键不存在时返回 NO = 吃掉）。0.1.20~0.1.25 那几版默认关着是错误的。
+    @State private var swallowTouch = BallSettings.bool("SwallowTouch", default: true)
     @State private var actionLogTick = 0
     @State private var diagTick = 0
     private let diagTicker = Timer.publish(every: 1.0, on: .main, in: .common).autoconnect()

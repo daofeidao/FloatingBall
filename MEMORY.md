@@ -710,6 +710,7 @@ send([r"...\FloatingBall.tipa"],
 | 0.1.23 | 2026-10-18 | GitHub Release `v0.1.23` + 邮件已发（to sz202610@126.com / cc lion.2026.10@proton.me） | 440,539 | `c4e155e2` |
 | 0.1.24 | 2026-10-18 | GitHub Release `v0.1.24` + 邮件已发（to sz202610@126.com / cc lion.2026.10@proton.me） | 440,606 | `2239e807` |
 | 0.1.25 | 2026-10-19 | `E:\下载\FloatingBall_0.1.25.tipa`（邮件已发 01:20，to sz202610@126.com / cc lion.2026.10@proton.me，收件箱核验附件 430.9 KB） | 441,205 | `7976b929` |
+| 0.1.26 | 2026-10-19 | GitHub Release `v0.1.26` + 邮件已发（to sz202610@126.com / cc lion.2026.10@proton.me） | 441,206 | `5a714d5a` |
 
 - 0.1.25：基于用户 0.1.24 最新代码（`origin/main` = `a8f0e06`）出的一行修复：
   **`sLastFedPoint = winPt` → `= feedPt`**（`src/hud/HUDApp.mm`）。

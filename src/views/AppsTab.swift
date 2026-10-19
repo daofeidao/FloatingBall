@@ -214,6 +214,17 @@ struct AppsTab: View {
                 Haptics.fire(.tap)
                 TabRouter.shared.tab = 0
 
+            case .quitBall:
+                // 0.1.34（用户要求）：「关闭悬浮球」= 把球收掉。
+                // 走的是和「启动」页那个开关完全相同的入口（spawn -exit 收尾）。
+                Haptics.fire(.action)
+                if IsHUDEnabledBridger() {
+                    SetHUDEnabledBridger(false)
+                    say("球收掉了。\n\n想再开：回「启动」页把「启动悬浮球」打开。")
+                } else {
+                    say("球本来就没开（「启动」页那个开关现在是关的）。")
+                }
+
             case .openAppList:
                 Haptics.fire(.tap)
                 TabRouter.shared.tab = 1

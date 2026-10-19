@@ -21,6 +21,7 @@
 #import "HUDHelper.h"
 #import "FBLog.h"
 #import "FBSystemActions.h"
+#import "HUDMainWindow.h"
 
 #import "../helpers/ts/TSEventFetcher.h"
 #import "../helpers/private_headers/AXEventRepresentation.h"
@@ -197,25 +198,32 @@ BOOL gFBSelfTestTapPending = NO;
 /// 说明事件有、只是坐标对不上；如果盲喂也没反应，说明事件流里根本没有手指。
 BOOL gFBBlindFeed = NO;
 
-/// 活跃的触摸来源：0 = 还没定，1 = 路A（BKS 回调），2 = 路B（监视客户端）
+/// 活跃触摸来源：0 = 还没定，1 = 路A（BKS 回调），2 = 路B（监视客户端）
 static int gHIDActiveRoute = 0;
+
+// 0.1.27：NO 模式下「是否退回合成兜底」的状态（详见 FBHandleHIDEvent 顶部的总开关说明）。
+static BOOL           sForceSynthetic     = NO;  // 已退回合成兜底（session 内不再翻回）
+static NSTimeInterval sCaptureEnteredAt   = 0;   // 进入「NO 模式观察期」的时刻
 
 static void FBProbeWrite(BOOL force)
 {
     NSTimeInterval now = [NSDate timeIntervalSinceReferenceDate];
     if (!force && now - sProbeLastWrite < 1.0) return;
     sProbeLastWrite = now;
+    BOOL pt = [HUDMainWindow fb_passThrough];
     NSString *text = [NSString stringWithFormat:
         @"回调=%d（路A=%d 路B=%d 匹配服务=%d） 无rep=%d 无路径=%d id<=0=%d "
         @"不在球=%d 非本触点=%d 另一条路=%d 接管=%d 喂球=%d 节流=%d 沿用上一帧=%d\n"
         @"真触摸：窗口问=%d 落在球=%d 真点击=%d 自喂测试=%d\n"
-        @"底层：AX按下=%d 深读(有手指=%d 没手指=%d 读不到=%d)\n最后：%@\n",
+        @"底层：AX按下=%d 深读(有手指=%d 没手指=%d 读不到=%d)\n"
+        @"路线：穿透=%d 合成兜底=%d\n最后：%@\n",
         sProbeCallbacks, sProbeRouteA, sProbeRouteB, sProbeMatched,
         sProbeNoRep, sProbeNoPath, sProbeZeroID,
         sProbeOffBall, sProbeNotOurs, sProbeOtherRoute, sProbeTakeover, sProbeFed,
         sProbeThrottled, sProbeReused,
         sProbeHitAsk, sProbeHitBall, sProbeRealTap, sProbeSelfTest,
-        sProbeAXDown, sProbeDeepFinger, sProbeDeepUp, sProbeDeepNone, sProbeLast];
+        sProbeAXDown, sProbeDeepFinger, sProbeDeepUp, sProbeDeepNone,
+        (int)pt, (int)sForceSynthetic, sProbeLast];
     [text writeToFile:FB_PROBE_PATH atomically:YES encoding:NSUTF8StringEncoding error:NULL];
 }
 
@@ -419,10 +427,35 @@ static void FBHandleHIDEvent(int route, void *target, void *refcon, IOHIDService
     // ⚠️ 这里不会做任何加载（预热在启动时做过了），见 FBSystemActions.mm。
     FBHIDNoteRealEvent(event);
 
-    // 0.1.8：如果「真触摸」那条路（窗口参与命中测试）已经通了，
-    // 就**不再**喂合成触摸 —— 否则一次点击会被处理两遍（手势 + 假触摸），
-    // 表现就是「点一下算两下」。这两条路是二选一的备份关系。
-    if (FBRealTouchWorks()) return;
+    // 0.1.27：真触摸优先、合成触摸兜底（彻底修「第一次能拖、松手后再点接不到」）。
+    //   详见文件顶部那段说明。下面这段就是「要不要喂合成触摸」的总开关：
+    //     · `_ignoresHitTest` = YES（穿透）→ 系统不派发真触摸 → 喂合成兜底。
+    //     · `_ignoresHitTest` = NO（吃掉）→ 系统把真触摸派给球 → 别喂合成，让球自己吃真触摸。
+    //   保险（只在 NO 模式）：若用户确实在触摸（sProbeCallbacks 明显增长）但系统从没把真触摸
+    //        派到球上（sProbeHitBall 一直为 0，说明这台设备不派发真触摸），才退回合成兜底——
+    //        且此时系统不会派真触摸，喂合成不会「真+假双触」，安全。一旦 sProbeHitBall>0 就确认
+    //        真触摸、永久走真触摸路线，绝不回头（避免双触）。
+    {
+        NSTimeInterval now = [NSDate timeIntervalSinceReferenceDate];
+        BOOL passThrough = [HUDMainWindow fb_passThrough];
+        if (!passThrough && !sForceSynthetic) {
+            if (sProbeHitBall > 0) {
+                return;   // 系统已把真触摸派到球上 → 真触摸路线确认，不喂合成
+            }
+            if (sCaptureEnteredAt == 0) sCaptureEnteredAt = now;
+            if (now - sCaptureEnteredAt > 5.0) {
+                if (sProbeCallbacks > 20) {
+                    sForceSynthetic = YES;   // 真触摸始终没来（且用户在触摸）→ 退回合成兜底
+                    FBLog(@"0.1.27：观察 5 秒、用户有触摸(回调=%d)但落球=0，退回合成兜底",
+                          sProbeCallbacks);
+                } else {
+                    sCaptureEnteredAt = now;   // 用户这 5 秒没怎么触摸 → 继续等（滑动窗口）
+                    return;
+                }
+            }
+            return;   // 观察期内，先不喂合成，等真触摸
+        }
+    }
 
     // iOS 15.1+ 用 AXRuntime 那条路处理 HID 事件
     if (@available(iOS 15.1, *)) {}

@@ -50,6 +50,26 @@
 
 - (BOOL)_isWindowServerHostingManaged { return NO; }
 
+/// 0.1.27：把「是否穿透（系统不派发真触摸）」的判定抽成类方法 `fb_passThrough`，
+/// 让 HUDApp.mm 的触摸回调也能直接问，不要在两边各写一份（容易漂移）。
+///
+/// 语义（和 AboutTab 的开关对齐，键不存在 = 默认吃掉）：
+///   · 键不存在 / SwallowTouch = true → 返回 NO  = 吃掉（不穿透）= 系统把真触摸派给球
+///   · SwallowTouch = false            → 返回 YES = 穿透           = 系统不派发真触摸，靠合成兜底
++ (BOOL)fb_passThrough
+{
+    static NSTimeInterval lastAt = 0;
+    static BOOL lastValue = NO;   // 默认 NO = 吃掉（capture）
+    NSTimeInterval now = CACurrentMediaTime();
+    if (now - lastAt > 1.0) {
+        lastAt = now;
+        NSDictionary *d = [NSDictionary dictionaryWithContentsOfFile:USER_DEFAULTS_PATH];
+        id v = d[@"SwallowTouch"];
+        lastValue = (v && ![v boolValue]) ? YES : NO;
+    }
+    return lastValue;
+}
+
 /// 0.1.26：**默认 NO**（= 吃掉触摸 / 不穿透，照 TheBall 2.7）。这是从 0.1.19 一路错到
 /// 0.1.25 的根因修正 —— 完整记下来，免得再被绕回去：
 ///
@@ -78,18 +98,8 @@
 /// 用户改完设置，球在 1 秒内自动生效，不用重启球。
 - (BOOL)_ignoresHitTest
 {
-    static NSTimeInterval lastAt = 0;
-    // ⚠️ 默认值语义（0.1.26 起）：**键不存在 = 吃掉（NO）**。
-    //    只有用户显式写过 false（=「我要穿透」）才返回 YES。
-    static BOOL lastValue = NO;
-    NSTimeInterval now = CACurrentMediaTime();
-    if (now - lastAt > 1.0) {
-        lastAt = now;
-        NSDictionary *d = [NSDictionary dictionaryWithContentsOfFile:USER_DEFAULTS_PATH];
-        id v = d[@"SwallowTouch"];
-        lastValue = (v && ![v boolValue]) ? YES : NO;
-    }
-    return lastValue;
+    // 0.1.27：直接复用类方法，判定逻辑只有一份（见上方 fb_passThrough 的注释）。
+    return [HUDMainWindow fb_passThrough];
 }
 
 - (BOOL)_isSecure { return YES; }

@@ -789,6 +789,81 @@ static BOOL FBTapAtScreenPoint(CGPoint pt, CGSize screen)
     return YES;
 }
 
+/// 当前最前面的 App 的 bundle id（拿不到返回 nil）。
+///
+/// 走 SpringBoardServices 的私有 C 函数（`SBSCopyFrontmostApplicationDisplayIdentifier`，
+/// 老名字 `SBFrontmostApplicationDisplayIdentifier`）。取不到符号就返回 nil ——
+/// 调用方要能接受「查不到」，退回固定等一小会儿。
+static NSString *FBFrontmostBundleID(void)
+{
+    static BOOL tried = NO;
+    static NSString *(*fn)(void) = NULL;
+    if (!tried) {
+        tried = YES;
+        void *h = dlopen("/System/Library/PrivateFrameworks/SpringBoardServices.framework/SpringBoardServices",
+                         RTLD_LAZY);
+        if (h) {
+            fn = (NSString *(*)(void))dlsym(h, "SBSCopyFrontmostApplicationDisplayIdentifier");
+            if (!fn) fn = (NSString *(*)(void))dlsym(h, "SBFrontmostApplicationDisplayIdentifier");
+        }
+        FBLog(@"前台检测：SpringBoardServices %@", fn ? @"拿到符号（用轮询等 Mail 到前台）"
+                                                      : @"没拿到符号（退回固定等待）");
+    }
+    if (!fn) return nil;
+    NSString *bid = fn();
+    return [bid isKindOfClass:[NSString class]] ? bid : nil;
+}
+
+/// 「打开邮箱收件箱」的第 ②③ 步：等 Mail 真的到前台 → 点一下上方空白 → 划一次返回。
+///
+/// 为什么不写死「打开后等 1.6 秒」：
+///   Mail 冷启动（进程被系统杀了）要 1.5~2 秒，热启动 0.3 秒就够。
+///   固定值只能迁就慢的那种，热启动时就是白等 1 秒多。
+///   现在每 100ms 问一次「最前面的是不是 Mail」，一到就动手，最多等 2.5 秒。
+///
+/// ⚠️ 等满 2.5 秒还不是 Mail → **什么都不注入**（只留日志）。
+///    因为这时候屏幕上是别的 App，瞎点一下可能压到删除/确认之类的按钮 —— 宁可这次不干活。
+static void FBWaitMailFrontmostThenFlow(CGRect ballRectOnScreen, int waitedMs)
+{
+    static NSString *const kMailBundle = @"com.apple.mobilemail";
+    const int kPollMs = 100;
+    const int kMaxWaitMs = 2500;
+
+    NSString *front = FBFrontmostBundleID();
+    BOOL ready = front ? [front isEqualToString:kMailBundle]
+                       : (waitedMs >= 1600);   // 查不到前台是谁：退回原来的「稳等 1.6 秒」
+
+    if (!ready && waitedMs < kMaxWaitMs) {
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(kPollMs * NSEC_PER_MSEC)),
+                       dispatch_get_main_queue(), ^{
+            FBWaitMailFrontmostThenFlow(ballRectOnScreen, waitedMs + kPollMs);
+        });
+        return;
+    }
+
+    if (!ready) {
+        FBLog(@"打开邮箱：等了 %.1f 秒 Mail 还没到前台（现在最前面的是 %@）→ 这次不注入，免得瞎点到别的界面",
+              waitedMs / 1000.0, front ?: @"（查不到）");
+        return;
+    }
+
+    FBLog(@"打开邮箱：Mail 已在前台（等了 %dms）→ 点一下上方空白，再划返回", waitedMs);
+
+    CGSize screen = [UIScreen mainScreen].bounds.size;
+    if (screen.width < 100.0) screen = CGSizeMake(428.0, 926.0);   // 13PM 的逻辑尺寸兜底
+
+    // 点一下上方 1/3 的空白（x 取屏幕中点：球常年贴边，撞不上）
+    FBTapAtScreenPoint(CGPointMake(screen.width * 0.5, screen.height * 0.30), screen);
+
+    // 这一下点击是「按下 60ms 再抬起」，抬起之后界面还要消化一下；
+    // 0.35 秒足够，别压到 50ms（那是按完就划，很多界面会把它当成同一次触摸）。
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.35 * NSEC_PER_SEC)),
+                   dispatch_get_main_queue(), ^{
+        FBLog(@"打开邮箱：接着划一次左缘返回");
+        FBGoBack(ballRectOnScreen);
+    });
+}
+
 BOOL FBOpenMailInbox(CGRect ballRectOnScreen)
 {
     // ① 把 Mail 拉到前台。已经在跑就是切前台 —— 它上次停在哪个页面还在，
@@ -797,21 +872,8 @@ BOOL FBOpenMailInbox(CGRect ballRectOnScreen)
     FBLog(@"打开邮箱：%@", opened ? @"已让 Mail 到前台" : @"拉不起来（Mail 被删了？/ 系统不让从这儿跳）");
     if (!opened) return NO;
 
-    // ② 等它稳住，点一下上方 1/3 的空白
-    //    （x 取屏幕中点：球常年贴在左右边缘，避开它；就算撞上也只是这一次点不到）
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.6 * NSEC_PER_SEC)),
-                   dispatch_get_main_queue(), ^{
-        CGSize screen = [UIScreen mainScreen].bounds.size;
-        if (screen.width < 100.0) screen = CGSizeMake(428.0, 926.0);   // 13PM 的逻辑尺寸兜底
-        FBTapAtScreenPoint(CGPointMake(screen.width * 0.5, screen.height * 0.30), screen);
-
-        // ③ 再等 0.4 秒，左缘往右划一次 = 返回（复用 FBGoBack 那套参数 / 保命写法）
-        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.4 * NSEC_PER_SEC)),
-                       dispatch_get_main_queue(), ^{
-            FBLog(@"打开邮箱：接着划一次左缘返回");
-            FBGoBack(ballRectOnScreen);
-        });
-    });
+    // ② 轮询等它真的到前台，再走点击 + 返回（见 FBWaitMailFrontmostThenFlow 的说明）
+    FBWaitMailFrontmostThenFlow(ballRectOnScreen, 0);
     return YES;
 }
 

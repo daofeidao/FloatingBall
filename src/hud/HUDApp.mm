@@ -516,7 +516,6 @@ static void FBHandleHIDEvent(int route, void *target, void *refcon, IOHIDService
     BOOL axDown        = [rep isTouchDown];
     BOOL axMove        = [rep isMove];
     BOOL axLift        = [rep isLift];
-    BOOL axInRange     = [rep isInRange];
     BOOL axInRangeLift = [rep isInRangeLift];
     BOOL axCancel      = [rep isCancel];
     CGPoint location   = [rep location];           // 屏幕坐标？（下面三种来源都试）

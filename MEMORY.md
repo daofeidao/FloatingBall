@@ -721,6 +721,22 @@ send([r"...\FloatingBall.tipa"],
 | 0.1.34 | 2026-10-19 | 未交付（仅 CI 产物，代码已并入 0.1.35） | — | — |
 | 0.1.35 | 2026-10-19 | `E:\下载\FloatingBall_0.1.35.tipa`（邮件已发 2026-10-20 00:10，to sz202610@126.com / cc lion.2026.10@proton.me，收件箱核验附件 435.6 KB / 整封 602.3 KB） | 446,055 | `7ad585ca` |
 | 0.1.36 | 2026-10-20 | `E:\下载\FloatingBall_0.1.36.tipa`（邮件已发 00:35，to sz202610@126.com / cc lion.2026.10@proton.me，收件箱核验附件 449.4 KB / 整封 622.9 KB） | 460,174 | `aa41acaa` |
+| 0.1.37 | 2026-10-20 | `E:\下载\FloatingBall_0.1.37.tipa`（邮件已发，to sz202610@126.com / cc lion.2026.10@proton.me） | @@BYTES37@@ | `@@SHA37@@` |
+
+- 0.1.37（用户 2026-10-20 对「打开邮箱收件箱」的参数建议）：
+  · 启动等待从「固定 1.6s」改成**轮询**：`FBWaitMailFrontmostThenFlow(ballRect, waitedMs)`，
+    每 100ms 调 `FBFrontmostBundleID()`（dlopen SpringBoardServices 的
+    `SBSCopyFrontmostApplicationDisplayIdentifier`，老名字 `SBFrontmostApplicationDisplayIdentifier`），
+    是 Mail 就立刻动手，最多 2.5s。
+    **取不到符号**（前台查不了）→ 退回原来的「稳等 1.6s」；
+    **等满 2.5s 还不是 Mail** → 一个事件都不注入，只写日志（宁可这次不干活，也不瞎点到别的界面）。
+  · 点击 → 滑动之间的间隔 0.4s → 0.35s（点击自己是「按下 60ms 再抬起」，50ms 太急，
+    很多界面会把点和划当成同一次触摸）。
+  · **滑动参数一个字没改**，因为本来就是对的：`xs[] = {1.0, 8.0, 24.0, …}` 配 `xs[pi]/w`，
+    down 事件 x = **绝对 1pt**（不是「屏宽比例」），按下先停 70ms 再 42ms/步划出 ≈ 810pt/s。
+    这是 0.1.22 真机调出来的（太快会被当 flick 不认，用户当时反馈「像在左右滑动切换」）。
+  · 版本 0.1.37 / build 38。⚠️ 待真机验：日志里「前台检测：SpringBoardServices …」那行说的是
+    「拿到符号」还是「没拿到」；以及「打开邮箱：Mail 已在前台（等了 XXXms）」这个数字 —— 热启动应该 <500ms。
 
 - 0.1.36（用户 2026-10-20 四件事）：
   ① 「添加」从页面最底下的独立 Section 挪进「菜单项」Section 末尾（加完一条不用再滑到底）。

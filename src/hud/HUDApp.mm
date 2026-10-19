@@ -929,7 +929,14 @@ static void FBHandleHIDEvent(int route, void *target, void *refcon, IOHIDService
             // 「合成来的 onSingleTap」从「系统真触摸的证据」里排除掉
             // （0.1.19 正是因为没排除，连点只有第一下有反应）。
             sSynthTapAt = now;
-            FBBallHapticTouchDown();
+            // ⚠️ 0.1.30：**只有按在球上才缩球 / 震一下**。
+            //    菜单开着时整屏接管（gFBConsumeWholeScreen），原来每一根手指落下都会走这里
+            //    → 用户看到的是「点哪里球都缩一下」的全局反馈（用户 2026-10-19 原话：
+            //    「没法点击，而且出现全局点击的反馈现象」）。菜单自己的行有按下高亮，
+            //    整屏接管只是为了接「点菜单外面 → 关菜单」，不该有球的反馈。
+            if (onBall || gFBBlindFeed) {
+                FBBallHapticTouchDown();
+            }
             // 盲喂模式下每一次都可能是误触：只让它记账/震一下，不执行绑定动作
             if (gFBBlindFeed) {
                 gFBSelfTestTapPending = YES;

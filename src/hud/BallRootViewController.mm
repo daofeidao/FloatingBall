@@ -19,6 +19,7 @@
 #import <objc/runtime.h>
 #import <objc/message.h>
 #import <dlfcn.h>
+#import <AudioToolbox/AudioToolbox.h>
 
 #import "../helpers/private_headers/LSApplicationWorkspace.h"
 
@@ -55,8 +56,8 @@ static NSString *const kDefaultBallStyle = @"BallDot";   // 贴图名（见 scri
 // App 那边有一份等价实现（src/controllers/Haptics.swift）——
 // ⚠️ 键名 / 默认值 / 分段算法 两边必须一模一样，改一边就得改另一边。
 //
-// ⚠️ 手机上「设置 → 声音与触感 → 系统触感反馈」关掉的话，这里全部没感觉。
-//    那是系统总开关，绕不过去（App 界面上有提示）。
+// ⚠️ 手机的**静音键**不影响这里（系统振动照走）；「设置 → 声音与触感 → 系统触感反馈」
+//    关掉只影响 Taptic 引擎那种细腻反馈，不影响 `kSystemSoundID_Vibrate` 的整机振动。
 typedef NS_ENUM(NSInteger, FBHapticKind) {
     FBHapticTap = 0,   // 识别到点击 / 球落位                —— 轻
     FBHapticAction,    // 动作真的执行了（移动模式、数字开关）—— 中
@@ -64,7 +65,7 @@ typedef NS_ENUM(NSInteger, FBHapticKind) {
 };
 
 // 震动参数（键名与 Haptics.swift 共用）：
-//   强度 `HapticIntensity`  0.2~1.0（默认 1.0）→ 走 impactOccurredWithIntensity:
+//   强度 `HapticIntensity`  0.2~1.0（默认 1.0）→ 直接交给系统声音的 Intensity
 //   ~~时长 `HapticDurationMs`~~ —— **0.1.12 起作废**：用户实测「连敲拼时长」效果一般，
 //        于是直接去掉，一律就系统默认那一下（≈40ms；Taptic 引擎敲一下的长度是系统定死的，
 //        想精确到毫秒得用 CoreHaptics，而它要求 App 在前台 + 有音频会话，HUD 里不靠谱）。
@@ -72,46 +73,71 @@ typedef NS_ENUM(NSInteger, FBHapticKind) {
 //        ⚠️ 老版本写进设置的 `HapticDurationMs` 现在**没人读**了（不用清，不影响）。
 #define FBHapticPulseSpacingMs  40    // 两下之间隔多少毫秒（只给 notice 的两下用）
 
-static UIImpactFeedbackGenerator *sHapticLight  = nil;
-static UIImpactFeedbackGenerator *sHapticMedium = nil;
-
 /// 球控制器（viewDidLoad 时登记），给 FBBallHapticTouchDown() 用的。
 static BallRootViewController *sBallVC = nil;
 
-/// 建好常驻生成器并提前预热（异步的，越早越好）。见 FBHapticPlay 的注释。
-static void FBHapticWarmUp(void)
+// ⭐ 0.1.31：震动换路 —— 从 UIImpactFeedbackGenerator 改成 AudioToolbox 的系统声音振动。
+//
+// 为什么换（用户 0.1.30 反馈「震动强度设定和它这个并没有起作用」）：
+//   HUD 是 `posix_spawn` 出来的**后台进程**（persona 99 / uid 0），不是前台 App。
+//   `UIImpactFeedbackGenerator` 的 Taptic 反馈只在前台有效 —— 后台进程调它，系统
+//   **直接吞掉**（0.1.16 自喂测试：手势成功、计数 +1，但一点震感都没有，就是这条）。
+//   既然压根没震，强度滑块当然「没起作用」。
+//
+//   `AudioServicesPlaySystemSoundWithVibration` 是 AudioToolbox 里的私有函数，
+//   走**系统声音服务**：不需要前台、不需要音频会话，root 守护进程也能震
+//   （越狱环境里的 `vibrate` 命令行就是同一个调用）。它的 `Intensity` 参数
+//   正好能吃设置里的 0.2~1.0 —— 强度滑块从这一版起才真的有作用。
+//
+//   用 dlsym 取符号而不是直接声明：这个函数不在公开头文件里。拿不到符号时退回
+//   `AudioServicesPlaySystemSound(kSystemSoundID_Vibrate)`（固定强度，至少能震）。
+typedef void (*FBVibrateWithPatternFn)(UInt32, id, NSDictionary *);
+
+static FBVibrateWithPatternFn sVibrateWithPattern = NULL;
+static BOOL sVibrateSymbolLoaded = NO;
+
+static void FBLoadVibrateSymbol(void)
 {
-    if (!sHapticLight) {
-        sHapticLight  = [[UIImpactFeedbackGenerator alloc] initWithStyle:UIImpactFeedbackStyleLight];
-        sHapticMedium = [[UIImpactFeedbackGenerator alloc] initWithStyle:UIImpactFeedbackStyleMedium];
+    if (sVibrateSymbolLoaded) return;
+    sVibrateSymbolLoaded = YES;
+
+    void *h = dlopen("/System/Library/Frameworks/AudioToolbox.framework/AudioToolbox", RTLD_LAZY);
+    if (h) {
+        sVibrateWithPattern = (FBVibrateWithPatternFn)dlsym(h, "AudioServicesPlaySystemSoundWithVibration");
     }
-    [sHapticLight prepare];
-    [sHapticMedium prepare];
+    FBLog(@"震动：系统声音通路%@（%@）",
+          sVibrateWithPattern ? @"可用" : @"不可用，退回固定强度",
+          sVibrateWithPattern ? @"AudioServicesPlaySystemSoundWithVibration"
+                              : @"AudioServicesPlaySystemSound");
 }
 
 /// 敲一下（强度来自设置）
 static void FBHapticPulse(FBHapticKind kind, CGFloat intensity)
 {
-    if (kind == FBHapticTap) {
-        [sHapticLight impactOccurredWithIntensity:intensity];
-    } else {
-        [sHapticMedium impactOccurredWithIntensity:intensity];
+    (void)kind;   // 系统声音振动只有一种音色，轻 / 中不再区分（敲几下仍由 FBHapticPlay 决定）
+
+    FBLoadVibrateSymbol();
+
+    double v = (double)MAX(0.05, MIN(intensity, 1.0));
+    if (sVibrateWithPattern) {
+        // VibePattern 是「开/关 + 毫秒」交替的数组：这里震 40ms（系统默认那一下）
+        NSDictionary *pattern = @{ @"VibePattern": @[ @YES, @(FBHapticPulseSpacingMs) ],
+                                   @"Intensity":   @(v) };
+        sVibrateWithPattern((UInt32)kSystemSoundID_Vibrate, nil, pattern);
+        return;
     }
+
+    // 兜底：固定强度，至少能感觉到「按到了」
+    AudioServicesPlaySystemSound(kSystemSoundID_Vibrate);
 }
 
 /// - Parameters:
-///   - kind:      震感种类（决定用轻 / 中生成器，以及敲几下）
+///   - kind:      震感种类（决定敲几下；0.1.31 起系统声音只有一种音色）
 ///   - intensity: 0.2~1.0（设置里的「强度」）
 ///   ⚠️ 0.1.12 起没有「敲几下」这个入参了：时长不再可调，一律一下
 ///      （只有 `FBHapticNotice` 例外，见下）。
 static void FBHapticPlay(FBHapticKind kind, CGFloat intensity)
 {
-    // ⚠️ 以前是「每次新建生成器 + prepare + 立刻震」—— 临时抱佛脚没用：
-    //    prepare() 是**异步**预热振动引擎的，跟 impactOccurred 挤在同一个 tick 里，
-    //    那一下照样是凉的。用户感觉就是「延迟几百毫秒、跟手性不够」。
-    //    正解：生成器常驻、提前 prepare 好，震完再补一次保温（见 FBHapticWarmUp）。
-    FBHapticWarmUp();
-
     // ⚠️ 一律「系统默认那一下」（≈40ms）；只有 FBHapticNotice（「交代出去一件事」）
     //    敲两下 —— 那是一个**信号**，不是时长设置。
     int n = (kind == FBHapticNotice) ? 2 : 1;
@@ -126,9 +152,6 @@ static void FBHapticPlay(FBHapticKind kind, CGFloat intensity)
                        dispatch_get_main_queue(), ^{ FBHapticPulse(kind, intensity); });
     }
 
-    // 震完立刻再预热一次，让引擎保持热的 —— 下一次按下去还是立刻有
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.8 * NSEC_PER_SEC)),
-                   dispatch_get_main_queue(), ^{ FBHapticWarmUp(); });
 }
 
 /// 只有球本身吃触摸，窗口里那圈余量（阴影/宽容区）的触摸对象返回 NO，
@@ -357,6 +380,22 @@ static const CGFloat kMenuMaxRows  = 8.0;    // 超过就滚动不了，所以�
 
 #pragma mark - 震动
 
+/// 0.1.31：从磁盘重读「开关 + 强度」。
+/// 为什么：HUD 是 root 守护进程，App 发来的 Darwin 通知**不一定送得到**
+/// （0.1.11 起连开关状态都改成读 pid 文件了，原因一样）。原来只在启动/收到通知时读，
+/// 用户在 App 里拖强度滑块 → 球这边还是旧值 → 就是「强度设定没起作用」。
+/// 这份 plist 很小，读一次是微秒级，放在每次震动前完全值得。
+- (void)reloadHapticPrefs
+{
+    NSDictionary *onDisk = [NSDictionary dictionaryWithContentsOfFile:USER_DEFAULTS_PATH];
+    if (!onDisk) return;
+    for (NSString *k in @[@"HapticsEnabled", @"HapticIntensity"]) {
+        id v = onDisk[k];
+        if (v) _prefs[k] = v;
+        else [_prefs removeObjectForKey:k];   // 没设过 = 默认（开关开、强度 1.0）
+    }
+}
+
 /// 设置里的「强度」（0.2~1.0，默认 1.0）。算法与 Haptics.swift 的 Haptics.intensity 一致。
 - (CGFloat)hapticIntensity
 {
@@ -370,17 +409,10 @@ static const CGFloat kMenuMaxRows  = 8.0;    // 超过就滚动不了，所以�
 /// ⚠️ 0.1.12 起不再有「敲几下」——时长不可调（见文件顶部）。
 - (void)haptic:(FBHapticKind)kind
 {
+    [self reloadHapticPrefs];
+
     NSNumber *on = _prefs[@"HapticsEnabled"];
     if ([on isKindOfClass:[NSNumber class]] && ![on boolValue]) return;
-
-    // 0.1.16：诊断用 —— HUD 是后台进程，`UIImpactFeedbackGenerator` 的震动可能被系统吞掉。
-    // 只记一次，别刷日志。
-    static int sLoggedState = 0;
-    if (!sLoggedState) {
-        sLoggedState = 1;
-        FBLog(@"震动：applicationState=%ld（后台时系统可能吞掉震动；这是第 0.1.16 版新加的诊断）",
-              (long)[UIApplication sharedApplication].applicationState);
-    }
 
     FBHapticPlay(kind, [self hapticIntensity]);
 }
@@ -393,24 +425,20 @@ static const CGFloat kMenuMaxRows  = 8.0;    // 超过就滚动不了，所以�
 /// 后面的手势要不要再震一层（长按、动作执行）照旧 —— 那是「确认」，这里是「迎客」。
 void FBBallHapticTouchDown(void)
 {
-    // 0.1.16：真机结论是**球进程里震动被系统吞了**（自喂测试：手势触发、计数+1，但没有震感）。
-    // 所以再加一层**看得见**的反馈：球按下去缩一下 —— 这一层不依赖任何系统服务。
+    // 0.1.16：再加一层**看得见**的反馈：球按下去缩一下 —— 这一层不依赖任何系统服务。
+    // 0.1.31：震动本身改走系统声音（见文件顶部），所以现在「缩一下」和「震一下」
+    //         都会真的发生；缩球仍然保留：系统「触感反馈」总开关被关掉时它是唯一反馈。
     [sBallVC haptic:FBHapticTap];
     [sBallVC pressFeedback];
 }
 
-/// 定时保温（每 2 秒一次）：球会一直挂在屏幕上、可能隔很久才被点一下，
-/// 引擎一凉就变成「按下去半天才震」。走同一个开关：关掉震动就不保温。
-- (void)warmHaptics
+/// 2 秒一次的巡检：外观文件有没有变（0.1.16 用户反馈：改形状/颜色/大小/透明度都没反应）。
+/// 通知有可能没送到（或送到时刚写了一半），所以每 2 秒比对一次文件修改时间 ——
+/// plist 或贴图变了就重新应用，**不依赖通知**。
+/// ⚠️ 0.1.31 起这个定时器**不再管震动保温**（震动换成系统声音，不需要预热引擎）。
+- (void)pollTimerTick
 {
-    // 0.1.16：顺手检查外观文件有没有变（0.1.16 用户反馈：改形状/颜色/大小/透明度都没反应）。
-    // 通知有可能没送到（或送到时刚写了一半），所以每 2 秒比对一次文件修改时间 ——
-    // plist 或贴图变了就重新应用，**不依赖通知**。
     [self pollAppearanceFiles];
-
-    NSNumber *on = _prefs[@"HapticsEnabled"];
-    if ([on isKindOfClass:[NSNumber class]] && ![on boolValue]) return;
-    FBHapticWarmUp();
 }
 
 - (void)pollAppearanceFiles
@@ -498,6 +526,8 @@ void FBBallHapticTouchDown(void)
 /// ⚠️ 0.1.16 加这个是因为真机确认：HUD 是后台进程，UIImpactFeedbackGenerator 的震动
 ///    会被系统吞掉（自喂测试手势成功、计数+1，但一点震感都没有）。
 ///    缩放只是改 transform，不依赖任何系统服务，一定能看见。
+/// ⚠️ 0.1.31 震动换成了系统声音（能震了），但这一层**继续保留**：
+///    系统「触感反馈」被关掉、或用户在设置里关掉震动开关时，它是唯一的按下去反馈。
 - (void)pressFeedback
 {
     if (!_ball) return;
@@ -615,13 +645,13 @@ void FBBallHapticTouchDown(void)
     sBallVC = self;   // 登记给 FBBallHapticTouchDown()（HUD「起手在球上」那一震走这里）
     [self loadPrefs];
 
-    // 振动：生成器常驻 + 每 2 秒保温一次，保证「按下去立刻有反馈」。
-    // ⚠️ 以前是每次震的时候才新建生成器 + prepare —— 那一下引擎是凉的，
-    //    用户感觉就是延迟几百毫秒、跟手性不够。
-    FBHapticWarmUp();
+    // 震动（0.1.31）：改成 AudioToolbox 的系统声音振动（见文件顶部），
+    // 不再需要常驻生成器 / 预热；这个定时器只剩 2 秒一次的外观巡检。
+    // 顺手把符号先加载一次，第一下震动不用等 dlopen。
+    FBLoadVibrateSymbol();
     [NSTimer scheduledTimerWithTimeInterval:2.0
                                      target:self
-                                   selector:@selector(warmHaptics)
+                                   selector:@selector(pollTimerTick)
                                    userInfo:nil
                                     repeats:YES];
 

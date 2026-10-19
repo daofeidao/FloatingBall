@@ -715,7 +715,23 @@ send([r"...\FloatingBall.tipa"],
 | 0.1.28 | 2026-10-19 | GitHub Release `v0.1.28` + 邮件已发（to sz202610@126.com / cc lion.2026.10@proton.me，附件 430.4 KB，本地 `D:\wb\downloads\FloatingBall-0.1.28\FloatingBall.tipa`）。推翻 0.1.27 错误改动 + 删锁存抬起信号修「松手后再点接不到」 | 440,765 | `a4b14fe3f8d7eb61011a2f47e0dafeba575df213321eedba46b00b1e567a3299` |
 | 0.1.29 | 2026-10-19 | ⚠️ 构建成功（CI run 39261783942 / Release v0.1.29）但**未交付**，被 0.1.30 取代（用户随后补充了「全局点击反馈」的现象） | — | — |
 | 0.1.30 | 2026-10-19 | `E:\下载\FloatingBall_0.1.30.tipa`（邮件已发，to sz202610@126.com / cc lion.2026.10@proton.me） | 444,089 | `ed47e9e8` |
+| 0.1.31 | 2026-10-19 | `E:\下载\FloatingBall_0.1.31.tipa`（邮件已发，to sz202610@126.com / cc lion.2026.10@proton.me） | @@BYTES31@@ | `@@SHA31@@` |
 
+- 0.1.31：**震动换路**（用户 0.1.30 真机反馈：「点击的这个震动…强度设定和它这个并没有起作用」）。
+  根因：HUD 是 `posix_spawn` 出来的后台 root 进程，`UIImpactFeedbackGenerator` 的 Taptic
+  反馈**只在前台 App 有效** —— 后台进程调它系统直接吞掉（0.1.16 自喂测试「手势成功、计数 +1、
+  没震感」就是这条；当时记成「震动没救」，其实是用错了 API）。既然压根没震，强度滑块自然没作用。
+  改法：`BallRootViewController.mm` 的震动全部改走 AudioToolbox 的**系统声音**通路 ——
+  `dlsym` 取 `AudioServicesPlaySystemSoundWithVibration`（私有，不在公开头文件里），
+  传 `@{@"VibePattern": @[@YES, @40], @"Intensity": @(设置里的 0.2~1.0)}`；
+  取不到符号就退回 `AudioServicesPlaySystemSound(kSystemSoundID_Vibrate)`（固定强度，至少能震）。
+  为什么这条路行：走的是系统声音服务，不需要前台、不需要音频会话，root 守护进程也能震
+  （越狱环境的 `vibrate` 命令行就是同一个调用）。`Makefile` 的 FRAMEWORKS 加了 AudioToolbox。
+  顺带：每次震动前 `reloadHapticPrefs` 从磁盘重读「开关 + 强度」（root 守护进程收不到 App 的
+  Darwin 通知，原来拖完滑块球那边读的是旧值 —— 这也是一半的「设定没起作用」）；
+  删掉常驻生成器 + 2 秒预热（`FBHapticWarmUp` 不存在了），2 秒定时器只剩外观巡检
+  （`warmHaptics` 改名 `pollTimerTick`）。球「缩一下」的 `pressFeedback` 保留（无系统服务依赖）。
+  版本 0.1.31 / build 32。⚠️ 待真机验：按球有没有震感、强度滑块从 0.2 拉到 1.0 差别明不明显。
 - 0.1.25：基于用户 0.1.24 最新代码（`origin/main` = `a8f0e06`）出的一行修复：
   **`sLastFedPoint = winPt` → `= feedPt`**（`src/hud/HUDApp.mm`）。
   根因：0.1.17 起的「坐标不可信就沿用上一帧」靠 `sLastFedPoint` 续命，但存的是
@@ -886,6 +902,9 @@ send([r"...\FloatingBall.tipa"],
   · **跳左上角**：空坐标 (0,0) 事件不当移动（检测层判 bogusPoint、onPan 里也挡）。
   · **震动真相**：HUD 是**后台进程**，`UIImpactFeedbackGenerator` 的震动被系统吞掉
     （自喂测试手势成功、计数 +1，但没震感）→ 加 `pressFeedback`（球缩一下，纯 transform）。
+    ⚠️ **0.1.31 更正**：不是「后台进程就没法震」，是**用错了 API** —— `UIImpactFeedbackGenerator`
+    只在前台有效；换成 `AudioServicesPlaySystemSoundWithVibration`（系统声音服务）之后真机上有震感，
+    而且 `Intensity` 参数可调，强度滑块这时才真的生效。
   · **外观失效**：球每 2 秒比对 plist/贴图 mtime，变了就重新应用（不依赖通知）；
     新写 `/tmp/FloatingBall.style`，「关于」页加**外观诊断** + 「重新应用外观」。
   核对 `ref/verify_0.1.16.py` 全绿（10 项），正文 `ref/mail_0.1.16_body.txt`。

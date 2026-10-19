@@ -728,16 +728,13 @@ BOOL FBGoBack(CGRect ballRectOnScreen)
 // 的二进制调它的单例，后果不可控；要么模拟「电源 + 音量加」，网上没有一条
 // 「iOS 15.6.1 上确定可用」的配方）。这一版两条都做了，但**顺序和安全等级不同**：
 //
-// ① `ScreenshotServices` —— 系统自己的截图服务（**优先走这条**）
-//    iOS 11 起截图能力从 SpringBoard 搬进了这个私有 framework。SpringBoard 自己的
-//    `-takeScreenshotAndEdit:` 和辅助触控的「截屏」都是调它（Apple Wiki 上有反编译）：
-//      · `SSScreenCaptureAbilityCheck`        +isAbleToTakeScreenshots（能不能截）
-//      · `SSScreenCapturer`                   -takeScreenshotWithPresentationOptions:
-//      · `SSScreenCapturerPresentationOptions` -setPresentationMode:(BOOL)  （NO = 只保存）
-//    **不注入任何输入** → 没有「卡住一个按键/一根手指」的风险，所以优先走它。
-//    ⚠️ 私有类一律 dlopen + NSClassFromString 字符串取（和本文件其它地方一个规矩），
-//       取不到就退到 ②；整个过程包在 @try 里：真抛异常也只影响我们自己这个进程
-//       （球进程崩了 = 球消失，去 App 把开关关一下再打开就回来了，不动系统）。
+// ① `AXSpringBoardServer`（AccessibilityUtilities）—— **让 SpringBoard 自己截**（优先走这条）
+//    辅助触控的「截屏」就是这条 XPC。ent.plist 里本来就有 `com.apple.accessibility.api`
+//    和 `com.apple.accessibility.AXSpringBoardServer` 的 mach-lookup，所以它能连上。
+//    **不注入输入、也不在本进程里做截图** → 不会卡键，也不会把 HUD 弄崩。
+//    ⚠️ 0.1.32 及以前走的是 `ScreenshotServices` 的 `SSScreenCapturer`；
+//       用户实测「点截屏球就没了」—— 那是 SpringBoard 内部的类，在别的进程里实例化会崩。
+//       这条路已整段删除，别再拿回来。
 //
 // ② 注入「音量加 + 电源」组合键 —— iOS 的截图快捷键（兜底）
 //    用法号有权威依据（Apple Wiki 的 iPhone 按钮 HID 表：iPhoneOS 的按键就是键盘事件）：
@@ -776,69 +773,64 @@ static NSString *FBShotClassProbe(void)
     return found.count ? [found componentsJoinedByString:@"、"] : @"（一个都没找到）";
 }
 
-/// ① 系统截图服务。YES = 请求已经交出去；NO = 这条路走不通，交给 ②。
-/// 返回值：1 = 截成了；0 = 这条路不可用（**可以**降级到按键注入）；
-///         2 = **系统策略禁止**（屏幕使用时间之类）—— 这种情况**绝不降级**。
+/// ① AXSpringBoardServer：让 **SpringBoard 自己**截（0.1.33 起的新主路）
 ///
-/// ⚠️ 0.1.19：原来返回 BOOL，「系统说现在不允许截屏」和「服务不可用」都返回 NO，
-///    而 FBTakeScreenshot 是 `if (ViaService()) return 1; if (ViaHID()) return 2;` ——
-///    于是「不硬来」那句注释和实际控制流**正好相反**：被策略禁止时反而掉进
-///    按键注入那条更危险的兜底。屏幕使用时间这个安全限制形同虚设。
-///    现在把「策略禁止」单独用 2 标出来，调用方见到就到此为止。
-static int FBScreenshotViaService(void)
+/// 为什么不再用 ScreenshotServices：
+///   用户 0.1.32 实测「点截屏 → 小白点直接没了，再也不出来」—— 球是 HUD 进程画的，
+///   球没了 = HUD 进程死了。`SSScreenCapturer` 是 SpringBoard 内部用的东西，
+///   Apple Wiki 的反编译里它挂在 SpringBoard 的单例上；我们在自己的进程里
+///   `[[SSScreenCapturer alloc] init]` 拿到的对象多半没初始化好，一调就崩。
+///   这条路**已经被真机证伪，整段删掉**（不是降级，是删掉）。
+///
+/// 现在改走辅助触控「截屏」用的同一条 XPC：
+///   `AXSpringBoardServer`（AccessibilityUtilities.framework）的 `-takeScreenshot`
+///   —— 请求发给 SpringBoard，图由 SpringBoard 存进相册，我们进程里什么都不碰。
+///   ent.plist 里早就有它要的两样东西：
+///     `com.apple.accessibility.api` + mach-lookup `com.apple.accessibility.AXSpringBoardServer`
+///
+/// 返回值：1 = 请求已交出（正常情况截图成功）；0 = 这条路不可用（交给按键注入）
+static int FBScreenshotViaAX(void)
 {
     static void *handle = NULL;
     static dispatch_once_t once;
     dispatch_once(&once, ^{
-        handle = dlopen("/System/Library/PrivateFrameworks/ScreenshotServices.framework/ScreenshotServices",
+        handle = dlopen("/System/Library/PrivateFrameworks/AccessibilityUtilities.framework/AccessibilityUtilities",
                         RTLD_NOW);
         if (!handle) {
-            FBLog(@"截屏：打不开 ScreenshotServices（%s）—— 走按键注入那条兜底", dlerror() ?: "?");
+            FBLog(@"截屏：打不开 AccessibilityUtilities（%s）—— 走按键注入那条兜底", dlerror() ?: "?");
         }
     });
-    if (!handle) return 0;   // 可降级
+    if (!handle) return 0;
 
-    // 能不能截：开了「屏幕使用时间」之类的限制时，系统自己会拒绝
-    Class ability = NSClassFromString(@"SSScreenCaptureAbilityCheck");
-    if (ability && [ability respondsToSelector:@selector(isAbleToTakeScreenshots)]) {
-        BOOL (*ableFn)(id, SEL) = (BOOL (*)(id, SEL))objc_msgSend;
-        if (!ableFn(ability, @selector(isAbleToTakeScreenshots))) {
-            FBLog(@"截屏：系统说现在不允许截屏（SSScreenCaptureAbilityCheck = NO，"
-                  @"常见原因是开了「屏幕使用时间」的限制）—— 不硬来，也不降级到按键注入");
-            return 2;   // ← 策略禁止：不是「这条路不好使」，是「这件事被禁止了」
-        }
-    }
-
-    Class optionsCls = NSClassFromString(@"SSScreenCapturerPresentationOptions");
-    Class capturerCls = NSClassFromString(@"SSScreenCapturer");
-    if (!optionsCls || !capturerCls) {
-        FBLog(@"截屏：ScreenshotServices 里没找到 SSScreenCapturer / …Options（这套系统里实际有：%@）",
-              FBShotClassProbe());
-        return 0;   // 可降级
+    Class cls = NSClassFromString(@"AXSpringBoardServer");
+    if (!cls) {
+        FBLog(@"截屏：这套系统里没有 AXSpringBoardServer —— 走按键注入");
+        return 0;
     }
 
     @try {
-        id options = [[optionsCls alloc] init];
-        SEL setMode = NSSelectorFromString(@"setPresentationMode:");
-        if ([options respondsToSelector:setMode]) {
-            // NO = 截完直接存相册，不弹编辑界面
-            ((void (*)(id, SEL, BOOL))objc_msgSend)(options, setMode, (BOOL)NO);
+        id server = ((id (*)(id, SEL))objc_msgSend)(cls, @selector(server));
+        if (!server) {
+            FBLog(@"截屏：AXSpringBoardServer +server 返回 nil —— 走按键注入");
+            return 0;
         }
-
-        id capturer = [[capturerCls alloc] init];
-        SEL take = NSSelectorFromString(@"takeScreenshotWithPresentationOptions:");
-        if (![capturer respondsToSelector:take]) {
-            FBLog(@"截屏：SSScreenCapturer 不认 takeScreenshotWithPresentationOptions: —— 走按键注入");
-            return 0;   // 可降级
+        SEL take = @selector(takeScreenshot);
+        if (![server respondsToSelector:take]) {
+            FBLog(@"截屏：AXSpringBoardServer 不认 takeScreenshot —— 走按键注入");
+            return 0;
         }
-        ((void (*)(id, SEL, id))objc_msgSend)(capturer, take, options);
+        ((void (*)(id, SEL))objc_msgSend)(server, take);
     } @catch (NSException *e) {
-        FBLog(@"⚠️ 截屏：系统截图服务抛异常（%@）—— 改走按键注入", e.reason);
-        return 0;   // 可降级
+        FBLog(@"⚠️ 截屏：AXSpringBoardServer 抛异常（%@）—— 走按键注入", e.reason);
+        return 0;
     }
 
-    FBLog(@"截屏：走系统截图服务（ScreenshotServices）—— 画面会闪一下、图进「相册 → 截屏」");
-    return 1;   // 成功
+    FBLog(@"截屏：已把请求交给 SpringBoard（AXSpringBoardServer takeScreenshot）"
+          @"—— 画面会闪一下、图进「相册 → 截屏」");
+
+    // 顺便记一行系统里实际有哪些截图相关类，下一版排查方便
+    FBLog(@"截屏：本机截图相关类 = %@", FBShotClassProbe());
+    return 1;
 }
 
 /// 造一条「按键」事件（down/up）。返回 NULL = 造不出来 → 调用方必须整体放弃。
@@ -960,9 +952,31 @@ static BOOL FBScreenshotViaHID(void)
 
 int FBTakeScreenshot(void)
 {
-    int viaService = FBScreenshotViaService();
-    if (viaService == 1) return 1;             // 系统截图服务，成功
-    if (viaService == 2) return 0;             // 策略禁止（屏幕使用时间）—— 到此为止，不硬来
-    if (FBScreenshotViaHID())     return 2;    // 服务不可用，才轮到按键注入兜底
-    return 0;
+    // 0.1.33：AX 那条走**后台队列** —— XPC 万一卡住也不能把球的主线程拖死。
+    // 失败（类不在 / 连不上 / 抛异常）再回主线程走按键注入。
+    static BOOL inFlight = NO;   // 只在主线程读写
+
+    if (inFlight) {
+        FBLog(@"截屏：上一次请求还没回来，这次先忽略（防连点堆一串 XPC）");
+        return 0;
+    }
+    inFlight = YES;
+
+    // 正常的 XPC 往返是毫秒级；2.5 秒还没回来就当它卡住了，允许再点
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(2.5 * NSEC_PER_SEC)),
+                   dispatch_get_main_queue(), ^{ inFlight = NO; });
+
+    dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+        int viaAX = FBScreenshotViaAX();
+        dispatch_async(dispatch_get_main_queue(), ^{
+            inFlight = NO;
+            if (viaAX == 1) return;
+            FBLog(@"截屏：SpringBoard 那条不通，改注入按键");
+            if (!FBScreenshotViaHID()) {
+                FBLog(@"截屏：两条路都没走通（原因看上面几行）");
+            }
+        });
+    });
+
+    return 1;   // 已发起（AX 优先，失败自动退按键）
 }

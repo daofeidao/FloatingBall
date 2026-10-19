@@ -717,6 +717,19 @@ send([r"...\FloatingBall.tipa"],
 | 0.1.30 | 2026-10-19 | `E:\下载\FloatingBall_0.1.30.tipa`（邮件已发，to sz202610@126.com / cc lion.2026.10@proton.me） | 444,089 | `ed47e9e8` |
 | 0.1.31 | 2026-10-19 | `E:\下载\FloatingBall_0.1.31.tipa`（邮件已发，to sz202610@126.com / cc lion.2026.10@proton.me） | 444,933 | `d9fceca0` |
 | 0.1.32 | 2026-10-19 | `E:\下载\FloatingBall_0.1.32.tipa`（邮件已发 22:57，to sz202610@126.com / cc lion.2026.10@proton.me，收件箱核验附件 432.7 KB / 整封 600.5 KB） | 443,054 | `dcacc8de` |
+| 0.1.33 | 2026-10-19 | `E:\下载\FloatingBall_0.1.33.tipa`（邮件已发，to sz202610@126.com / cc lion.2026.10@proton.me） | @@BYTES33@@ | `@@SHA33@@` |
+
+- 0.1.33：**截屏换路 + 不再把球弄没**（用户 0.1.32 真机反馈：「点击截屏，它会把小白点直接弄掉，不出现了」）。
+  根因：球消失 = HUD 进程死了。0.1.32 走的是 `ScreenshotServices` 的 `SSScreenCapturer`，
+  而 Apple Wiki 反编译的 `-takeScreenshotAndEdit:` 显示那是 **SpringBoard 单例上的成员**；
+  我们在自己的进程里 `[[SSScreenCapturer alloc] init]`，对象没初始化好，一调就崩（SIGSEGV，@try 抓不到）。
+  · 改法：删掉 ScreenshotServices 那整段（不是降级，是删掉），改走 **`AXSpringBoardServer` 的 `-takeScreenshot`**
+    （AccessibilityUtilities.framework）—— 辅助触控「截屏」用的同一条 XPC，让 SpringBoard 自己截。
+    进程里只发一条 XPC，不碰截图实现、不注入输入 → 崩的可能是"没有输出"，不会是"球没了"。
+    `ent.plist` 里本来就有 `com.apple.accessibility.api` 和 mach-lookup `com.apple.accessibility.AXSpringBoardServer`，
+    不需要新增权限。
+  · 兜底仍是「音量加 + 电源」按键注入（`FBScreenshotViaHID`），只有 AX 类取不到才走。
+  · 版本 0.1.33 / build 34。⚠️ 待真机验：点「截屏」① 球还在吗 ② 相册里有没有新截图。
 
 - 0.1.32：**手势区搬家**（用户要求「把手势的菜单选项挪到快捷菜单这一栏」；问过一轮，确认是「整个手势区搬过去」）。
   · `LaunchTab.swift`：删掉「手势」Section + `gestureRow` / `setGesture` + `gestures` / `shortcutItems` 两个 State 和 `refresh()` 里的加载（这些只给手势用）。

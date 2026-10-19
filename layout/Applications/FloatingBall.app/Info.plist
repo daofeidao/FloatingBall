@@ -11,9 +11,9 @@
 	<key>CFBundleExecutable</key>
 	<string>FloatingBall</string>
 	<key>CFBundleVersion</key>
-	<string>31</string>
+	<string>32</string>
 	<key>CFBundleShortVersionString</key>
-	<string>0.1.30</string>
+	<string>0.1.31</string>
 	<key>CFBundlePackageType</key>
 	<string>APPL</string>
 	<key>CFBundleInfoDictionaryVersion</key>

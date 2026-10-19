@@ -149,8 +149,7 @@ static int    sProbeDeepUp     = 0;  // 深读说「没手指」（touch=0 且 r
 static int    sProbeDeepNone   = 0;  // 深读什么都没读到（这条事件上没有手指信息）
 static NSTimeInterval sLastFedAt = 0; // 最近一次喂球的时间（「抬起没送到」的兜底用）
 static CGPoint sLastFedPoint = CGPointZero;  // 最近一次喂球的窗口坐标（兜底补「抬起」要用同一个点）
-static BOOL   sHIDSawTouch    = NO;  // 本次运行里深读真见过「有手指」——之后才信它的「没手指」
-static BOOL   sSawInRange     = NO;  // 本次运行里 AX 的 isInRange 真为过 YES——之后才信它的 NO
+static BOOL   sHIDSawTouch    = NO;  // 本次运行里深读真见过「有手指」——upNow 的兜底仍会读它
 static BOOL   sSawLiftSignal  = NO;  // 收到过任何一种「抬起」信号（决定超时兜底用 1.2s 还是 0.55s）
 static NSString *sLastEndReason = @"（还没结束过）";   // 上一次触摸是怎么结束的（写进诊断）
 static NSUInteger sFeedGeneration = 0;   // 喂球代次：定时兜底只看最新一代（0.1.16）
@@ -201,9 +200,9 @@ BOOL gFBBlindFeed = NO;
 /// 活跃触摸来源：0 = 还没定，1 = 路A（BKS 回调），2 = 路B（监视客户端）
 static int gHIDActiveRoute = 0;
 
-// 0.1.27：NO 模式下「是否退回合成兜底」的状态（详见 FBHandleHIDEvent 顶部的总开关说明）。
-static BOOL           sForceSynthetic     = NO;  // 已退回合成兜底（session 内不再翻回）
-static NSTimeInterval sCaptureEnteredAt   = 0;   // 进入「NO 模式观察期」的时刻
+// 0.1.27→0.1.28：原「是否退回合成兜底」的状态已随早退逻辑整段删除；
+// sForceSynthetic 仍保留给诊断（FBProbeWrite）显示，不再参与判定。
+static BOOL sForceSynthetic = NO;  // 诊断用：是否曾退回合成兜底（0.1.28 起恒为 NO）
 
 static void FBProbeWrite(BOOL force)
 {
@@ -427,35 +426,13 @@ static void FBHandleHIDEvent(int route, void *target, void *refcon, IOHIDService
     // ⚠️ 这里不会做任何加载（预热在启动时做过了），见 FBSystemActions.mm。
     FBHIDNoteRealEvent(event);
 
-    // 0.1.27：真触摸优先、合成触摸兜底（彻底修「第一次能拖、松手后再点接不到」）。
-    //   详见文件顶部那段说明。下面这段就是「要不要喂合成触摸」的总开关：
-    //     · `_ignoresHitTest` = YES（穿透）→ 系统不派发真触摸 → 喂合成兜底。
-    //     · `_ignoresHitTest` = NO（吃掉）→ 系统把真触摸派给球 → 别喂合成，让球自己吃真触摸。
-    //   保险（只在 NO 模式）：若用户确实在触摸（sProbeCallbacks 明显增长）但系统从没把真触摸
-    //        派到球上（sProbeHitBall 一直为 0，说明这台设备不派发真触摸），才退回合成兜底——
-    //        且此时系统不会派真触摸，喂合成不会「真+假双触」，安全。一旦 sProbeHitBall>0 就确认
-    //        真触摸、永久走真触摸路线，绝不回头（避免双触）。
-    {
-        NSTimeInterval now = [NSDate timeIntervalSinceReferenceDate];
-        BOOL passThrough = [HUDMainWindow fb_passThrough];
-        if (!passThrough && !sForceSynthetic) {
-            if (sProbeHitBall > 0) {
-                return;   // 系统已把真触摸派到球上 → 真触摸路线确认，不喂合成
-            }
-            if (sCaptureEnteredAt == 0) sCaptureEnteredAt = now;
-            if (now - sCaptureEnteredAt > 5.0) {
-                if (sProbeCallbacks > 20) {
-                    sForceSynthetic = YES;   // 真触摸始终没来（且用户在触摸）→ 退回合成兜底
-                    FBLog(@"0.1.27：观察 5 秒、用户有触摸(回调=%d)但落球=0，退回合成兜底",
-                          sProbeCallbacks);
-                } else {
-                    sCaptureEnteredAt = now;   // 用户这 5 秒没怎么触摸 → 继续等（滑动窗口）
-                    return;
-                }
-            }
-            return;   // 观察期内，先不喂合成，等真触摸
-        }
-    }
+    // 0.1.28：推翻 0.1.27 的「真触摸优先 / 合成兜底」整段逻辑（下面那段已删）。
+    // 原因：后台巨魔 App 收不到系统派发的真触摸 —— 0.1.19 自检「窗口问=0」已坐实，
+    // 0.1.27 把合成一刀切掉后整版拖不动，是二次证据。TheBall 同样是后台巨魔 App，
+    // 它也不是靠系统派发，而是自己监听 HID + 合成 UITouch 喂给自己的窗口。
+    // 所以 FloatingBall 唯一能用的就是合成路线：**永远喂合成触摸**，不再做「等真触摸」的早退。
+    // （`fb_passThrough` 现在只服务于窗口的 `_ignoresHitTest`，不再用于节流合成。）
+    // 后台巨魔 App 收不到系统派发的真触摸，合成路线是唯一能用的，永远喂合成。
 
     // iOS 15.1+ 用 AXRuntime 那条路处理 HID 事件
     if (@available(iOS 15.1, *)) {}
@@ -767,20 +744,17 @@ static void FBHandleHIDEvent(int route, void *target, void *refcon, IOHIDService
         if (takeOverArea) hit = [window hitTest:winPt withEvent:nil];
         UIView *feedView = (hit && hit != window) ? hit : ball;
 
-        // ---- 「抬起」判据 ----
-        //   · AX 明说 lift / cancel / inRangeLift → 认
-        //   · 底层说 Touch=0 且 Range=0 → **只有本次运行里真见过 Touch=1** 才认
-        //     （字段读不到时一直是 0，不能让「读不到」被当成「没手指」——0.1.11 的死法）
-        // ⚠️ 0.1.15：这两个只用来**结束**，不再用来阻止「起手」。
-        //    0.1.14 把它们也塞进起手条件后，只要 AX 的某个标志在真机上恒为真，
-        //    球就永远起不来 —— 起手不该被「抬起」信号否决。
-        BOOL hidUp = hidOK && (hidTouch == 0 && hidRange == 0);
-        if (hidOK && (hidTouch == 1 || hidRange == 1)) sHIDSawTouch = YES;
-        // AX 的 isInRange：手指在感应范围内。只有**真见过它变成 yes** 之后才敢用它的 no 当抬起。
-        if (axInRange) sSawInRange = YES;
-        BOOL lifted = axLift || axCancel || axInRangeLift
-                   || (sSawInRange && !axInRange)
-                   || (sHIDSawTouch && hidUp);
+        // ---- 「抬起」判据（0.1.28 重做）----
+        //   · 只认 AX 明说的三个信号：lift / cancel / inRangeLift。
+        //   · **删掉** 0.1.15 加的两个兜底：`(sSawInRange && !axInRange)` 和 `(sHIDSawTouch && hidUp)`。
+        //     它们是本机「松手后再点接不到」的真凶：`sSawInRange` / `sHIDSawTouch` 一旦见过就
+        //     **永久锁存、从不复位**；而本机底层深读 (hidTouch/hidRange) 经常读不到、恒为 0，
+        //     `axInRange` 在移动中也会抖一下变 NO。于是第一下能拖（锁存还没触发），松手后锁存，
+        //     第二下刚按下、下一帧深读又读到 0 → 立刻判抬起 → 球永远接不到。
+        //   · 漏掉的抬起靠下面的 0.18s 定时器 + 断档 + 超时兜底（0.1.17 已经这么干，
+        //     第一下靠它也能正常结束），本机按住不动时事件流仍持续，不会误杀长按。
+        //   · 深读字段 (hidTouch/hidRange) 仍用于「起手」判定（beganSignal），那条路不受影响。
+        BOOL lifted = axLift || axCancel || axInRangeLift;
         if (lifted) sSawLiftSignal = YES;
 
         // 没有任何手指数据的「空事件」：坐标是 (0,0)，或者换算后跑到屏幕外面去了。

@@ -717,7 +717,7 @@ send([r"...\FloatingBall.tipa"],
 | 0.1.30 | 2026-10-19 | `E:\下载\FloatingBall_0.1.30.tipa`（邮件已发，to sz202610@126.com / cc lion.2026.10@proton.me） | 444,089 | `ed47e9e8` |
 | 0.1.31 | 2026-10-19 | `E:\下载\FloatingBall_0.1.31.tipa`（邮件已发，to sz202610@126.com / cc lion.2026.10@proton.me） | 444,933 | `d9fceca0` |
 | 0.1.32 | 2026-10-19 | `E:\下载\FloatingBall_0.1.32.tipa`（邮件已发 22:57，to sz202610@126.com / cc lion.2026.10@proton.me，收件箱核验附件 432.7 KB / 整封 600.5 KB） | 443,054 | `dcacc8de` |
-| 0.1.33 | 2026-10-19 | `E:\下载\FloatingBall_0.1.33.tipa`（邮件已发，to sz202610@126.com / cc lion.2026.10@proton.me） | @@BYTES33@@ | `@@SHA33@@` |
+| 0.1.33 | 2026-10-19 | `E:\下载\FloatingBall_0.1.33.tipa`（邮件已发 23:19，to sz202610@126.com / cc lion.2026.10@proton.me，收件箱核验附件 432.8 KB / 整封 599.2 KB） | 443,201 | `6ee46a15` |
 
 - 0.1.33：**截屏换路 + 不再把球弄没**（用户 0.1.32 真机反馈：「点击截屏，它会把小白点直接弄掉，不出现了」）。
   根因：球消失 = HUD 进程死了。0.1.32 走的是 `ScreenshotServices` 的 `SSScreenCapturer`，

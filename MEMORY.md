@@ -715,7 +715,7 @@ send([r"...\FloatingBall.tipa"],
 | 0.1.28 | 2026-10-19 | GitHub Release `v0.1.28` + 邮件已发（to sz202610@126.com / cc lion.2026.10@proton.me，附件 430.4 KB，本地 `D:\wb\downloads\FloatingBall-0.1.28\FloatingBall.tipa`）。推翻 0.1.27 错误改动 + 删锁存抬起信号修「松手后再点接不到」 | 440,765 | `a4b14fe3f8d7eb61011a2f47e0dafeba575df213321eedba46b00b1e567a3299` |
 | 0.1.29 | 2026-10-19 | ⚠️ 构建成功（CI run 39261783942 / Release v0.1.29）但**未交付**，被 0.1.30 取代（用户随后补充了「全局点击反馈」的现象） | — | — |
 | 0.1.30 | 2026-10-19 | `E:\下载\FloatingBall_0.1.30.tipa`（邮件已发，to sz202610@126.com / cc lion.2026.10@proton.me） | 444,089 | `ed47e9e8` |
-| 0.1.31 | 2026-10-19 | `E:\下载\FloatingBall_0.1.31.tipa`（邮件已发，to sz202610@126.com / cc lion.2026.10@proton.me） | @@BYTES31@@ | `@@SHA31@@` |
+| 0.1.31 | 2026-10-19 | `E:\下载\FloatingBall_0.1.31.tipa`（邮件已发，to sz202610@126.com / cc lion.2026.10@proton.me） | 444,933 | `d9fceca0` |
 
 - 0.1.31：**震动换路**（用户 0.1.30 真机反馈：「点击的这个震动…强度设定和它这个并没有起作用」）。
   根因：HUD 是 `posix_spawn` 出来的后台 root 进程，`UIImpactFeedbackGenerator` 的 Taptic

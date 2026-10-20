@@ -753,6 +753,7 @@ send([r"...\FloatingBall.tipa"],
 | 0.1.36 | 2026-10-20 | `E:\下载\FloatingBall_0.1.36.tipa`（邮件已发 00:35，to sz202610@126.com / cc lion.2026.10@proton.me，收件箱核验附件 449.4 KB / 整封 622.9 KB） | 460,174 | `aa41acaa` |
 | 0.1.37 | 2026-10-20 | `E:\下载\FloatingBall_0.1.37.tipa`（邮件已发 01:00，to sz202610@126.com / cc lion.2026.10@proton.me，收件箱核验附件 450.1 KB / 整封 623.4 KB） | 460,907 | `42a3143e` |
 | 0.1.38 | 2026-10-20 | `E:\下载\FloatingBall_0.1.38.tipa`（邮件已发 02:18，to sz202610@126.com / cc lion.2026.10@proton.me，收件箱核验附件 507.3 KB / 整封 708.0 KB） | 519,492 | `98ccc0c9` |
+| 0.1.39 | 2026-10-21 | `E:\下载\FloatingBall_0.1.39.tipa`（邮件已发 00:12，to sz202610@126.com / cc lion.2026.10@proton.me，已发送箱核验附件 508.7 KB / 整封 705.6 KB）。全局返回补 `kIOHIDDigitizerEventFromEdgeTip` 边缘位 | 520,900 | `e6be10f6` |
 
 - 0.1.38（用户 2026-10-20 一次提的五件事）：
   · ① **震动改成「只在按下去那一下」**（用户原话：「有手点下去震一下，抬起来不震」）。

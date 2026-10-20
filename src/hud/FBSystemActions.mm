@@ -223,6 +223,18 @@ typedef struct __IOHIDEventSystemClient *IOHIDEventSystemClientRef;
 #define FBHIDDigitizerEventRange        (1u << 0)
 #define FBHIDDigitizerEventTouch        (1u << 1)
 #define FBHIDDigitizerEventPosition     (1u << 2)
+
+// ⚠️ 0.1.39（全局返回的根因）：这是**官方事件掩码位**，在 IOHIDEventTypes.h 的
+//    IOHIDDigitizerEventMask 枚举里，不是「按字节偏移往对象里硬写」那种改法。
+//    真机的触摸固件会把「从屏幕边缘 3mm 内起手」的手指**整段事件**都标上这一位
+//    （依据：dipa-studio/ios-sweet 里还原 Apple 触摸固件行为的补丁 0071 ——
+//     `mask = fEdge[i] ? kIOHIDDigitizerEventFromEdgeTip : 0`，注释还写明
+//     「UIKit derives UITouch's edge type from that bit (_UIEventHIDTouchEdgeTypeForHIDEvent);
+//       without it there is no home or app-switcher gesture」）。
+//    也就是说：**没有这一位，UIScreenEdgePanGestureRecognizer（返回手势）根本不认**，
+//    我们注入的划动只会被当成普通横向滑动 —— 0.1.22 用户看到的「像在左右滑动切换」
+//    就是这个原因，当时改速度只治了表象。
+#define FBHIDDigitizerEventFromEdgeTip  (1u << 11)   // 0x800 = 从屏幕边缘起手
 #define FBHIDEventTypeDigitizer         11u
 
 // 我们注入的手指：index 0 留给真手指，我们用 1；identity 固定 3
@@ -263,6 +275,10 @@ static FBGetSenderIDFn          fbGetSenderID          = NULL;
 static FBGetIntValueFn          fbGetIntegerValue      = NULL;   // 读事件字段（触摸自检要靠它）
 
 static IOHIDEventSystemClientRef fbHIDClient = NULL;
+
+/// 当前最前面 App 的 bundle id（实现在文件后半段）。
+/// 全局返回里只用来写日志：能一眼看出「在桌面上划」这种注定没反应的情况。
+static NSString *FBFrontmostBundleID(void);
 
 /// 真机那一路的 sender ID（学到才敢注入；见 FBHIDNoteRealEvent）
 static uint64_t gFBRealSenderID = 0;
@@ -530,8 +546,11 @@ void FBHIDNoteRealEvent(void *hidEvent)
 
 /// 造一个「父事件 + 一个手指子事件」的两层事件。
 /// phase：0 = 按下，1 = 移动，2 = 抬起。坐标是**归一化 0~1**。
+/// fromEdge：YES = 这段手势要当「从屏幕边缘起手」的（返回手势必需，见上面的
+///           FBHIDDigitizerEventFromEdgeTip 注释）。真机固件是**整段都带**这一位，
+///           不是只有按下那一条 —— 所以 down / move / up 三个 phase 一起带。
 /// 返回的事件由调用方 CFRelease；返回 NULL 表示造不出来 —— 调用方必须**整体放弃**。
-static IOHIDEventRef FBMakeTouchEvent(int phase, double nx, double ny)
+static IOHIDEventRef FBMakeTouchEvent(int phase, double nx, double ny, BOOL fromEdge)
 {
     uint64_t ts = mach_absolute_time();
 
@@ -548,6 +567,10 @@ static IOHIDEventRef FBMakeTouchEvent(int phase, double nx, double ny)
     else if (phase == 1) { mask = FBHIDDigitizerEventPosition;                        range = 1; touch = 1; }
     else                 { mask = FBHIDDigitizerEventTouch;                           range = 0; touch = 0; }
 
+    // 0.1.39：边缘标记挂在**手指子事件**上（UIKit 就是从这里读 edgeType 的）
+    const uint32_t edgeBit = fromEdge ? FBHIDDigitizerEventFromEdgeTip : 0u;
+    mask |= edgeBit;
+
     IOHIDEventRef finger = fbCreateFingerEvent(kCFAllocatorDefault, ts,
                                                FBHIDInjectFingerIndex, FBHIDInjectFingerIdentity,
                                                mask, nx, ny, 0, 0, 0, range, touch, 0);
@@ -560,17 +583,18 @@ static IOHIDEventRef FBMakeTouchEvent(int phase, double nx, double ny)
     fbAppendEvent(parent, finger);
     CFRelease(finger);
 
-    // 父事件上的汇总字段（配方里就是固定填这三个）
-    fbSetInt(parent, FBHIDFieldDigitizerEventMask, 0x23);
+    // 父事件上的汇总字段（配方里就是固定填这三个；0.1.39 起 EventMask 再 OR 上边缘位，
+    // 真机固件也是「父事件的 EventMask 汇总子事件」）
+    fbSetInt(parent, FBHIDFieldDigitizerEventMask, 0x23 | (int)edgeBit);
     fbSetInt(parent, FBHIDFieldDigitizerRange, 1);
     fbSetInt(parent, FBHIDFieldDigitizerTouch, 1);
     return parent;
 }
 
-/// 只发一条「抬起」（兜底用）
-static void FBSendLoneUp(double nx, double ny)
+/// 只发一条「抬起」（兜底用）。fromEdge 要和这一整段手势保持一致。
+static void FBSendLoneUp(double nx, double ny, BOOL fromEdge)
 {
-    IOHIDEventRef ev = FBMakeTouchEvent(2, nx, ny);
+    IOHIDEventRef ev = FBMakeTouchEvent(2, nx, ny, fromEdge);
     if (!ev) return;
     fbSetSenderID(ev, gFBRealSenderID);
     fbDispatchHIDEvent(fbHIDClient, ev);
@@ -674,7 +698,7 @@ BOOL FBGoBack(CGRect ballRectOnScreen)
     for (int i = 0; i <= count; i++) {
         int pi = (i < count) ? i : count - 1;
         int phase = (i == 0) ? 0 : (i == count ? 2 : 1);
-        IOHIDEventRef probe = FBMakeTouchEvent(phase, xs[pi] / w, y / h);
+        IOHIDEventRef probe = FBMakeTouchEvent(phase, xs[pi] / w, y / h, YES);
         if (!probe) {
             FBLog(@"⚠️ 全局返回：试造第 %d 个事件就造不出来 → 整体放弃（一个都不发，避免卡住触摸）", i);
             return NO;
@@ -684,8 +708,15 @@ BOOL FBGoBack(CGRect ballRectOnScreen)
 
     // ---- ② 现造现发：每条事件的时间戳取自它自己被造出来的那一刻 ----
     gFBInjectCooldownUntil = now + 0.6;
-    FBLog(@"全局返回：开始注入（屏幕 %.0fx%.0f，落点 x=2→235 y=%.0f，球矩形=%@）",
-          w, h, y, NSStringFromCGRect(ballRectOnScreen));
+    NSString *front = FBFrontmostBundleID();
+    if (front && [front isEqualToString:@"com.apple.springboard"]) {
+        // 桌面 / App 切换器上划「左缘返回」本来就没事可退，先说明白，
+        // 免得用户以为又没生效（这条只写日志，不改行为）。
+        FBLog(@"全局返回：现在最前面是 SpringBoard（桌面 / 切换器），这里划了也没有上一页可退");
+    }
+    FBLog(@"全局返回：开始注入（最前面=%@，屏幕 %.0fx%.0f，落点 x=2→235 y=%.0f，"
+          @"边缘标记=FromEdgeTip(0x800) 已带上，球矩形=%@）",
+          front ?: @"（查不到）", w, h, y, NSStringFromCGRect(ballRectOnScreen));
     for (int i = 0; i <= count; i++) {
         int pi = (i < count) ? i : count - 1;
         int phase = (i == 0) ? 0 : (i == count ? 2 : 1);
@@ -699,10 +730,10 @@ BOOL FBGoBack(CGRect ballRectOnScreen)
         if (i == 1) usleep(kHoldMs * 1000);
         else if (i > 1) usleep(kStepMs * 1000);
 
-        IOHIDEventRef ev = FBMakeTouchEvent(phase, xs[pi] / w, y / h);
+        IOHIDEventRef ev = FBMakeTouchEvent(phase, xs[pi] / w, y / h, YES);
         if (!ev) {
             FBLog(@"⚠️ 全局返回：第 %d 个事件中途造不出来 —— 剩下的不发了，先补一条抬起", i);
-            FBSendLoneUp(xs[count - 1] / w, y / h);
+            FBSendLoneUp(xs[count - 1] / w, y / h, YES);
             return NO;
         }
         fbSetSenderID(ev, gFBRealSenderID);
@@ -717,7 +748,7 @@ BOOL FBGoBack(CGRect ballRectOnScreen)
     double ny = y / h;
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(500 * NSEC_PER_MSEC)),
                    dispatch_get_main_queue(), ^{
-        FBSendLoneUp(nx, ny);
+        FBSendLoneUp(nx, ny, YES);
     });
     return YES;
 }
@@ -759,8 +790,8 @@ static BOOL FBTapAtScreenPoint(CGPoint pt, CGSize screen)
     double ny = pt.y / screen.height;
 
     // 空跑预检：造不全就一个都不发（半串事件会让屏幕上留一根按着不放的手指）
-    IOHIDEventRef probeDown = FBMakeTouchEvent(0, nx, ny);
-    IOHIDEventRef probeUp   = FBMakeTouchEvent(2, nx, ny);
+    IOHIDEventRef probeDown = FBMakeTouchEvent(0, nx, ny, NO);
+    IOHIDEventRef probeUp   = FBMakeTouchEvent(2, nx, ny, NO);
     if (!probeDown || !probeUp) {
         if (probeDown) CFRelease(probeDown);
         if (probeUp) CFRelease(probeUp);
@@ -771,14 +802,16 @@ static BOOL FBTapAtScreenPoint(CGPoint pt, CGSize screen)
     CFRelease(probeUp);
 
     // 现造现发（时间戳才是「此刻」）
-    IOHIDEventRef down = FBMakeTouchEvent(0, nx, ny);
+    // ⚠️ 0.1.39：点击**不带**边缘位 —— 它的落点是屏幕中上部，
+    //    冒充「从边缘起手」会让系统的边缘手势系统误判。
+    IOHIDEventRef down = FBMakeTouchEvent(0, nx, ny, NO);
     if (down) {
         fbSetSenderID(down, gFBRealSenderID);
         fbDispatchHIDEvent(fbHIDClient, down);
         CFRelease(down);
     }
     usleep(60 * 1000);   // 按住 60ms：太短的话有些界面认不出这是「点击」
-    IOHIDEventRef up = FBMakeTouchEvent(2, nx, ny);
+    IOHIDEventRef up = FBMakeTouchEvent(2, nx, ny, NO);
     if (up) {
         fbSetSenderID(up, gFBRealSenderID);
         fbDispatchHIDEvent(fbHIDClient, up);

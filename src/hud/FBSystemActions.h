@@ -55,6 +55,11 @@ BOOL FBOpenURL(NSString *urlString);
 ///   落点会避开它 —— 不然球会把自己注入的划动当成「用户在拖它」（球乱跑，甚至自己触发自己）。
 /// - Returns: 有没有真的注进去。
 ///   取不到 HID 符号 / 还没学到真机 sender ID / 0.6 秒内刚划过一次 → 返回 NO，**什么都没做**。
+///
+/// ⚠️ 0.1.39：这串事件必须带 `kIOHIDDigitizerEventFromEdgeTip`（1 << 11）——
+///    没有这一位，UIKit 不把这个触点当成「从屏幕边缘起手」，
+///    `UIScreenEdgePanGestureRecognizer` 就不会认，划出去只会变成普通横向滑动。
+///    这是**官方事件掩码位**，不是按字节偏移写内存（原因见 .mm 里那段长注释）。
 BOOL FBGoBack(CGRect ballRectOnScreen);
 
 /// 【打开邮箱收件箱】（0.1.36，用户要求）

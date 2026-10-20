@@ -638,6 +638,20 @@ _CTServerConnectionResetModem(conn, CFSTR("UserTriggeredReload"))
       官方字段枚举没有 EdgeMask，属堆对象按偏移硬写，猜错 = 踩坏内存 = 球消失。
       理由已写进 0.1.38 的交付邮件（用户会看到）。
 
+- [ ] **0.1.39 待验（2026-10-21，本轮唯一改动：全局返回补上边缘标记位）**：
+      ① 把任意一个手势绑成「全局返回」→ 在「设置」二级页 / 微信二级页点球 →
+         页面应**退回上一级**（以前是「像左右滑动切换」或干脆没反应）。
+      ② 日志 `/tmp/FloatingBall.log` 里应能看到：
+         `全局返回：开始注入（最前面=…，屏幕 …，落点 …，边缘标记=FromEdgeTip(0x800) 已带上，球矩形=…）`
+         → `全局返回：注入完了（…）` → 约 500ms 后 `补发了一条「抬起」`。
+      ③ 如果**还是不返回**：把 ② 那几行原样发我，并说明是哪个 App 的哪个页面。
+         下一轮候选（按优先级）：
+         · `FromEdgeTip` 再加/换成 `FromEdgeFlat`（`1<<10`，`0x400`）；
+         · 起手点更贴边（现在 `xs[0]=1.0pt`）；
+         · 先按住的时间 70ms → 100ms。
+         ⚠️ 有些页面本来就没有「上一页」（桌面、根页面、相机等），那不是失败。
+      ④ 顺带确认「打开邮箱收件箱」还灵（它内部也走 `FBGoBack`，会自动受益）。
+
 - [ ] 顺带把 `E:\文档\默认项目\MEMORY.md` 里两条过时信息更正：
       ① 「persona root spawn 是线索未证实」→ Helium/TheBall 都在生产用；
       ② 它指向的 `E:\文档\Helium\MEMORY.md` **并不存在**。
@@ -1324,6 +1338,30 @@ send([r"...\FloatingBall.tipa"],
 ## 十、系统级动作：全局返回（0.1.5 做了）/ 截屏（0.1.9 做了）/ 打开 URL（0.1.10 做了）
 
 ### 全局返回 —— 0.1.5 做了（2026-10-17 用户追加要求）
+
+#### ⚠️ 0.1.39（2026-10-21）**根因定案：缺 `FromEdgeTip` 边缘标记位**
+
+- 真机触摸固件会给「离屏幕边缘 3mm 内起手」的手指**整段事件**打上
+  `kIOHIDDigitizerEventFromEdgeTip`（`1u << 11` = `0x800`，
+  `IOHIDEventTypes.h` 里 `IOHIDDigitizerEventMask` 的**官方枚举**）。
+- UIKit 的 `_UIEventHIDTouchEdgeTypeForHIDEvent` 靠这一位决定 `UITouch` 的 edgeType，
+  而 `UIScreenEdgePanGestureRecognizer`（返回手势）只认带这一位的触点。
+  → 我们照 ZXTouch（iOS 11~14）的配方注入时**没有这一位**，
+  所以划动只会被当成普通横向滑动 —— **0.1.22 用户看到的「像在左右滑动切换」
+  就是这个原因**，当时把 2600pt/s 降到 810pt/s 只是让它不像 flick，身份仍然是错的。
+- 依据：`dipa-studio/ios-sweet` 的 `xnu/patches/0071-sweet-touch-edge.patch`
+  （还原 Apple 触摸固件行为）：`mask = fEdge[i] ? kIOHIDDigitizerEventFromEdgeTip : 0;`
+  注释原文「UIKit derives UITouch's edge type from that bit
+  (`_UIEventHIDTouchEdgeTypeForHIDEvent`); without it there is no home or app-switcher gesture」。
+- 改法：`FBMakeTouchEvent(phase, nx, ny, fromEdge)` 多一个参数；
+  `FBGoBack` 的 down / move / up **三个 phase 全带**（真机固件也是整段带），
+  父事件汇总 `EventMask` 一起 OR（`0x23 → 0x823`）；
+  `FBTapAtScreenPoint`（邮箱那一下点击）**不带**（落点在屏幕中间，冒充边缘会误判）。
+- ⚠️ 这是**官方掩码位**，走创建参数 / `IOHIDEventSetIntegerValue`，
+  **不是**「按字节偏移 0x3a 硬写堆对象」那种改法（0.1.38 邮件里拒绝过）。
+  → 不要因为「也是加边缘位」就把两者混为一谈。
+- 顺带：`FBGoBack` 注入前会写一行「最前面=…」（`FBFrontmostBundleID`），
+  在 SpringBoard（桌面 / 切换器）上会额外写一句「这里划了也没有上一页可退」。
 
 机制：**往系统里注入一次「从左缘往右划」的触摸**，效果 = 按了「上一页」。
 

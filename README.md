@@ -289,6 +289,26 @@ _CTServerConnectionResetModem(conn, CFSTR("UserTriggeredReload"))
 - ⚠️ 时间戳按 `uint64_t` 传（`mach_absolute_time()`）—— 他们那份私有头文件就是这么声明的；
   本仓库 KIF 那份老代码用的是老式 `AbsoluteTime` 结构体写法，**两套别混着抄**。
 
+#### 0.1.39：真正让它变成「返回」的是**边缘标记位**（这条是根因）
+
+ZXTouch 那份配方（iOS 11~14）**少一位**：真机触摸固件会把「离屏幕边缘 3mm 内起手」的手指
+**整段事件**都标上 `kIOHIDDigitizerEventFromEdgeTip`（`1 << 11`，`IOHIDEventTypes.h` 里的
+`IOHIDDigitizerEventMask` 官方枚举），UIKit 的 `_UIEventHIDTouchEdgeTypeForHIDEvent`
+就靠这一位决定 `UITouch` 的 edgeType；**没有它，`UIScreenEdgePanGestureRecognizer`
+（返回手势）压根不认这个触点** —— 我们注入的划动只会被当成普通横向滑动。
+
+这正是 0.1.22 用户看到的「**不像返回，更像某个界面在左右滑动切换**」：当时把速度从
+2600pt/s 降到 810pt/s 只是让它不至于被当成 flick，**身份仍然是错的**。
+
+- 0.1.39 起 down / move / up 三个 phase 的子事件都带这一位（真机固件也是整段带），
+  父事件的汇总 `EventMask` 也跟着 OR 上（`0x23 → 0x823`）。
+- ⚠️ 这是**官方掩码位**，通过 `IOHIDEventCreateDigitizerFingerEvent` 的参数 /
+  `IOHIDEventSetIntegerValue` 写，**不是**「按字节偏移往堆对象里硬写」那种改法
+  （0.1.38 交付邮件里拒绝过的那种）。依据：`dipa-studio/ios-sweet` 还原 Apple 触摸固件
+  行为的补丁 `0071-sweet-touch-edge.patch`。
+- ⚠️ 点击（`FBTapAtScreenPoint`）**不带**这一位：它的落点在屏幕中间，冒充「从边缘起手」
+  会让系统的边缘手势系统误判。
+
 **万一界面卡住点不动**：长按「电源 + 音量减」强制重启即可恢复
 （球不是开机自启的守护进程，重启就没了，不留残留）。
 
@@ -301,7 +321,7 @@ _CTServerConnectionResetModem(conn, CFSTR("UserTriggeredReload"))
 
 | 路 | 做法 | 风险 |
 |---|---|---|
-| ① `ScreenshotServices`（优先） | dlopen 这个私有 framework，用 `SSScreenCapturer` + `SSScreenCapturerPresentationOptions(setPresentationMode:NO)` 截一张、直接存相册；先用 `SSScreenCaptureAbilityCheck +isAbleToTakeScreenshots` 问系统允不允许 | **不注入任何输入** —— 没有「卡住一根手指 / 一个按键」的风险 |
+| ① `AXSpringBoardServer -takeScreenshot`（优先，0.1.33 起） | 让 **SpringBoard 自己截**（辅助触控「截屏」用的同一条 XPC），我们进程里只发一条消息。`ScreenshotServices` 那条 0.1.32 用过，会崩（球消失），已整段删除 | **不注入任何输入** —— 没有「卡住一根手指 / 一个按键」的风险 |
 | ② 注入「音量加 + 电源」组合键（兜底） | `IOHIDEventCreateKeyboardEvent`（consumer page `0x0C`，usage `0x30`=Lock / `0xE9`=VolumeUp），和全局返回同一套注入机制 | 和全局返回同级；电源只按 60ms，**万一没被认成组合键 → 结果只是锁屏**，解锁继续用，不丢东西 |
 
 为什么 ① 优先：iOS 11 起截图这套能力从 SpringBoard 搬进了 `ScreenshotServices`，
@@ -461,6 +481,7 @@ HUD 侧判断 `NSNumber` 在不在）—— 否则老版本升上来会突然变
 
 | 版本 | 内容 |
 |---|---|
+| 0.1.39 | **修「全局返回」：补上缺了很多版的「边缘标记位」**（用户 2026-10-20 要求「修正全局返回」）。真机触摸固件会把「从屏幕边缘 3mm 内起手」的手指整段事件都标上 `kIOHIDDigitizerEventFromEdgeTip`（`1 << 11`，`IOHIDEventTypes.h` 里的官方事件掩码），UIKit 的 `_UIEventHIDTouchEdgeTypeForHIDEvent` 靠它决定 `UITouch` 的 edgeType，而 `UIScreenEdgePanGestureRecognizer`（返回手势）只认带这一位的触点。我们照 ZXTouch 那份 iOS 11~14 的配方注射时**没有这一位**，所以划动一直被当成普通横向滑动（0.1.22 用户看到的「像在左右滑动切换」，当时改速度只治了表象）。现在 `FBMakeTouchEvent` 多一个 `fromEdge` 参数，全局返回的 down / move / up **整段**带边缘位（真机固件也是整段带），父事件汇总 `EventMask` 同步 `0x23 → 0x823`；`FBTapAtScreenPoint`（打开邮箱收件箱里那一下点击）**不带**，因为它的落点在屏幕中间。⚠️ 用的是官方掩码位（创建参数 + `IOHIDEventSetIntegerValue`），不是按字节偏移硬写内存。依据：`dipa-studio/ios-sweet` 的 `0071-sweet-touch-edge.patch`（还原 Apple 触摸固件行为）。日志新增 `边缘标记=FromEdgeTip(0x800) 已带上` 一行 |
 | 0.1.38 | **震动只在按下去那一下 + 修长按不执行 + 闲置淡化缩小 + 图标能选一块（留 3 张历史）+ 每页说明收成 `*`**（用户 2026-10-20 一次提的五件事）：① **震动**：删掉「拖动落位震一下」和「长按 0.5 秒补一下中档」，手势触发的动作统一走 `performGestureTargetKey:`（内部把 `_suppressGestureActionHaptic` 立起来，`haptic:` 直接返回）—— 于是单击震 1、双击震 2、长按震 1，全是「手指按下去的几下」；球上快捷菜单的项不是手势触发的，照旧有各自震动。② **长按不执行**：真因是 `HUDApp.mm` 那个 0.18 秒「抬起信号送不到」兜底 —— **按住不动时数字器一条事件都不发**，0.18 秒就把 `UITouch` 结束掉，而长按要 0.5 秒才成立，`UILongPressGestureRecognizer` 永远等不到；之后迟到的 HID 事件又把已补抬起的触点当「新起手」，就是 0.1.22 报过的「长按每秒震一下」。现在兜底延迟**分情况**：起手在球上且这一轮没收到过 `Moved`（= 按住不动）→ 0.6 秒，其余照旧 0.18 秒；并用 `sLastEndWasWatchdog` 把「同一根手指还在按着」的伪起手排除掉（不再震、不再缩球）；长按 `allowableMovement` 10 → 26pt（坐标是拼出来的，几 pt 抖动就会判失败），加 1.5 秒去抖（按住 2 秒不会执行两遍），拖动中（pan 已起来）不认长按，单击 `requireGestureRecognizerToFail:长按`（否则按住 0.6 秒会「长按 + 抬手单击」各执行一遍）；长按绑的是 `action:none` 时日志明确写「这一下不会做任何事 + 去哪绑」。③ **不透明度下限 0.3 → 0.2**（`LaunchTab` 滑块 / 读取夹取 / HUD `applyBallStyle` 三处一起改）。④ **闲置自动淡化 + 缩小**（`IdleDim` 默认开、`IdleDimSeconds` 默认 5，可选 3/5/10/30）：HUD 单开一个 1 秒定时器巡检，最后一次碰球之后满 N 秒就降到「透明度 20% + 直径 ×0.6（不低于 26pt）」，任何一次按下/拖动/长按/开菜单立刻恢复；缩小走 `applyLayout`（改 frame）而不是 `transform` —— 否则 `pressFeedback` 按一下就把闲置缩小抹平了。`IdleDim`/`IdleDimSeconds` 也加进 `pollAppearanceFiles` 的判据里（不列进去就不会 `loadPrefs`，改开关没反应）。⑤ **自定义图标能「选一块」**：新增 `IconCropView`（圆形提示 + 拖动 + 双指缩放 1~5 倍 + 复位，`UIGraphicsImageRenderer` 出 1024×1024 正方形），存进 `customSourcePath`；相册与裁剪两层弹窗合成一个 `IconSheet` enum（两层 sheet 连着弹在 iOS 15 上会互相顶掉，中间留 0.35s）。**换图前把旧图收进历史**（`floatingball.custom.1~3.png`，最多 3 张），在「自定义」那一栏显示缩略图，点一下换回去。⑥ **每页下面的长说明收成小节标题右边的 `*`**：新增 `HelpNote.swift`（`helpHeader(title, text)` + `HelpNoteButton`，点开是 sheet），「启动 / 快捷菜单 / 添加 / 关于」四页共 12 处 footer 全换掉；⚠️ 「穿透」「盲喂」两个开关的警告**故意留在页面上**（整屏哑巴要强制重启，不能藏） |
 | 0.1.37 | **「打开邮箱收件箱」的等待改成轮询**（用户 2026-10-20 建议）：原来固定等 1.6 秒，热启动时是白等。现在 `FBWaitMailFrontmostThenFlow` 每 100ms 问一次「最前面的是不是 Mail」（`SBSCopyFrontmostApplicationDisplayIdentifier`，dlopen SpringBoardServices；取不到符号就退回稳等 1.6 秒），一到就动手，最多等 2.5 秒；等满还不是 Mail 就**不注入**（免得瞎点到别的界面）。点击 → 滑动之间的间隔 0.4s → 0.35s。**滑动参数没动**：`xs[0] = 1.0pt` 本来就是**绝对 1pt 贴左缘**（不是屏宽比例），按下先停 70ms 再以 42ms/步划出（约 810pt/s）—— 这是 0.1.22 真机调出来的，太快会被当成 flick 不认 |
 | 0.1.36 | **快捷菜单页整理 + 球上菜单不再只出 8 项**（用户 2026-10-20 提的四件事）：① 「添加」从页面最底下挪到**菜单项列表末尾**；② 手势下面新增 **「手势动作」** 一节 —— 这一节就是打开「单击 / 双击 / 长按」右边那个选择菜单时能选的清单，可增删（原来那个菜单把全部内置动作 + 所有 App/URL 平铺，几十项太乱），默认放 4 条高频的；③ **删掉「移动悬浮图标」** 动作（球本来就能直接拖），老菜单列表和手势绑定由 `ShortcutStore.load()` 自动清理；④ 球上快捷菜单原来被 `kMenuMaxRows = 8` **硬截断**（用户：「加了更多它显示不出来」），现在条数不截，菜单最高「屏高 − 76pt」，超过一屏可上下拖着看（内容层 `_contentView` + `_scrollOffset`，命中判定加偏移；拖超过 10pt 就不再算点击）；⑤ 新增内置动作 **「打开邮箱收件箱」**（`FBOpenMailInbox`）：把 Mail 拉到前台 → 注入一次「点一下」（屏幕 x 中点 / y 30% 空白处）→ 调 `FBGoBack` 划一次左缘返回。给「Mail 停在**带附件的邮件详情页**、光划返回划不动」这种场景用（用户 2026-10-20 描述的原场景）。复用现有的 `FBMakeTouchEvent` + 真机 sender ID 那一套注入，不引第三方 |

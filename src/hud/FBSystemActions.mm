@@ -583,15 +583,40 @@ static IOHIDEventRef FBMakeTouchEvent(int phase, double nx, double ny, BOOL from
     fbAppendEvent(parent, finger);
     CFRelease(finger);
 
-    // 父事件上的汇总字段（配方里就是固定填这三个；0.1.39 起 EventMask 再 OR 上边缘位，
-    // 真机固件也是「父事件的 EventMask 汇总子事件」）
-    fbSetInt(parent, FBHIDFieldDigitizerEventMask, 0x23 | (int)edgeBit);
-    fbSetInt(parent, FBHIDFieldDigitizerRange, 1);
-    fbSetInt(parent, FBHIDFieldDigitizerTouch, 1);
+    // 父事件上的汇总字段（父事件 = 这只手的「汇总」，应该如实反映子事件的状态）：
+    //   按下 / 移动 → EventMask 0x23（Range|Touch|Position），Range=1、Touch=1；
+    //   抬起       → EventMask 只有 Touch 位，**Range=0、Touch=0**。
+    //
+    // ⚠️⚠️ 0.1.40 修「点球又把下面的 App 点到」（用户 2026-10-21 报，A/B 已确认：
+    //   0.1.38 不漏、0.1.39 漏，而两版只差边缘位那几行）。
+    //
+    //   原来这四行是**三段共用**的：连「抬起」那条父事件也写着 Range=1 / Touch=1
+    //   —— 也就是「这只手还在屏上、还在按着」。0.1.38 时没人理它（那串注入本来就没被
+    //   系统认成边缘手势，只是被当成一次普通横向滑动）。0.1.39 给子事件加上
+    //   FromEdgeTip 之后，系统真的把它当「屏幕边缘手势」走自己的状态机了 ——
+    //   于是这条「说自己还按着、但后面再也没有事件」的父事件，很可能让那个状态机
+    //   停在「手势进行中」：之后我们托管的全屏窗口不再进入命中测试，
+    //   手指落在球上的那一下又原样漏给下面的 App（球自己靠旁听 HID 照常响应，
+    //   所以现象是「球有反应 + 下面也被点到」）。
+    //
+    //   真机固件抬手指时，父事件的 Touch/Range 都是 0（那只手指已经不在屏上）。
+    //   所以这里按 phase 分开写，不再固定 1/1。
+    const int parentMask = (phase == 2)
+        ? (int)FBHIDDigitizerEventTouch | (int)edgeBit     // 0x02（抬起：只有 Touch 位）
+        : 0x23 | (int)edgeBit;                             // 按下 / 移动
+    fbSetInt(parent, FBHIDFieldDigitizerEventMask, parentMask);
+    fbSetInt(parent, FBHIDFieldDigitizerRange, (phase == 2) ? 0 : 1);
+    fbSetInt(parent, FBHIDFieldDigitizerTouch, (phase == 2) ? 0 : 1);
     return parent;
 }
 
-/// 只发一条「抬起」（兜底用）。fromEdge 要和这一整段手势保持一致。
+/// 只发一条「抬起」（兜底用）：万一刚才那串里最后的抬起没送到，帮系统把手指收回去。
+///
+/// ⚠️ 0.1.40：**这条兜底抬起不带边缘位**（`fromEdge:NO`）。
+///    它的作用只是「收尾」——而这根手指的按下早就带着边缘位过去了，
+///    系统认手势只需要按下那一下；再补一条「从边缘抬起」的孤立事件，
+///    等于告诉系统「又有一根从屏幕边缘起手的手指抬起来了」，而它没有对应的按下，
+///    正是可能把系统的边缘手势状态机卡在「进行中」的那种垃圾事件。
 static void FBSendLoneUp(double nx, double ny, BOOL fromEdge)
 {
     IOHIDEventRef ev = FBMakeTouchEvent(2, nx, ny, fromEdge);
@@ -733,7 +758,8 @@ BOOL FBGoBack(CGRect ballRectOnScreen)
         IOHIDEventRef ev = FBMakeTouchEvent(phase, xs[pi] / w, y / h, YES);
         if (!ev) {
             FBLog(@"⚠️ 全局返回：第 %d 个事件中途造不出来 —— 剩下的不发了，先补一条抬起", i);
-            FBSendLoneUp(xs[count - 1] / w, y / h, YES);
+            // 收尾用的抬起同样不带边缘位（0.1.40，见 FBSendLoneUp 注释）
+            FBSendLoneUp(xs[count - 1] / w, y / h, NO);
             return NO;
         }
         fbSetSenderID(ev, gFBRealSenderID);
@@ -748,7 +774,8 @@ BOOL FBGoBack(CGRect ballRectOnScreen)
     double ny = y / h;
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(500 * NSEC_PER_MSEC)),
                    dispatch_get_main_queue(), ^{
-        FBSendLoneUp(nx, ny, YES);
+        // ⚠️ 0.1.40：兜底抬起传 NO —— 孤立的「从边缘抬起」是垃圾事件，见 FBSendLoneUp 的注释。
+        FBSendLoneUp(nx, ny, NO);
     });
     return YES;
 }

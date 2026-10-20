@@ -17,11 +17,6 @@ NS_ASSUME_NONNULL_BEGIN
 /// 重新读一遍共享设置（被 Darwin 通知触发）
 - (void)reloadSettings;
 
-/// 按下去的**可见**反馈：球缩一下再弹回（0.1.16）。
-/// 为什么要有它：HUD 是后台进程，`UIImpactFeedbackGenerator` 的震动会被系统吞掉，
-/// 缩放只是改 transform，不依赖系统服务 —— 至少让用户看见「按到了」。
-- (void)pressFeedback;
-
 @end
 
 NS_ASSUME_NONNULL_END

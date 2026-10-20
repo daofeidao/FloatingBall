@@ -338,13 +338,6 @@ struct AppsTab: View {
                     + "它要做的是往系统里注入「点一下 + 划一次返回」，"
                     + "而只有球的后台进程有这个身份。\n\n"
                     + "想随手用：回「快捷菜单」页，把它加到「手势动作」里绑给长按，或者加到菜单项里。")
-
-            case .toggleLabel:
-                Haptics.fire(.action)
-                let now = BallSettings.bool("ShowLabel", default: true)
-                BallSettings.set(!now, "ShowLabel")
-                BallSettings.notifyReload()
-                say(!now ? "球上的数字打开了。" : "球上的数字关掉了。")
             }
         }
     }

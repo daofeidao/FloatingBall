@@ -1861,3 +1861,31 @@ iamjhe08/VidGrab……）——**每一份的声明和用法都一模一样，�
 **待真机确认**：返回快不快；**返回还灵不灵**（提速是这条的主要风险点 ——
 太快就退回 flick）；点球不漏这一条应该不受影响（0.1.40 的修法没动）。
 
+### 2026-10-21（0.1.42）：删轻点次数 / 删按下缩放 / 首页注释清空 / 版本记录搬到「关于」
+
+用户原话：「把【轻点次数】功能删除，把点按后球体的缩放反应删除，把首页的注释全部删除，
+其中版本记录改到【关于】-版本号（在点按版本号时可以查看记录），点按标识时可以打开本项目的 GitHub 网址。」
+
+改动（4 块，互相独立）：
+
+1. **轻点次数整块删**（`LaunchTab.swift` + `BallRootViewController.mm` + `ShortcutStore.swift` + `AppsTab.swift`）
+   - 首页 `轻点次数` 那行、`tapCount` 状态、`refresh()` 里的读取都删了。
+   - 球上的数字其实**就是**这个计数（`UILabel *_label` 显示 `TapCount`）→ 一起删：
+     `_label` / `_showText` / `refreshLabel` / `ownedKeys` 里的 `TapCount`+`ShowLabel` / 外观轮询键里的 `ShowLabel`。
+   - 内置动作 `toggleLabel`（「显示/隐藏数字」）从 `ShortcutAction` 移除；老数据按 moveBall 的先例迁移：
+     `load()` 清掉列表里的 `action:toggleLabel`，绑在它上面的手势改 `action:none`；
+     `loadGestureItems()` 也过滤掉。⚠️ `parse()` 是宽松的（认不出的 id 不会让整份列表失效），所以迁移是「清理垃圾」而不是「防崩」。
+2. **按球不再缩**：删 `pressFeedback`（0.86 → identity 的 transform 动画）、`FBBallHapticTouchDown` 里的调用、
+   `BallRootViewController.h` 里的声明。按下去只剩震动（0.1.31 起走系统声音，后台也能震）。
+3. **首页注释全删**：四个 `*` 长说明（`ballFooter` / `iconFooter` / `troubleFooter` / `versionFooter`）、
+   只有说明的「排障」小节、形状下面那行 `shape.hint`、颜色被锁时的 `colorLockNote`，全部移除。
+   首页现在只剩：启动开关 / 震动 / 强度 / 刷新、形状 / 自定义图 / 颜色 / 大小 / 不透明度 / 闲置 / 预览 / 复位位置。
+4. **版本记录搬到「关于」**：`versionHistory`（原文逐字搬，前面加 0.1.42 一条）放在 `AboutTab`，
+   点「版本」那一行 → sheet 里滚动看；点「标识」那一行 → `Link` 打开
+   `https://github.com/daofeidao/FloatingBall`（和「原理来自」用同一套 Link，走 Safari）。
+
+版本 0.1.42 / build 43。
+
+**待真机确认**：① 首页确实没注释了、也没有「轻点次数」；② 按球只震不缩；③ 关于页点「版本」能看历史、点「标识」能开 GitHub；
+④ **装过 0.1.41 的老数据**升级后：快捷列表里没有「显示/隐藏数字」残留、手势绑定没被搞乱（重点看单击默认还是「设置」）。
+

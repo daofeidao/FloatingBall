@@ -29,7 +29,8 @@ enum ShortcutAction: String, CaseIterable, Identifiable {
     // ~~moveBall~~ 0.1.36 删掉（用户 2026-10-20 要求：菜单项里的「移动悬浮图标」去掉）：
     //   球本来就能直接拖，这个动作等于多一步开关，纯占地方。
     //   rawValue "moveBall" 的老数据由 load() 里的迁移清掉（见 dropMoveBall）。
-    case toggleLabel        // 显示 / 隐藏球上的数字
+    // ~~toggleLabel~~ 0.1.42 删掉（用户要求删除「轻点次数」：球上那个数字一起没了）：
+    //   rawValue "toggleLabel" 的老数据同样由 load() 里的迁移清掉。
     case none               // 什么都不做
 
     var id: String { rawValue }
@@ -46,7 +47,6 @@ enum ShortcutAction: String, CaseIterable, Identifiable {
         case .openMainApp:   return "打开悬浮球"
         case .quitBall:      return "关闭悬浮球"
         case .openAppList:   return "打开快捷菜单"
-        case .toggleLabel:   return "显示/隐藏数字"
         case .none:          return "什么都不做"
         }
     }
@@ -61,7 +61,6 @@ enum ShortcutAction: String, CaseIterable, Identifiable {
         case .openMainApp:   return "回到悬浮球 App 的「启动」页"
         case .quitBall:      return "把屏幕上的球收掉（等于回 App 把「启动悬浮球」关一下），球没了这个菜单也就没了"
         case .openAppList:   return "回到悬浮球 App 的「快捷菜单」栏"
-        case .toggleLabel:   return "球上那个数字显示 / 不显示"
         case .none:          return "不做事"
         }
     }
@@ -75,7 +74,6 @@ enum ShortcutAction: String, CaseIterable, Identifiable {
         case .openMainApp:   return "app.badge"
         case .quitBall:      return "power"
         case .openAppList:   return "square.grid.2x2"
-        case .toggleLabel:   return "textformat.123"
         case .none:          return "slash.circle"
         }
     }
@@ -275,6 +273,16 @@ enum ShortcutStore {
             BallSettings.set("action:none", slot.id)
         }
 
+        // 0.1.42（用户要求）：球上的数字（轻点次数）整块删了，「显示/隐藏数字」这个动作一起删。
+        // 老列表里留着的那条会变成一行认不出的死项 —— 直接清掉；手势绑在它上面的改成「什么都不做」。
+        if items.contains(where: { $0.kind == .action && $0.id == "toggleLabel" }) {
+            items = items.filter { !($0.kind == .action && $0.id == "toggleLabel") }
+            save(items)
+        }
+        for slot in gestureKeys where BallSettings.string(slot.id, default: "") == "action:toggleLabel" {
+            BallSettings.set("action:none", slot.id)
+        }
+
         return items
     }
 
@@ -283,7 +291,7 @@ enum ShortcutStore {
         let dict = UserDefaults().loadUserDefaults(forPath: BallSettings.path)
         let parsed = parse(dict[gestureItemsKey])
         if let parsed = parsed, !parsed.isEmpty {
-            return parsed.filter { !($0.kind == .action && $0.id == "moveBall") }
+            return parsed.filter { !($0.kind == .action && ($0.id == "moveBall" || $0.id == "toggleLabel")) }
         }
         return gestureItemDefaults
     }

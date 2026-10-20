@@ -33,7 +33,6 @@
 @interface BallRootViewController ()
 - (BOOL)applyBallStyle;   // 0.1.21：返回「这一轮有没有真的拿到贴图」
 - (void)applyLayout;
-- (void)refreshLabel;
 - (void)writeStyleDiag:(NSString *)source;
 // 0.1.22 菜单浮层（互相调用，先声明）
 - (void)openQuickMenu;
@@ -212,7 +211,7 @@ static const CGFloat kBallTouchSlack = 10.0;
     //    本视图坐标系 —— 只有两者原点一致时才碰巧对得上。
     //    根视图的 bounds.origin 一旦非 0（旋转 / 安全区 / UIKit 挪过），
     //    整块命中区域就会偏移，表现正是「球在那儿，点不到」。
-    //    convertRect: 还顺带把 pressFeedback 那个 0.86 缩放算进去。
+    //    （0.1.42 起没有按下缩球了，transform 恒为 identity，convertRect 照样是最稳的写法。）
     CGRect touchable = [self convertRect:self.interactiveSubview.bounds
                                  fromView:self.interactiveSubview];
     touchable = CGRectInset(touchable, -kBallTouchSlack, -kBallTouchSlack);
@@ -451,10 +450,8 @@ static const CGFloat kMenuMaxHeightGap = 76.0;   // 菜单最多占「屏高 −
 @end
 @implementation BallRootViewController {
     UIImageView *_ball;       // 球本体（贴图；样式可在 App 里换）
-    UILabel *_label;
     NSMutableDictionary *_prefs;
     CGPoint _grabOffset;      // 手指按下时，落在窗口内的位置
-    BOOL _showText;           // 是否显示球上的数字（存在 ShowLabel 键里）
     BOOL _fallbackBall;       // 贴图丢了、退化成纯色球时，要给它留一圈描边
     BOOL _moveMode;           // 「移动模式」：球高亮，拖一下就落位，点一下退出
     // 0.1.22：快捷菜单浮层
@@ -536,11 +533,10 @@ static const CGFloat kMenuMaxHeightGap = 76.0;   // 菜单最多占「屏高 −
 /// 后面的手势要不要再震一层（长按、动作执行）照旧 —— 那是「确认」，这里是「迎客」。
 void FBBallHapticTouchDown(void)
 {
-    // 0.1.16：再加一层**看得见**的反馈：球按下去缩一下 —— 这一层不依赖任何系统服务。
-    // 0.1.31：震动本身改走系统声音（见文件顶部），所以现在「缩一下」和「震一下」
-    //         都会真的发生；缩球仍然保留：系统「触感反馈」总开关被关掉时它是唯一反馈。
+    // 0.1.16 曾经在这里加过「球按下去缩一下」的可见反馈；0.1.42 用户要求删掉
+    // （原话：「把点按后球体的缩放反应删除」），现在按下去只有震动这一下。
+    // 震动走系统声音（0.1.31 起），后台进程也能震。
     [sBallVC haptic:FBHapticTap];
-    [sBallVC pressFeedback];
     // 0.1.38：有人碰球了 → 闲置计时重来（闲置时球是淡化 + 缩小的，这一下就恢复）
     [sBallVC noteUserActivity];
 }
@@ -557,8 +553,8 @@ void FBBallHapticTouchDown(void)
 - (void)pollAppearanceFiles
 {
     // ⚠️ 0.1.19 修「点一下球，球就闪一下」：
-    //    原来拿**整份 plist 的 mtime**当判据。可 HUD 每点一下球（TapCount）、
-    //    每拖一次（BallX/BallY）都要 savePrefs → plist mtime 必变 →
+    //    原来拿**整份 plist 的 mtime**当判据。可 HUD 每拖一次球（BallX/BallY）都要 savePrefs
+    //    → plist mtime 必变 →
     //    两秒内必走一次 loadPrefs + applyBallStyle + applyLayout。
     //    applyBallStyle 会重新读图并重设 _ball.image → 球当众闪一下；
     //    applyLayout 还会重设 frame → 手指还按在球上时球会跳。
@@ -575,7 +571,7 @@ void FBBallHapticTouchDown(void)
     // ⚠️ 0.1.38：`IdleDim` / `IdleDimSeconds` 也要在这里 —— 不列进来的话，
     //    用户改「闲置」开关时 look 不变 → 不会 loadPrefs → idleTick 一直读旧值。
     for (NSString *k in @[@"BallShape", @"BallColor", @"BallSize",
-                          @"BallOpacity", @"ShowLabel", @"CustomImage",
+                          @"BallOpacity", @"CustomImage",
                           @"IdleDim", @"IdleDimSeconds"]) {
         [look appendFormat:@"%@=%@;", k, onDisk[k] ?: @"-"];
     }
@@ -591,7 +587,6 @@ void FBBallHapticTouchDown(void)
     [self loadPrefs];
     BOOL ok = [self applyBallStyle];
     [self applyLayout];
-    [self refreshLabel];
 
     // ⚠️ 0.1.21：**别在失败时也把基准记死**。
     // 贴图正被另一个进程改写时，这一轮很可能读到半截的 PNG → 退回默认图。
@@ -639,28 +634,6 @@ void FBBallHapticTouchDown(void)
            atomically:YES encoding:NSUTF8StringEncoding error:NULL];
 }
 
-/// 按下去的**可见**反馈：球缩一下再弹回。
-/// ⚠️ 0.1.16 加这个是因为真机确认：HUD 是后台进程，UIImpactFeedbackGenerator 的震动
-///    会被系统吞掉（自喂测试手势成功、计数+1，但一点震感都没有）。
-///    缩放只是改 transform，不依赖任何系统服务，一定能看见。
-/// ⚠️ 0.1.31 震动换成了系统声音（能震了），但这一层**继续保留**：
-///    系统「触感反馈」被关掉、或用户在设置里关掉震动开关时，它是唯一的按下去反馈。
-- (void)pressFeedback
-{
-    if (!_ball) return;
-    [UIView animateWithDuration:0.07 delay:0.0
-                         options:UIViewAnimationOptionBeginFromCurrentState | UIViewAnimationOptionAllowUserInteraction
-                      animations:^{
-        self->_ball.transform = CGAffineTransformMakeScale(0.86, 0.86);
-    } completion:^(BOOL finished) {
-        [UIView animateWithDuration:0.12 delay:0.0
-                             options:UIViewAnimationOptionBeginFromCurrentState | UIViewAnimationOptionAllowUserInteraction
-                          animations:^{
-            self->_ball.transform = CGAffineTransformIdentity;
-        } completion:nil];
-    }];
-}
-
 #pragma mark - 设置（和 App 共享 /var/mobile/Library/Preferences 下同一个 plist）
 
 - (void)loadPrefs
@@ -668,7 +641,6 @@ void FBBallHapticTouchDown(void)
     NSDictionary *onDisk = [NSDictionary dictionaryWithContentsOfFile:USER_DEFAULTS_PATH];
     _prefs = onDisk ? [onDisk mutableCopy] : [NSMutableDictionary dictionary];
     if (!_prefs[@"BallSize"])  _prefs[@"BallSize"]  = @(kDefaultBallSize);
-    if (!_prefs[@"TapCount"])  _prefs[@"TapCount"]  = @0;
 
     // 0.1.15：「关于」页的盲喂开关（验证用，默认关）
     NSNumber *blind = _prefs[@"BlindFeed"];
@@ -687,7 +659,7 @@ void FBBallHapticTouchDown(void)
 
     static NSArray<NSString *> *ownedKeys = nil;
     if (!ownedKeys) {
-        ownedKeys = @[@"TapCount", @"BallX", @"BallY", @"ShowLabel", @"PendingTab"];
+        ownedKeys = @[@"BallX", @"BallY", @"PendingTab"];
     }
     for (NSString *k in ownedKeys) {
         id v = _prefs[k];
@@ -782,10 +754,6 @@ void FBBallHapticTouchDown(void)
                                    userInfo:nil
                                     repeats:YES];
 
-    // 数字显示不显示，存在共享设置里（App 那边的「显示/隐藏数字」动作也改这个键）
-    NSNumber *showLabel = _prefs[@"ShowLabel"];
-    _showText = showLabel ? [showLabel boolValue] : YES;
-
     self.view.backgroundColor = [UIColor clearColor];
 
     CGFloat ball = [self ballSize];
@@ -812,18 +780,6 @@ void FBBallHapticTouchDown(void)
 
     // 把球交给 HUD 的触摸回调（全局 HID 事件那条路要用它算「按在球上」）
     FBHUDSetBallView(_ball);
-
-    _label = [[UILabel alloc] initWithFrame:_ball.bounds];
-    _label.textAlignment = NSTextAlignmentCenter;
-    _label.textColor = [UIColor whiteColor];
-    _label.font = [UIFont systemFontOfSize:MAX(11.0, ball * 0.32) weight:UIFontWeightSemibold];
-    // 给数字加个淡淡的描边阴影：换成「白点」样式时白字压白底会看不见
-    _label.layer.shadowColor = [UIColor blackColor].CGColor;
-    _label.layer.shadowOpacity = 0.55;
-    _label.layer.shadowRadius = 2.0;
-    _label.layer.shadowOffset = CGSizeMake(0.0, 1.0);
-    [_ball addSubview:_label];
-    [self refreshLabel];
 
     // ---- 手势：点击 / 双击 / 滑动（拖动） / 长按 ----
     UIPanGestureRecognizer *pan = [[UIPanGestureRecognizer alloc] initWithTarget:self action:@selector(onPan:)];
@@ -934,8 +890,6 @@ void FBBallHapticTouchDown(void)
                  @"quitBall":      @"power",
                  @"openAppList":   @"square.grid.2x2",
                  @"mailInbox":     @"envelope.open",
-                 @"moveBall":      @"hand.draw",
-                 @"toggleLabel":   @"number",
                  @"none":          @"minus.circle" };
     }
     return map[actionId] ?: @"circle";
@@ -1146,21 +1100,17 @@ void FBBallHapticTouchDown(void)
     //    「按下去震一下 → 停半秒 → 又震一下」，两下还强度不同（轻/轻），
     //    听起来像两次不相干的敲门，又拖沓又错位（用户 2026-10-18 原话：「比较拖拉的
     //    2 次震动 … 突兀和不一致的错位感」）。
-    //    现在「按下去震一下 + 缩一下」就是这一下的全部反馈，唯一且跟手。
+    //    现在「按下去震一下」就是这一下的全部反馈，唯一且跟手（0.1.42 起不再缩球）。
     //    真正**执行**了动作时才给 `FBHapticAction`（比如移动模式进出、显示/隐藏数字）。
 
-    // 计数 +1 是「点到了」的证据：球浮在别的 App 上面时，这是唯一看得见的回执。
+    // 0.1.42：这里的「轻点次数 +1 / 球上数字」整块删掉了（用户要求删除轻点次数功能）。
     // 真正干什么由设置里的「单击」绑定决定（默认 = 打开设置）。
-    NSInteger count = [_prefs[@"TapCount"] integerValue] + 1;
-    _prefs[@"TapCount"] = @(count);
-    [self savePrefs];
-    [self refreshLabel];
 
-    // 「关于」页的自喂测试（0.1.14）：计数、震一下、标签变 —— 都照做（这就是「有反应」的可见证据），
+    // 「关于」页的自喂测试（0.1.14）：震一下（按下去那一下）就够当「有反应」的证据，
     // 但**不执行**绑定动作（否则点一下「测试」会顺手打开设置 App，容易吓人）。
     if (gFBSelfTestTapPending) {
         gFBSelfTestTapPending = NO;
-        FBLog(@"[自喂测试] 成功：球的手势认出来了（计数=%ld，未执行绑定动作）", (long)count);
+        FBLog(@"[自喂测试] 成功：球的手势认出来了（未执行绑定动作）");
         return;
     }
 
@@ -1173,7 +1123,7 @@ void FBBallHapticTouchDown(void)
     }
 
     NSString *target = [self gestureTarget:@"GestureTap"];
-    FBLog(@"轻点：计数=%ld 绑定=%@", (long)count, target);
+    FBLog(@"轻点：绑定=%@", target);
     [self performGestureTargetKey:target];
 }
 
@@ -1339,11 +1289,6 @@ void FBBallHapticTouchDown(void)
         return;
     }
 
-    if ([action isEqualToString:@"toggleLabel"]) {
-        [self toggleLabel];
-        return;
-    }
-
     if ([action isEqualToString:@"screenshot"]) {
         // 【截屏】0.1.33 起主路是「让 SpringBoard 自己截」（AXSpringBoardServer 的 XPC，
         //   辅助触控「截屏」用的同一条）；不行才注入一次「音量加 + 电源」组合键。
@@ -1396,16 +1341,6 @@ void FBBallHapticTouchDown(void)
           showAppList ? @"快捷菜单" : @"启动页", ok ? @"成功" : @"失败");
 }
 
-- (void)toggleLabel
-{
-    _showText = !_showText;
-    _prefs[@"ShowLabel"] = @(_showText);
-    [self savePrefs];
-    [self refreshLabel];
-    [self haptic:FBHapticAction];   // 状态变了，给个「中」的反馈
-    FBLog(@"绑定动作=显示数字 -> %@", _showText ? @"开" : @"关");
-}
-
 /// 移动模式：球高亮一圈，拖一下就落位，点一下退出。
 /// （拖动本来就一直能用，这个模式是给「怕误触」的人用的：
 ///   进入后轻点不会触发绑定动作，只会退出。）
@@ -1427,7 +1362,6 @@ void FBBallHapticTouchDown(void)
             : nil;
         FBLog(@"退出移动模式");
     }
-    [self refreshLabel];
 }
 
 #pragma mark - 打开别的 App
@@ -1588,8 +1522,9 @@ void FBBallHapticTouchDown(void)
 //   · 任何一次碰球（按下、拖动、长按、点菜单、开菜单）立刻恢复，并重新开始计时。
 //   · 开关是共享设置里的 `IdleDim`（默认开）；秒数是 `IdleDimSeconds`。
 //
-// 为什么「缩」不用 transform 而改尺寸：pressFeedback 按下去会把 transform 设成
-// 0.86 再弹回 identity —— 用 transform 做闲置缩小的话，按一下就被它抹平了。
+// 为什么「缩」不用 transform 而改尺寸：0.1.42 以前 pressFeedback 按下去会把 transform
+// 设成 0.86 再弹回 identity —— 用 transform 做闲置缩小的话，按一下就被它抹平了。
+// （0.1.42 删掉了按下缩球，但这条仍按原样走 applyLayout，避免和别处动画打架。）
 // 所以缩小走 applyLayout（改 frame），和用户拖的「大小」滑块同一条路。
 
 /// 球的**有效**直径：闲置时是缩小后的那个值，其余时候就是用户设的尺寸。
@@ -1724,23 +1659,6 @@ void FBBallHapticTouchDown(void)
     _ball.layer.shadowPath = [UIBezierPath bezierPathWithOvalInRect:_ball.bounds].CGPath;
 }
 
-- (void)refreshLabel
-{
-    // 移动模式下先不显示数字：让用户知道「现在拖得动」
-    _label.hidden = !_showText || _moveMode;
-    _label.text = [NSString stringWithFormat:@"%ld", (long)[_prefs[@"TapCount"] integerValue]];
-    // ⚠️ 0.1.20：用户反馈「点了之后数字看着没变，切到别的 tab 再回来才发现 +1 了」。
-    //    UILabel 换 text 会自己 setNeedsDisplay，但我们在的是一个**影子 UIApplication**
-    //    （没有 SpringBoard 的渲染循环替我们提交），所以这里显式刷一次。
-    //    刷新条件里对比一下旧值：没变就不刷，省掉无谓的重绘。
-    if (![_label.text isEqualToString:[NSString stringWithFormat:@"%ld",
-                                       (long)[_prefs[@"TapCount"] integerValue]]]) {
-        [_label setNeedsDisplay];
-        [_label setNeedsLayout];
-        [_label.layer setNeedsDisplay];
-    }
-}
-
 - (void)applyLayout
 {
     // ⚠️ 0.1.18：窗口是全屏的，**球在窗口里移动**（以前是移动窗口）。
@@ -1761,8 +1679,6 @@ void FBBallHapticTouchDown(void)
 
     _ball.frame = CGRectMake(center.x - ball / 2.0, center.y - ball / 2.0, ball, ball);
     _ball.layer.cornerRadius = ball / 2.0;
-    _label.frame = _ball.bounds;
-    _label.font = [UIFont systemFontOfSize:MAX(11.0, ball * 0.32) weight:UIFontWeightSemibold];
     [self updateShadowPath];
 }
 
@@ -1784,12 +1700,6 @@ void FBBallHapticTouchDown(void)
     if (_ball) {
         _ball.center = center;
     }
-
-    // 数字显不显示也可能被改了（App 那边的「显示/隐藏数字」动作）
-    NSNumber *showLabel = _prefs[@"ShowLabel"];
-    if (showLabel) _showText = [showLabel boolValue];
-
-    [self refreshLabel];
 
     // 0.1.32：手势绑定可能刚被改过 —— 双击从「有」变「无」时，单击就不必再等 0.3s
     [self rebuildTapRecognizers];

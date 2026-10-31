@@ -670,8 +670,11 @@ static void FBChownSettingsToMobile(void);
 /// ⚠️ chown 失败（没权限 / 文件不存在）就当没发生，**绝不影响「设置已经写进去了」这个事实**。
 static void FBChownSettingsToMobile(void)
 {
-    chown(USER_DEFAULTS_PATH, 501, 501);
-    chmod(USER_DEFAULTS_PATH, 0644);
+    // ⚠️ USER_DEFAULTS_PATH 是 NSString 字面量（hud-prefix.pch），chown/chmod 要 const char *
+    const char *p = USER_DEFAULTS_PATH.UTF8String;
+    if (!p) return;
+    chown(p, 501, 501);
+    chmod(p, 0644);
 }
 
 - (void)savePrefs

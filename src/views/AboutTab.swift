@@ -267,6 +267,10 @@ struct AboutTab: View {
     var body: some View {
         NavigationView {
             List {
+                // 0.1.44：ViewBuilder 一个块里最多 10 个直接子视图。加了「设置文件」那一节之后
+                // 变成了 11 个，编译器只会含糊地报在最后一个 Section 上（「extra argument in call」）。
+                // 用 Group 把前两节包成 1 个子视图。
+                Group {
                 Section {
                     // 0.1.42（用户要求）：版本记录从首页搬到这里 —— 点这一行看历史。
                     Button {
@@ -323,6 +327,7 @@ struct AboutTab: View {
                     Button("取消", role: .cancel) { }
                 } message: {
                     Text("会删掉设置文件。球的位置、大小、颜色、自定义图标、快捷菜单、手势绑定都会回到默认，没有备份。")
+                }
                 }
 
                 Section(header: helpHeader("真实点球诊断（0.1.15）", Self.helpTapDiag)) {

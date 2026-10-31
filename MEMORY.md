@@ -758,6 +758,7 @@ send([r"...\FloatingBall.tipa"],
 | 0.1.41 | 2026-10-21 | `E:\下载\FloatingBall_0.1.41.tipa`（邮件已发 01:37，to sz202610@126.com / cc lion.2026.10@proton.me，已发送箱核验附件 510.6 KB / 整封 704.4 KB）。返回提速：采样点 8→16，每步 42ms→10ms（约 590 → 1040 pt/s） | 522,823 | `bbe30784` |
 | 0.1.42 | 2026-10-21 | `E:\下载\FloatingBall_0.1.42.tipa`（邮件已发 02:03，to sz202610@126.com / cc lion.2026.10@proton.me，已发送箱核验附件 509.8 KB / 整封 704.4 KB）。界面清理：删轻点次数 + 球上数字 + `toggleLabel` 动作、删按下缩球、首页注释清空、版本记录搬到「关于」（点版本看历史 / 点标识开 GitHub） | 522,021 | `2226d226` |
 | 0.1.43 | 2026-10-29 | `E:\下载\FloatingBall_0.1.43.tipa`（邮件已发 23:15，to sz202610@126.com / cc lion.2026.10@proton.me，已发送箱核验附件 510.3 KB / 整封 706.2 KB）。返回注入速度回退 0.1.40 那组（8 点 × 42ms ≈ 590 pt/s），其余不动 —— 单变量对照 | 522,555 | `90989d90` |
+| 0.1.44 | 2026-10-31 | `E:\下载\FloatingBall_0.1.44.tipa`（邮件已发 10:57，to sz202610@126.com / cc lion.2026.10@proton.me，已发送箱核验附件 528.8 KB / 整封 733.2 KB）。修设置文件被球写成 root 所有（App 从此改不动设置）+ App 写失败不再静默 + 「关于」页设置文件体检 / 恢复出厂设置；返回速度改回 16 点 × 10ms；打开邮箱点击点改上半屏正中、打开后 200ms 点 | 541,479 | `05a378c1` |
 
 - 0.1.38（用户 2026-10-20 一次提的五件事）：
   · ① **震动改成「只在按下去那一下」**（用户原话：「有手点下去震一下，抬起来不震」）。
@@ -1924,4 +1925,58 @@ iamjhe08/VidGrab……）——**每一份的声明和用法都一模一样，�
 2. 仍死 → 从邮箱装回 0.1.40 做 A/B：0.1.40 也死 = 不是代码退化（看设备/系统侧）；0.1.40 正常 = 0.1.41↔0.1.42 之间有退化。
 3. 要两条读数：点球时**震不震**（震 = 球收到触摸，只是没执行动作；不震 = 球根本没收到）；
    「关于」页「真实点球诊断」那句人话。
+
+### 2026-10-31（0.1.44）：真凶是**设置文件被冻结** —— 球以 root 写 plist，把文件写成 root 所有
+
+#### 结论（用户实测确认）
+
+用户自己删掉 `/var/mobile/Library/Preferences/com.daofeidao.floatingball.plist` 之后，**球立刻恢复正常**。
+所以 0.1.41 的返回提速**无罪**（0.1.43 那次回退是白回退，0.1.44 已改回 16 点 × 10ms）。
+
+**但注意：坏的不是「那个值」本身，是它被冻结了。** 用户的原话：
+「打开都一样，而且恢复默认 3 条也失效了」「删除软件都解决不了，删除后重新安装软件后打开，还是早先的设置」。
+
+#### 机制（两层，都要记）
+
+1. **直接现象**：plist 里存着一个让球按错误状态启动的值（最可能是「关于」页的实验开关
+   `SwallowTouch` / `BlindFeed`，或屏幕外的 `BallX/BallY`）。文件已删，具体键查不到了。
+2. **为什么改不回来（这次的真正根因）**：
+   - 球进程以 **root** 跑（`posix_spawnattr_set_persona_uid_np(&attr, 0)`）；
+   - 它存设置用 `[disk writeToFile:USER_DEFAULTS_PATH atomically:YES]` —— 原子写是
+     「写临时文件 + rename」，**新文件属主 = 写入者 = root**；
+   - 球每拖一次都写 `BallX/BallY`，于是 plist 慢慢变成 root:wheel；
+   - App（uid 501）从此写不进去，而 `UserDefaultsExtensions.setValue` 的 catch **只 print**，
+     界面上零提示 → 「改了没反应 / 恢复默认失效」；
+   - plist 在 /var/mobile/Library/Preferences 下，**不在 App 包里** → 删 App 也不会删它，
+     所以「删了重装还是旧设置」。
+   ⚠️ 这一步没有任何 chown，从项目第一天起就是坏的 —— 只是没人注意到。
+
+#### 0.1.44 的改动
+
+1. `BallRootViewController.mm` 新增 `FBChownSettingsToMobile()`：`chown(501,501)` + `chmod 0644`
+   （⚠️ `USER_DEFAULTS_PATH` 是 **NSString 字面量**，要传 `.UTF8String`，否则编译报
+   `no matching function for call to 'chown'` —— 已经踩过一次）。`savePrefs` 写完调一次，
+   `loadPrefs` 末尾也调一次（修已经坏在用户手机上的文件）。
+2. `UserDefaultsExtensions.setValue` 失败时写 `BallSettings.lastWriteError`，不再只 print。
+3. `BallSettings` 新增 `lastWriteError` / `fileInfo()`（属主·权限·大小·mtime）/ `factoryReset()`
+   （`removePersistentDomain` 让 cfprefsd 忘掉 + 删文件；删文件只要求目录可写，比写入可靠）。
+4. `AboutTab` 新增「设置文件」一节：体检一行 + 红字错误 + 「恢复出厂设置」（先 `SetHUDEnabledBridger(false)` 关球）。
+   ⚠️ **踩坑**：`List` 的 ViewBuilder 一个块最多 10 个直接子视图，加完变 11 个，
+   编译器只在**最后一个** Section 上含糊地报 `extra argument in call`（不是报在真正的第 11 个上）。
+   解决办法：用 `Group { }` 把前两节包成 1 个子视图。以后往这个 List 加东西先数一数。
+5. 返回速度按用户要求回到 0.1.41 的 16 点 × 10ms。
+6. 「打开邮箱收件箱」：点击点改到**上半个屏幕正中** `(0.5W, 0.25H)`；打开 Mail 后 **200ms** 就点
+   （原来轮询等前台，热启动白等 1.6s）。保险：200ms 时查得到前台且不是 Mail → 每 100ms 重试，最多 2.5s，
+   仍不行就一个都不注入；点完照旧等 350ms 再划返回。
+
+版本 0.1.44 / build 45。CI 先后失败两次：① AboutTab 第 11 个子视图；② chown 传 NSString。
+
+#### 教训（写进流程）
+
+- **用户说「设置改不动 / 删了重装还是旧设置」→ 先看 plist 的属主**，别急着怀疑代码逻辑。
+- HUD 是 root 进程，**任何写共享文件的路径都要 chown 回 501**；这是这个项目的通病，不只是 plist。
+- 静默 catch 是这类问题的放大器：写失败必须能在界面上看见。
+
+**待真机确认**：① 设置文件那一行属主是 mobile；② 改设置→退出→重进，值还在、没有红字；
+③ 恢复出厂按钮可用（会清空快捷菜单/手势绑定）；④ 返回速度回到 0.1.41 手感；⑤ 打开邮箱 200ms 后点上半屏正中。
 

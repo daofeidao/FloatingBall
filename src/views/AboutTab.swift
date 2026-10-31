@@ -8,6 +8,11 @@ struct AboutTab: View {
     /// 0.1.42：点「版本」那一行才弹出这张历史表（原来它挂在首页的 `*` 里）
     @State private var showingVersion = false
 
+    /// 0.1.44：设置文件体检 + 恢复出厂设置
+    @State private var fileInfoText = ""
+    @State private var showResetConfirm = false
+    @State private var resetResult: String?
+
     private var version: String {
         let v = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String
         return v ?? "?"
@@ -15,6 +20,7 @@ struct AboutTab: View {
 
     /// 版本记录（0.1.42 起从首页搬到这里，点「版本」那一行看）。
     private static let versionHistory = """
+    0.1.44：**修「设置改了没反应」的真正原因** —— 球进程是以 root 身份跑的，而它写设置用的是「造临时文件再改名」这种原子写法，**新文件的属主就变成了 root**。球每拖一次都会写一次位置，于是 `com.daofeidao.floatingball.plist` 慢慢变成 root 所有；App（普通权限）从此写不进去，而 App 的写法把失败吞在控制台里、界面上什么都不显示。表现出来就是：改了没反应、恢复默认失效、把 App 删掉重装打开还是旧设置（那个 plist 不在 App 里，删 App 不会删它）。现在：① 球每次写完都把属主改回 mobile，球启动时也修一次；② App 写失败会在「关于」页用红字写出来；③ 「关于」页新增「设置文件」一行（属主 / 权限 / 大小 / 修改时间）和「恢复出厂设置」按钮（先关球、再删文件、再让 cfprefsd 忘掉这个域），以后不用终端也能清干净。**返回速度改回 0.1.41 那组**（16 点 × 10 毫秒，约 1040 pt/s —— 0.1.43 退回速度是为了做对照，已验证与球点不动无关）。**「打开邮箱收件箱」改了两处**：点击位置改到**上半个屏幕的正中**（屏幕中线 0.5W、0.25H），并且打开 Mail 之后 **200 毫秒**就点（原来是一直轮询等它到前台，热启动白等一秒多；留了一层保险：200ms 时查得到前台、但不是 Mail，就每 100 毫秒重试，最多 2.5 秒，失败就一个都不注入）。
     0.1.43：**把「返回」的注入速度退回 0.1.40 那一组** —— 0.1.41 为了让返回更快，把采样点从 8 个加到 16 个、每步 42 毫秒压到 10 毫秒（约 590 → 1040 pt/s）。之后真机上出现「球点不动、拖不动、点球反而点到下面的 App」，而且把球关掉再打开也不恢复。这一版除速度之外**什么都不动**：一次只改一个变量，才判断得出到底是不是它。要是退回之后一切正常，说明问题就在那组更快的参数上，提速得换个做法再谈。
     0.1.42：**界面清理**（用户要求）—— 首页的「轻点次数」删掉（球上那个数字也一起去掉，「显示/隐藏数字」这个动作同样删了：老列表里那条会自动消失，绑在它上面的手势改成「什么都不做」）；按球不再缩一下（震动保留）；首页那些 `*` 长说明、排障、版本记录整块移除，只剩开关和外观设置。版本记录挪到这里 —— 点「版本」这一行看历史，点「标识」这一行打开项目的 GitHub 页面。
     0.1.41：**返回划得更快、更顺** —— 采样点从 8 个加到 16 个，每步间隔从 42 毫秒压到 10 毫秒，整段划动的实际速度大约从 590 pt/s 提到 1000 pt/s 上下，返回动画跟手多了；「按下后先按住 70 毫秒再起划」保留（那是识别器判断「这是有意的边缘手势」的关键）。速度仍留在安全区以内 —— 再快就会退回「快速轻扫」那一档，识别器不认，划出去会变成下面 App 的横向翻页。
@@ -238,6 +244,17 @@ struct AboutTab: View {
         }
     }
 
+    /// 0.1.44：恢复出厂设置。
+    /// 先关球：球进程手里攥着启动时的旧快照，留着它会把刚删掉的键又写回去。
+    private func doFactoryReset() {
+        SetHUDEnabledBridger(false)
+        let ok = BallSettings.factoryReset()
+        fileInfoText = BallSettings.fileInfo()
+        resetResult = ok
+            ? "已清空。回「启动」页把开关打开，球会按默认值重新出现。"
+            : "删除失败：\(BallSettings.lastWriteError ?? "未知原因")"
+    }
+
     var body: some View {
         NavigationView {
             List {
@@ -268,6 +285,35 @@ struct AboutTab: View {
                                 .foregroundColor(.secondary)
                         }
                     }
+                }
+
+                Section(header: Text("设置文件（0.1.44）"),
+                        footer: Text("App 和球进程共用这一个 plist：\n\(BallSettings.path)\n\n属主要是显示成 root，说明球进程把它写成了 root 所有 —— App 从那一刻起就改不动任何设置了（表现出来就是：改了没反应、恢复默认失效、删掉重装还是旧设置）。0.1.44 起球每次写完都会把属主改回 mobile，这条不该再出现。\n\n「恢复出厂设置」会删掉这个文件（球的位置 / 大小 / 颜色 / 自定义图标 / 快捷菜单 / 手势绑定全清），没有备份。")) {
+                    Text(fileInfoText.isEmpty ? BallSettings.fileInfo() : fileInfoText)
+                        .font(.system(.caption2, design: .monospaced))
+
+                    if let err = BallSettings.lastWriteError {
+                        Text("⚠️ \(err)")
+                            .font(.footnote)
+                            .foregroundColor(.red)
+                    }
+
+                    Button("刷新这一行") { fileInfoText = BallSettings.fileInfo() }
+
+                    Button("恢复出厂设置（清空所有设置）") { showResetConfirm = true }
+                        .foregroundColor(.red)
+
+                    if let r = resetResult {
+                        Text(r).font(.footnote)
+                    }
+                }
+                .confirmationDialog("确定清空所有设置？",
+                                    isPresented: $showResetConfirm,
+                                    titleVisibility: .visible) {
+                    Button("清空并关掉球", role: .destructive) { doFactoryReset() }
+                    Button("取消", role: .cancel) { }
+                } message: {
+                    Text("会删掉 \(BallSettings.path)。球的位置、大小、颜色、自定义图标、快捷菜单、手势绑定都会回到默认，没有备份。")
                 }
 
                 Section(header: helpHeader("真实点球诊断（0.1.15）", Self.helpTapDiag)) {

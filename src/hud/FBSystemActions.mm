@@ -701,19 +701,20 @@ BOOL FBGoBack(CGRect ballRectOnScreen)
     // flick 不触发边缘返回，于是那一下被当成普通触摸漏给了下面的 App，
     // 下面的 App 拿它去做自己的横向翻页 → 看起来就是「在左右滑动切换」。
     //
-    // 现在的参数：8 个点 × 42ms ≈ 294ms 划 239pt → **约 810 pt/s**，
-    // 并且下面多了一个「按下后先按住 70ms」的起步阶段。
+    // 现在的参数：**16 个点 × 10ms ≈ 160ms** 划 239pt，前面再加 70ms 的「按住起步」
+    // → 约 **1040 pt/s**（0.1.41 提速：用户 2026-10-21 反馈「返回的滑动速度有点慢」，
+    //   同时要求「把点增多」——点密一点，系统拿到的轨迹才像手指，返回动画也不会一格一格）。
     //
-    // ⚠️ 0.1.43 回退：0.1.41 曾把这里改成 16 点 × 10ms（≈1040 pt/s）。之后真机上出现
-    //    「球点不动、拖不动、点球反而点到下面的 App」，而且**关球再开也没好**（说明不是
-    //    我们进程里的状态）。这一组参数是 0.1.38~0.1.40 真机验证过「都正常」的那一组，
-    //    回退它就是为了把 0.1.41 这个唯一的变量排除掉 —— 一次只动一个变量。
+    // 0.1.43 曾把这里退回 8 点 × 42ms 做单变量对照（当时怀疑返回注入把球搞死），
+    // 0.1.44 用户实测确认**与返回无关**（真凶是设置文件被冻结），按用户要求改回这一组。
     //
     // ⚠️ 上界仍然是 0.1.22 的教训：**别超过 ~1500 pt/s**。再快就会退回
     //    「快速轻扫 / flick」那一档，识别器不认，划出去就变成下面 App 的横向翻页。
-    static const double xs[] = { 1.0, 8.0, 24.0, 52.0, 92.0, 140.0, 190.0, 240.0 };
+    //    16 点 × 10ms 留了余量（真机实测的每条事件开销还会再拉低一点实际速度）。
+    static const double xs[] = { 1.0, 6.0, 12.0, 20.0, 30.0, 42.0, 56.0, 72.0,
+                                 90.0, 110.0, 131.0, 153.0, 177.0, 200.0, 221.0, 240.0 };
     const int count = (int)(sizeof(xs) / sizeof(xs[0]));
-    static const int kStepMs = 42;       // 每步 42ms（0.1.43 回退到 0.1.40 那组）
+    static const int kStepMs = 10;       // 每步 10ms（0.1.44 改回 0.1.41 那组）
     static const int kHoldMs = 70;       // 按下之后先按住多久再起划（真实手势都有）
 
     // ---- ① 空跑预检：只验「造得出来」，造完立刻扔掉 ----
@@ -899,7 +900,7 @@ static void FBWaitMailFrontmostThenFlow(CGRect ballRectOnScreen, int waitedMs)
 
     NSString *front = FBFrontmostBundleID();
     BOOL ready = front ? [front isEqualToString:kMailBundle]
-                       : (waitedMs >= 1600);   // 查不到前台是谁：退回原来的「稳等 1.6 秒」
+                       : (waitedMs >= 200);   // 0.1.44：查不到前台是谁 → 按用户要求 200ms 后照点
 
     if (!ready && waitedMs < kMaxWaitMs) {
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(kPollMs * NSEC_PER_MSEC)),
@@ -920,8 +921,9 @@ static void FBWaitMailFrontmostThenFlow(CGRect ballRectOnScreen, int waitedMs)
     CGSize screen = [UIScreen mainScreen].bounds.size;
     if (screen.width < 100.0) screen = CGSizeMake(428.0, 926.0);   // 13PM 的逻辑尺寸兜底
 
-    // 点一下上方 1/3 的空白（x 取屏幕中点：球常年贴边，撞不上）
-    FBTapAtScreenPoint(CGPointMake(screen.width * 0.5, screen.height * 0.30), screen);
+    // 点一下**上半个屏幕的正中**（0.1.44 用户要求：原来是上方 0.30 处）。
+    // 取 0.25H = 上半屏的中线；x 取屏幕中点：球常年贴边，撞不上。
+    FBTapAtScreenPoint(CGPointMake(screen.width * 0.5, screen.height * 0.25), screen);
 
     // 这一下点击是「按下 60ms 再抬起」，抬起之后界面还要消化一下；
     // 0.35 秒足够，别压到 50ms（那是按完就划，很多界面会把它当成同一次触摸）。
@@ -940,8 +942,14 @@ BOOL FBOpenMailInbox(CGRect ballRectOnScreen)
     FBLog(@"打开邮箱：%@", opened ? @"已让 Mail 到前台" : @"拉不起来（Mail 被删了？/ 系统不让从这儿跳）");
     if (!opened) return NO;
 
-    // ② 轮询等它真的到前台，再走点击 + 返回（见 FBWaitMailFrontmostThenFlow 的说明）
-    FBWaitMailFrontmostThenFlow(ballRectOnScreen, 0);
+    // ② 打开之后**200ms** 就走「点一下 + 返回」（0.1.44 用户要求）。
+    //    原来是一路轮询等 Mail 到前台（热启动白等、冷启动才需要）。
+    //    保险留一层：200ms 到点时如果查得到前台、且**不是** Mail，就继续每 100ms 重试
+    //    （最多 2.5 秒），失败就一个都不注入 —— 免得瞎点到别的 App 上。
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(200 * NSEC_PER_MSEC)),
+                   dispatch_get_main_queue(), ^{
+        FBWaitMailFrontmostThenFlow(ballRectOnScreen, 200);
+    });
     return YES;
 }
 

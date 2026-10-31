@@ -40,6 +40,7 @@ extension UserDefaults {
                 dict = (try PropertyListSerialization.propertyList(from: plistData, options: [], format: nil) as? [String: Any]) ?? [:]
             } catch {
                 print("[FloatingBall] ⚠️ 读 \(path) 失败（\(error.localizedDescription)）—— 放弃这次写入，不拿空字典覆盖用户设置")
+                BallSettings.lastWriteError = "读设置文件失败（\(error.localizedDescription)）—— 这次改动没有保存"
                 return
             }
         }
@@ -51,8 +52,12 @@ extension UserDefaults {
             //    非原子写是「截断 → 写」，对面正好在读就会拿到半截 XML。
             //    HUD 侧（BallRootViewController.savePrefs）用的就是 atomically:YES，两边要对齐。
             try newData.write(to: URL(fileURLWithPath: path), options: .atomic)
+            BallSettings.lastWriteError = nil
         } catch {
+            // 0.1.44：**别再静默**。写不进去是「设置改了没反应」的唯一原因，
+            // 用户 2026-10-29 就是被这个吞掉的错误坑了半天（文件被球进程写成了 root 所有）。
             print(error.localizedDescription)
+            BallSettings.lastWriteError = "写入设置文件失败：\(error.localizedDescription)"
         }
     }
     

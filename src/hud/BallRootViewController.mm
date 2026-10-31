@@ -16,6 +16,8 @@
 #import "FBSystemActions.h"
 
 #import <notify.h>
+#import <unistd.h>
+#import <sys/stat.h>
 #import <objc/runtime.h>
 #import <objc/message.h>
 #import <dlfcn.h>
@@ -636,6 +638,9 @@ void FBBallHapticTouchDown(void)
 
 #pragma mark - 设置（和 App 共享 /var/mobile/Library/Preferences 下同一个 plist）
 
+// 0.1.44：定义在 savePrefs 前面，这里先声明（loadPrefs 结束时要顺手修一次属主）
+static void FBChownSettingsToMobile(void);
+
 - (void)loadPrefs
 {
     NSDictionary *onDisk = [NSDictionary dictionaryWithContentsOfFile:USER_DEFAULTS_PATH];
@@ -645,6 +650,28 @@ void FBBallHapticTouchDown(void)
     // 0.1.15：「关于」页的盲喂开关（验证用，默认关）
     NSNumber *blind = _prefs[@"BlindFeed"];
     gFBBlindFeed = [blind isKindOfClass:[NSNumber class]] && [blind boolValue];
+
+    // 0.1.44：已经坏在用户手机上的文件也要修 —— 球一启动就把属主改回 mobile，
+    // 不用等用户先去终端 chown。
+    FBChownSettingsToMobile();
+}
+
+/// 0.1.44：把设置文件的属主/权限改回 mobile(501) / 0644。
+///
+/// 为什么必须做（用户 2026-10-29 真机上踩到的）：
+///   HUD 是以 **root** 身份跑的（HUDHelper 里 `posix_spawnattr_set_persona_uid_np(&attr, 0)`），
+///   而 `writeToFile:atomically:YES` 的实现是「先写临时文件、再 rename 过去」——
+///   **新文件的属主就是写入者**，也就是 root。球每拖一次就写一次 BallX/BallY，
+///   于是这个 plist 会慢慢变成 root 所有。App（uid 501）从此写不进去，
+///   而 App 的写法把失败吞在 `print` 里（UserDefaultsExtensions.setValue 的 catch），
+///   于是用户看到的是「改了没反应 / 恢复默认失效 / 删了重装还是旧设置」。
+///   现在每次写完都 chown 回 mobile；球自己是 root，不受影响。
+///
+/// ⚠️ chown 失败（没权限 / 文件不存在）就当没发生，**绝不影响「设置已经写进去了」这个事实**。
+static void FBChownSettingsToMobile(void)
+{
+    chown(USER_DEFAULTS_PATH, 501, 501);
+    chmod(USER_DEFAULTS_PATH, 0644);
 }
 
 - (void)savePrefs
@@ -669,6 +696,7 @@ void FBBallHapticTouchDown(void)
 
     if ([disk writeToFile:USER_DEFAULTS_PATH atomically:YES]) {
         _prefs = disk;      // 外观那些键也顺手更新成磁盘上的最新值
+        FBChownSettingsToMobile();   // 0.1.44：别把文件写成 root 所有（否则 App 改不动设置）
     }
 }
 

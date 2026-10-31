@@ -73,4 +73,60 @@ enum BallSettings {
     static func notifyReload() {
         FBPostNotify(reloadNotification)
     }
+
+    // MARK: - 0.1.44：设置文件本身的状态（用户 2026-10-29 踩的坑）
+
+    /// 最近一次写入失败的原因（nil = 最近一次是成功的）。
+    /// 由 `UserDefaults.setValue(_:forKey:forPath:)` 写入，「关于」页会显示出来。
+    /// ⚠️ 以前这个错误只 `print` 到控制台，用户在界面上完全看不到 —— 表现出来就是
+    ///    「改了没反应 / 恢复默认失效 / 删掉重装还是旧设置」。
+    static var lastWriteError: String?
+
+    /// 设置文件的人类可读描述：属主 / 权限 / 大小 / 最后修改时间。
+    /// 属主是 `root` 就说明球进程把它写成了 root 所有 —— App 从此写不进去。
+    static func fileInfo() -> String {
+        let fm = FileManager.default
+        guard fm.fileExists(atPath: path) else {
+            return "文件不存在（一切按默认值走）"
+        }
+        let attrs = (try? fm.attributesOfItem(atPath: path)) ?? [:]
+        let owner = (attrs[.ownerAccountName] as? String) ?? "?"
+        let group = (attrs[.groupOwnerAccountName] as? String) ?? "?"
+        let perm = (attrs[.posixPermissions] as? NSNumber)?.intValue ?? 0
+        let size = (attrs[.size] as? NSNumber)?.intValue ?? 0
+        let mtime = (attrs[.modificationDate] as? Date) ?? Date(timeIntervalSince1970: 0)
+        let df = DateFormatter()
+        df.dateFormat = "MM-dd HH:mm:ss"
+        let permText = String(format: "%03o", perm)
+        let ownedByRoot = (owner == "root")
+        return "属主 \(owner):\(group) · 权限 \(permText) · \(size) 字节 · 改于 \(df.string(from: mtime))"
+            + (ownedByRoot ? "  ⚠️ 属主是 root，App 写不进去 —— 点下面的「恢复出厂设置」" : "")
+    }
+
+    /// 恢复出厂设置：把整份设置清干净。
+    ///
+    /// 为什么不是「写一份默认值」：这个文件可能已经坏成 root 所有、App 根本写不动。
+    /// 而**删文件**只要求目录可写（/var/mobile/Library/Preferences 本来就是 mobile 的），
+    /// 所以删除比写入可靠。删完球进程手里还是旧快照，所以调用方要把它关掉再开
+    /// （或者发 reload 通知让它重读 —— 这里直接关球最干净）。
+    ///
+    /// ⚠️ 会丢掉：球的位置 / 大小 / 颜色 / 自定义图标 / 快捷菜单 / 手势绑定。没有备份。
+    @discardableResult
+    static func factoryReset() -> Bool {
+        // 1) 让 cfprefsd 忘掉这个域 —— 否则它手里的缓存可能又把文件写回来
+        UserDefaults.standard.removePersistentDomain(forName: "com.daofeidao.floatingball")
+        UserDefaults.standard.synchronize()
+
+        // 2) 直接把文件删掉（目录可写就行，不要求文件属主是我们）
+        var ok = true
+        if FileManager.default.fileExists(atPath: path) {
+            do {
+                try FileManager.default.removeItem(atPath: path)
+            } catch {
+                ok = false
+                lastWriteError = "删除设置文件失败：\(error.localizedDescription)"
+            }
+        }
+        return ok
+    }
 }

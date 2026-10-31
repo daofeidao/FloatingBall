@@ -18,6 +18,15 @@ struct AboutTab: View {
         return v ?? "?"
     }
 
+    /// 0.1.44：设置文件那一节的页脚（拆成常量，减轻 body 的类型推断负担）
+    private static let settingsFileFooter = """
+    App 和球进程共用这一个 plist：\(BallSettings.path)
+
+    属主要是显示成 root，说明球进程把它写成了 root 所有 —— App 从那一刻起就改不动任何设置了（改了没反应、恢复默认失效、删掉重装还是旧设置）。0.1.44 起球每次写完都会把属主改回 mobile。
+
+    「恢复出厂设置」会删掉这个文件，没有备份。
+    """
+
     /// 版本记录（0.1.42 起从首页搬到这里，点「版本」那一行看）。
     private static let versionHistory = """
     0.1.44：**修「设置改了没反应」的真正原因** —— 球进程是以 root 身份跑的，而它写设置用的是「造临时文件再改名」这种原子写法，**新文件的属主就变成了 root**。球每拖一次都会写一次位置，于是 `com.daofeidao.floatingball.plist` 慢慢变成 root 所有；App（普通权限）从此写不进去，而 App 的写法把失败吞在控制台里、界面上什么都不显示。表现出来就是：改了没反应、恢复默认失效、把 App 删掉重装打开还是旧设置（那个 plist 不在 App 里，删 App 不会删它）。现在：① 球每次写完都把属主改回 mobile，球启动时也修一次；② App 写失败会在「关于」页用红字写出来；③ 「关于」页新增「设置文件」一行（属主 / 权限 / 大小 / 修改时间）和「恢复出厂设置」按钮（先关球、再删文件、再让 cfprefsd 忘掉这个域），以后不用终端也能清干净。**返回速度改回 0.1.41 那组**（16 点 × 10 毫秒，约 1040 pt/s —— 0.1.43 退回速度是为了做对照，已验证与球点不动无关）。**「打开邮箱收件箱」改了两处**：点击位置改到**上半个屏幕的正中**（屏幕中线 0.5W、0.25H），并且打开 Mail 之后 **200 毫秒**就点（原来是一直轮询等它到前台，热启动白等一秒多；留了一层保险：200ms 时查得到前台、但不是 Mail，就每 100 毫秒重试，最多 2.5 秒，失败就一个都不注入）。
@@ -288,7 +297,7 @@ struct AboutTab: View {
                 }
 
                 Section(header: Text("设置文件（0.1.44）"),
-                        footer: Text("App 和球进程共用这一个 plist：\n\(BallSettings.path)\n\n属主要是显示成 root，说明球进程把它写成了 root 所有 —— App 从那一刻起就改不动任何设置了（表现出来就是：改了没反应、恢复默认失效、删掉重装还是旧设置）。0.1.44 起球每次写完都会把属主改回 mobile，这条不该再出现。\n\n「恢复出厂设置」会删掉这个文件（球的位置 / 大小 / 颜色 / 自定义图标 / 快捷菜单 / 手势绑定全清），没有备份。")) {
+                        footer: Text(Self.settingsFileFooter)) {
                     Text(fileInfoText.isEmpty ? BallSettings.fileInfo() : fileInfoText)
                         .font(.system(.caption2, design: .monospaced))
 
@@ -313,7 +322,7 @@ struct AboutTab: View {
                     Button("清空并关掉球", role: .destructive) { doFactoryReset() }
                     Button("取消", role: .cancel) { }
                 } message: {
-                    Text("会删掉 \(BallSettings.path)。球的位置、大小、颜色、自定义图标、快捷菜单、手势绑定都会回到默认，没有备份。")
+                    Text("会删掉设置文件。球的位置、大小、颜色、自定义图标、快捷菜单、手势绑定都会回到默认，没有备份。")
                 }
 
                 Section(header: helpHeader("真实点球诊断（0.1.15）", Self.helpTapDiag)) {

@@ -56,10 +56,11 @@ enum ShortcutAction: String, CaseIterable, Identifiable {
     /// 列表里那行小字
     var detail: String {
         switch self {
-        case .refreshSignal: return "卡贴机没信号 / 假信号时点一下，让基带重新搜网"
+        // 0.1.52（用户要求）：这两条**不显示**小字解释
+        case .refreshSignal: return ""
         case .autoRefreshSignal: return "开关：没开飞行模式、插着卡时，丢信号持续 10 秒就自动刷新一次（这一轮只刷一次）。原来的「刷新信号」不受影响"
         case .goBack:        return "⚠️ 等于按「上一页」：往系统注入一次左缘右划。万一界面卡住点不动 → 强制重启即可恢复"
-        case .screenshot:    return "让系统截当前屏幕，图进「相册 → 截屏」。走的是辅助触控「截屏」同一条系统通道；万一不通才注入「音量加 + 电源」"
+        case .screenshot:    return ""
         case .mailInbox:     return "把邮箱拉到前台，点一下上方空白、再划一次返回 —— 退回收件箱列表。给「Mail 停在带附件的邮件详情页、光划返回划不动」这种情况用"
         case .openMainApp:   return "回到悬浮球 App 的「启动」页"
         case .quitBall:      return "把屏幕上的球收掉（等于回 App 把「启动悬浮球」关一下），球没了这个菜单也就没了"

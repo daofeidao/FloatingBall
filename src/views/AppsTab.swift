@@ -155,10 +155,13 @@ struct AppsTab: View {
                                 .foregroundColor(.accentColor)
                             VStack(alignment: .leading, spacing: 2) {
                                 Text(item.displayTitle)
-                                Text(item.detail)
-                                    .font(.caption)
-                                    .foregroundColor(.secondary)
-                                    .lineLimit(1)
+                                // 0.1.52：detail 为空就不画小字（「刷新信号 / 截屏」）
+                                if !item.detail.isEmpty {
+                                    Text(item.detail)
+                                        .font(.caption)
+                                        .foregroundColor(.secondary)
+                                        .lineLimit(1)
+                                }
                             }
                             Spacer(minLength: 8)
                         }
@@ -234,10 +237,13 @@ struct AppsTab: View {
                 .foregroundColor(.accentColor)
             VStack(alignment: .leading, spacing: 2) {
                 Text(item.displayTitle)
-                Text(item.detail)
-                    .font(.caption)
-                    .foregroundColor(.secondary)
-                    .lineLimit(1)
+                // 0.1.52（用户要求）：detail 为空就整行不画（「刷新信号 / 截屏」不显示小字）
+                if !item.detail.isEmpty {
+                    Text(item.detail)
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                        .lineLimit(1)
+                }
             }
             Spacer(minLength: 8)
             // 三条横线：平时只是「这行能排」的示意（不是真的拖动把手）。
@@ -883,10 +889,13 @@ struct AddShortcutView: View {
                     .foregroundColor(.accentColor)
                 VStack(alignment: .leading, spacing: 2) {
                     Text(item.displayTitle).foregroundColor(.primary)
-                    Text(used ? "已经在列表里了" : detail)
-                        .font(.caption)
-                        .foregroundColor(.secondary)
-                        .lineLimit(1)
+                    // 0.1.52：detail 为空就不画小字（「刷新信号 / 截屏」）
+                    if used || !detail.isEmpty {
+                        Text(used ? "已经在列表里了" : detail)
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                            .lineLimit(1)
+                    }
                 }
                 Spacer()
                 if used {

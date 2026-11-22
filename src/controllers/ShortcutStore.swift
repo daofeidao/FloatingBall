@@ -19,7 +19,8 @@ import Foundation
 // MARK: - 内置动作
 
 enum ShortcutAction: String, CaseIterable, Identifiable {
-    case refreshSignal      // 刷新蜂窝信号
+    case refreshSignal      // 刷新蜂窝信号（手动点一下）
+    case autoRefreshSignal  // 0.1.45：自动刷新信号（开关：丢信号自动刷一次）
     case goBack             // 全局返回（往系统注入一次「左缘往右划」）
     case screenshot         // 截屏（优先走系统截图服务，不行才注入「音量加 + 电源」）
     case mailInbox          // 打开邮箱收件箱（把 Mail 拉到前台 → 点一下上方空白 → 划一次返回）
@@ -41,6 +42,7 @@ enum ShortcutAction: String, CaseIterable, Identifiable {
     var title: String {
         switch self {
         case .refreshSignal: return "刷新信号"
+        case .autoRefreshSignal: return "自动刷新信号"
         case .goBack:        return "全局返回"
         case .screenshot:    return "截屏"
         case .mailInbox:     return "打开邮箱收件箱"
@@ -55,6 +57,7 @@ enum ShortcutAction: String, CaseIterable, Identifiable {
     var detail: String {
         switch self {
         case .refreshSignal: return "卡贴机没信号 / 假信号时点一下，让基带重新搜网"
+        case .autoRefreshSignal: return "开关：没开飞行模式、插着卡时，丢信号持续 10 秒就自动刷新一次（这一轮只刷一次）。原来的「刷新信号」不受影响"
         case .goBack:        return "⚠️ 等于按「上一页」：往系统注入一次左缘右划。万一界面卡住点不动 → 强制重启即可恢复"
         case .screenshot:    return "让系统截当前屏幕，图进「相册 → 截屏」。走的是辅助触控「截屏」同一条系统通道；万一不通才注入「音量加 + 电源」"
         case .mailInbox:     return "把邮箱拉到前台，点一下上方空白、再划一次返回 —— 退回收件箱列表。给「Mail 停在带附件的邮件详情页、光划返回划不动」这种情况用"
@@ -68,6 +71,7 @@ enum ShortcutAction: String, CaseIterable, Identifiable {
     var symbol: String {
         switch self {
         case .refreshSignal: return "antenna.radiowaves.left.and.right"
+        case .autoRefreshSignal: return "arrow.triangle.2.circlepath"
         case .goBack:        return "arrow.uturn.backward"
         case .screenshot:    return "camera.viewfinder"
         case .mailInbox:     return "envelope.open"

@@ -76,6 +76,287 @@ BOOL FBRefreshCellularSignal(void)
     return YES;
 }
 
+#pragma mark - 自动刷新信号（0.1.45，用户要求）
+
+// 需求（用户 2026-11-23）：
+//   · 原来的「刷新信号」保留不动（手动点一下）。
+//   · 新增一个开关「自动刷新信号」：**非飞行模式 + 已插卡** 的正常状态下，
+//     网络丢信号 → 自动刷新一次。
+//
+// 判定分三块，全部走 objc 字符串取类/方法 + dlopen（不直接链接私有符号）：
+//   ① 有没有插卡 —— `CTTelephonyNetworkInfo.serviceSubscriberCellularProviders`，
+//      看每个 `CTCarrier` 的 `isoCountryCode`。
+//      ⚠️ 不能用 `carrierName` 判断：**无 SIM 时它照样有值**（实测结论，见 MEMORY）。
+//   ② 有没有服务 —— `serviceCurrentRadioAccessTechnology` 非空 = 有服务；
+//      空 = 没搜到网。飞行模式和真丢信号都会是空。
+//   ③ 飞行模式 —— `RadiosPreferences.airplaneMode`（AppSupport 私有类，长期可用）；
+//      取不到再退 `SCPreferences`（读 com.apple.radios.plist 的 AirplaneMode）。
+//      ⚠️ 必须单独判：飞行模式下 RAT 也是空，和「真丢信号」分不开；
+//         不单独判就会在飞行模式里一直空刷。
+//
+// 状态机（避免疯狂刷基带）：
+//   · 进入「没服务」→ 计时 10 秒（短暂抖动不算）。
+//   · 满 10 秒 → 调 FBRefreshCellularSignal() **一次**，然后本轮不再刷。
+//   · 服务回来 / 飞行模式 / 没插卡 / 读不到状态 → 本轮结束，下次丢信号重新来。
+//   这样就是用户说的「丢信号自动刷新一次」，不会每几秒刷一次。
+
+static id FBCTNetworkInfo(void)
+{
+    static Class cls = Nil;
+    static id info = nil;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        // CoreTelephony 可能还没被加载；dlopen 一次是幂等的，和刷新信号那条不冲突。
+        dlopen("/System/Library/Frameworks/CoreTelephony.framework/CoreTelephony", RTLD_NOW);
+        cls = objc_getClass("CTTelephonyNetworkInfo");
+        if (cls) info = [[cls alloc] init];   // 缓存一个，别每次 new
+    });
+    return info;
+}
+
+/// 1 = 有卡，2 = 无卡，0 = 读不到
+static int FBDetectSIMState(void)
+{
+    id info = FBCTNetworkInfo();
+    if (!info) return 0;
+
+    SEL sel = NSSelectorFromString(@"serviceSubscriberCellularProviders");
+    if (![info respondsToSelector:sel]) return 0;
+
+    id raw = ((id (*)(id, SEL))objc_msgSend)(info, sel);
+    if (![raw isKindOfClass:[NSDictionary class]]) return 0;
+    NSDictionary *providers = (NSDictionary *)raw;
+    if (providers.count == 0) return 2;
+
+    SEL isoSel = NSSelectorFromString(@"isoCountryCode");
+    for (id carrier in providers.allValues) {
+        if (!carrier || carrier == [NSNull null]) continue;
+        if (![carrier respondsToSelector:isoSel]) continue;
+        id iso = ((id (*)(id, SEL))objc_msgSend)(carrier, isoSel);
+        if ([iso isKindOfClass:[NSString class]] && [(NSString *)iso length] > 0) {
+            return 1;
+        }
+    }
+    return 2;
+}
+
+/// 1 = 有服务，2 = 没服务，0 = 读不到
+static int FBDetectServiceState(void)
+{
+    id info = FBCTNetworkInfo();
+    if (!info) return 0;
+
+    SEL sel = NSSelectorFromString(@"serviceCurrentRadioAccessTechnology");
+    if (![info respondsToSelector:sel]) return 0;
+
+    id raw = ((id (*)(id, SEL))objc_msgSend)(info, sel);
+    if ([raw isKindOfClass:[NSDictionary class]]) {
+        NSDictionary *d = (NSDictionary *)raw;
+        if (d.count == 0) return 2;
+        for (id tech in d.allValues) {
+            if ([tech isKindOfClass:[NSString class]] && [(NSString *)tech length] > 0) return 1;
+        }
+        return 2;
+    }
+    // nil：老系统 / 单卡属性也走这条，按「没服务」处理。
+    if (raw == nil) return 2;
+    return 0;
+}
+
+/// 1 = 飞行模式，2 = 非飞行，0 = 读不到
+static int FBDetectAirplaneMode(void)
+{
+    // ① RadiosPreferences.airplaneMode（首选）
+    //    ⚠️ 这个类在不同系统版本可能住在 AppSupport / SpringBoardServices / CoreTelephony，
+    //       所以先看有没有已经加载，再挨个 dlopen 找。
+    static Class rpClass = Nil;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        rpClass = objc_getClass("RadiosPreferences");
+        if (!rpClass) {
+            dlopen("/System/Library/PrivateFrameworks/AppSupport.framework/AppSupport", RTLD_NOW);
+            rpClass = objc_getClass("RadiosPreferences");
+        }
+        if (!rpClass) {
+            dlopen("/System/Library/PrivateFrameworks/SpringBoardServices.framework/SpringBoardServices",
+                   RTLD_NOW);
+            rpClass = objc_getClass("RadiosPreferences");
+        }
+        if (!rpClass) {
+            dlopen("/System/Library/Frameworks/CoreTelephony.framework/CoreTelephony", RTLD_NOW);
+            rpClass = objc_getClass("RadiosPreferences");
+        }
+        if (!rpClass) {
+            FBLog(@"自动刷新信号：找不到 RadiosPreferences，飞行模式改用 SCPreferences 判断");
+        }
+    });
+    if (rpClass) {
+        id rp = [[rpClass alloc] init];
+        if (rp) {
+            SEL refresh = NSSelectorFromString(@"refresh");
+            if ([rp respondsToSelector:refresh]) {
+                ((void (*)(id, SEL))objc_msgSend)(rp, refresh);
+            }
+            SEL sel = NSSelectorFromString(@"airplaneMode");
+            if ([rp respondsToSelector:sel]) {
+                BOOL on = ((BOOL (*)(id, SEL))objc_msgSend)(rp, sel);
+                return on ? 1 : 2;
+            }
+        }
+    }
+
+    // ② 退路：SCPreferences 读 com.apple.radios.plist 的 AirplaneMode
+    typedef void *(*FBSCCreateFn)(CFAllocatorRef, CFStringRef, CFStringRef, void *);
+    typedef CFTypeRef (*FBSCGetFn)(void *, CFStringRef);
+    static FBSCCreateFn scCreate = NULL;
+    static FBSCGetFn    scGet    = NULL;
+    static dispatch_once_t once2;
+    dispatch_once(&once2, ^{
+        void *h = dlopen("/System/Library/Frameworks/SystemConfiguration.framework/SystemConfiguration",
+                         RTLD_NOW);
+        if (h) {
+            scCreate = (FBSCCreateFn)dlsym(h, "SCPreferencesCreateWithAuthorization");
+            scGet    = (FBSCGetFn)dlsym(h, "SCPreferencesGetValue");
+        }
+    });
+    if (scCreate && scGet) {
+        void *prefs = scCreate(kCFAllocatorDefault,
+                               CFSTR("com.daofeidao.floatingball"),
+                               CFSTR("com.apple.radios.plist"),
+                               NULL);
+        if (prefs) {
+            CFTypeRef v = scGet(prefs, CFSTR("AirplaneMode"));
+            int r = 0;
+            if (v && CFGetTypeID(v) == CFBooleanGetTypeID()) {
+                r = CFBooleanGetValue((CFBooleanRef)v) ? 1 : 2;
+            }
+            CFRelease(prefs);
+            if (r) return r;
+        }
+    }
+    return 0;
+}
+
+/// 三元小工具：把 1/2/0 翻成中文，给日志和诊断文件用。
+static NSString *FBTriText(int v, NSString *yes, NSString *no)
+{
+    if (v == 1) return yes;
+    if (v == 2) return no;
+    return @"读不到";
+}
+
+/// 把当前状态写成一行给人看的小文件（排障用，App 的「关于」页以后要用也能读）。
+static void FBWriteAutoRefreshDiag(int sim, int air, int svc,
+                                   BOOL inLoss, BOOL refreshed, NSTimeInterval lostFor)
+{
+    BOOL on = [[NSDictionary dictionaryWithContentsOfFile:USER_DEFAULTS_PATH][@"AutoRefreshSignal"] boolValue];
+    NSString *text = [NSString stringWithFormat:
+        @"开关=%@\n插卡=%@\n飞行模式=%@\n服务=%@\n"
+        @"本轮丢信号=%@\n本轮已刷新=%@\n丢信号持续=%.0f秒\n",
+        on ? @"开" : @"关",
+        FBTriText(sim, @"有", @"无"),
+        FBTriText(air, @"是", @"否"),
+        FBTriText(svc, @"有", @"无"),
+        inLoss ? @"是" : @"否",
+        refreshed ? @"是" : @"否",
+        lostFor];
+    [text writeToFile:@"/tmp/FloatingBall.autorefresh"
+           atomically:YES encoding:NSUTF8StringEncoding error:NULL];
+}
+
+static BOOL sAutoWasOn        = NO;
+static BOOL sAutoInLoss       = NO;
+static BOOL sAutoRefreshed    = NO;
+static NSTimeInterval sAutoLostSince = 0;
+static int  sAutoLastStateLog = -1;
+
+static void FBAutoRefreshSignalTick(void)
+{
+    NSDictionary *d = [NSDictionary dictionaryWithContentsOfFile:USER_DEFAULTS_PATH];
+    BOOL on = [d[@"AutoRefreshSignal"] boolValue];
+
+    if (!on) {
+        if (sAutoWasOn) {
+            FBLog(@"自动刷新信号：开关已关，停止动作");
+            sAutoWasOn = NO;
+        }
+        sAutoInLoss = NO;
+        sAutoRefreshed = NO;
+        sAutoLostSince = 0;
+        return;
+    }
+    if (!sAutoWasOn) {
+        FBLog(@"自动刷新信号：开关已开，开始监控（非飞行 + 有卡 + 丢了信号 → 10 秒后刷新一次）");
+        sAutoWasOn = YES;
+    }
+
+    int sim = FBDetectSIMState();
+    int air = FBDetectAirplaneMode();
+    int svc = FBDetectServiceState();
+
+    int sig = sim * 100 + air * 10 + svc;
+    if (sig != sAutoLastStateLog) {
+        sAutoLastStateLog = sig;
+        FBLog(@"自动刷新信号：插卡=%@ 飞行=%@ 服务=%@",
+              FBTriText(sim, @"有", @"无"),
+              FBTriText(air, @"是", @"否"),
+              FBTriText(svc, @"有", @"无"));
+    }
+
+    // 只要不是「非飞行 + 有卡 + 没服务」，本轮就结束。
+    if (air == 1 || sim == 2 || svc != 2) {
+        if (sAutoInLoss) {
+            FBLog(@"自动刷新信号：条件解除（飞行=%@ 插卡=%@ 服务=%@），本轮结束",
+                  FBTriText(air, @"是", @"否"),
+                  FBTriText(sim, @"有", @"无"),
+                  FBTriText(svc, @"有", @"无"));
+        }
+        sAutoInLoss = NO;
+        sAutoRefreshed = NO;
+        sAutoLostSince = 0;
+        FBWriteAutoRefreshDiag(sim, air, svc, NO, NO, 0);
+        return;
+    }
+
+    NSTimeInterval now = [NSDate timeIntervalSinceReferenceDate];
+    if (!sAutoInLoss) {
+        sAutoInLoss = YES;
+        sAutoRefreshed = NO;
+        sAutoLostSince = now;
+        FBLog(@"自动刷新信号：检测到没服务，开始计时（10 秒后刷新一次）");
+        FBWriteAutoRefreshDiag(sim, air, svc, YES, NO, 0);
+        return;
+    }
+
+    NSTimeInterval lostFor = now - sAutoLostSince;
+    if (!sAutoRefreshed && lostFor >= 10.0) {
+        sAutoRefreshed = YES;
+        BOOL ok = FBRefreshCellularSignal();
+        FBLog(@"自动刷新信号：没服务已持续 %.0f 秒 → 自动刷新一次（%@）",
+              lostFor, ok ? @"请求已发出，看信号格" : @"发不出去");
+    }
+    FBWriteAutoRefreshDiag(sim, air, svc, YES, sAutoRefreshed, lostFor);
+}
+
+void FBStartAutoRefreshSignalMonitor(void)
+{
+    static dispatch_source_t timer = nil;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        timer = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0,
+                                       dispatch_get_global_queue(QOS_CLASS_UTILITY, 0));
+        dispatch_source_set_timer(timer,
+                                  dispatch_time(DISPATCH_TIME_NOW, (int64_t)(8 * NSEC_PER_SEC)),
+                                  (uint64_t)(6 * NSEC_PER_SEC),
+                                  (uint64_t)(3 * NSEC_PER_SEC));
+        dispatch_source_set_event_handler(timer, ^{
+            FBAutoRefreshSignalTick();
+        });
+        dispatch_resume(timer);
+        FBLog(@"自动刷新信号：后台监控已挂上（每 6 秒看一次；开关关着时什么都不做）");
+    });
+}
+
 #pragma mark - 打开 App
 
 BOOL FBOpenApplication(NSString *bundleID)

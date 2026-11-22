@@ -26,6 +26,10 @@ struct AppsTab: View {
     @State private var message = ""
     @State private var showMessage = false
 
+    // 0.1.45：自动刷新信号（开关）。存的是共享 plist 的 AutoRefreshSignal，
+    // 球进程（root）那边的监控每 6 秒读一次这个键。
+    @State private var autoRefresh = false
+
     // ⚠️ 0.1.38（用户 2026-10-20 要求）：长说明不再摆在页面下面（太乱），
     //    改成小节标题右边一个小 `*`，点开才看（见 HelpNote.swift）。
     private static let menuFooter = """
@@ -81,6 +85,21 @@ struct AppsTab: View {
                     } label: {
                         Label("添加", systemImage: "plus.circle")
                     }
+                }
+
+                // ---- 0.1.45（用户 2026-11-23 要求）：自动刷新信号 ----
+                //   原来那个「刷新信号」是**手动点一下**，这条是**开关**：
+                //   开着时由球进程（root，后台常驻）盯着蜂窝状态，丢信号就自动刷一次。
+                //   ⚠️ 监控跑在球进程里，所以球得开着；开关本身存在共享 plist 的
+                //      AutoRefreshSignal，App 和球两边读同一个键。
+                Section(header: Text("自动刷新信号")) {
+                    Toggle("自动刷新信号", isOn: Binding(
+                        get: { autoRefresh },
+                        set: { want in setAutoRefresh(want) }
+                    ))
+                    Text("只在没开飞行模式、插着卡的时候生效：丢信号持续 10 秒 → 自动刷新一次。这一轮只刷一次，等信号回来之后再丢才会重新触发。\n原来的「刷新信号」动作完全不动，随时可以手动点。")
+                        .font(.footnote)
+                        .foregroundColor(.secondary)
                 }
 
                 // ⚠️ 0.1.32（用户要求）：手势绑定从「启动」页搬到这一页。
@@ -150,6 +169,8 @@ struct AppsTab: View {
             for entry in ShortcutStore.gestureKeys {
                 gestures[entry.id] = ShortcutStore.gestureTarget(entry.id)
             }
+            // 0.1.45：自动刷新信号开关
+            autoRefresh = BallSettings.bool("AutoRefreshSignal", default: false)
         }
         .sheet(isPresented: $showAdd) {
             AddShortcutView(existing: items) { item in
@@ -254,6 +275,14 @@ struct AppsTab: View {
         Haptics.fire(.tap)
     }
 
+    /// 0.1.45：自动刷新信号开关。写共享 plist + 通知球进程重读。
+    private func setAutoRefresh(_ want: Bool) {
+        autoRefresh = want
+        BallSettings.set(want, "AutoRefreshSignal")
+        BallSettings.notifyReload()
+        Haptics.fire(.tap)
+    }
+
     // MARK: - 执行
 
     private func run(_ item: ShortcutItem) {
@@ -287,6 +316,15 @@ struct AppsTab: View {
                 say(sent
                     ? "已经让基带重新搜网。\n\n⚠️ 这一步没有回执，别等我告诉你成功——直接看状态栏信号格回没回来。"
                     : "这次发不出去：这台机器上缺权限，或者系统里没有这个接口。")
+
+            case .autoRefreshSignal:
+                // 0.1.45：动作库里的这一条就是「开关」——点一下翻转，改完立刻回报状态。
+                Haptics.fire(.notice)
+                let want = !BallSettings.bool("AutoRefreshSignal", default: false)
+                setAutoRefresh(want)
+                say(want
+                    ? "自动刷新信号：已开启。\n\n只在没开飞行模式、插着卡的时候生效。丢信号持续 10 秒 → 自动刷新一次，这一轮只刷一次，信号回来后再丢才会重新触发。\n\n⚠️ 监控跑在球进程里，所以要保证「启动悬浮球」是开着的。"
+                    : "自动刷新信号：已关闭。\n\n原来那个「刷新信号」还在，随时可以手动点。")
 
             case .openMainApp:
                 Haptics.fire(.tap)

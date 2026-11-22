@@ -1293,6 +1293,11 @@ int main(int argc, char *argv[])
             //    原来又没人写过「App 不在了就退」这条规矩，于是球成僵尸（只能重启才能清）。
             FBHUDStartAppBundleWatchdog();
 
+            // 0.1.45（用户要求）：自动刷新信号的后台监控。
+            // 开关在共享 plist 的 AutoRefreshSignal；这里只负责挂定时器，
+            // 开关关着时每 6 秒看一眼就返回，不做任何事。
+            FBStartAutoRefreshSignalMonitor();
+
             // 不走 SpringBoard，自己把 UIKit 支起来
             [UIScreen initialize];
             CFRunLoopGetCurrent();

@@ -1291,6 +1291,25 @@ static void FBChownSettingsToMobile(void)
         return;
     }
 
+    if ([action isEqualToString:@"autoRefreshSignal"]) {
+        // 0.1.45（用户要求）：动作库里的「自动刷新信号」是**开关**，不是一次性动作。
+        // 点一下翻转共享 plist 的 AutoRefreshSignal；真正干活的是 HUD 启动时挂的
+        // FBStartAutoRefreshSignalMonitor()（每 6 秒看一次蜂窝状态，丢信号才刷新）。
+        NSDictionary *d = [NSDictionary dictionaryWithContentsOfFile:USER_DEFAULTS_PATH];
+        BOOL want = ![d[@"AutoRefreshSignal"] boolValue];   // 取反
+        NSMutableDictionary *m = d ? [d mutableCopy] : [NSMutableDictionary dictionary];
+        m[@"AutoRefreshSignal"] = @(want);
+
+        [self haptic:FBHapticNotice];
+        if ([m writeToFile:USER_DEFAULTS_PATH atomically:YES]) {
+            FBChownSettingsToMobile();   // 0.1.44 的教训：别写成 root 所有
+            FBLog(@"绑定动作=自动刷新信号 -> 已%@", want ? @"开启" : @"关闭");
+        } else {
+            FBLog(@"⚠️ 绑定动作=自动刷新信号 -> 写设置失败，开关没变");
+        }
+        return;
+    }
+
     if ([action isEqualToString:@"openAppList"]) {
         // ⚠️ 0.1.22：改成弹**球旁边的浮层**，不再「打开 App 到第 2 栏」。
         //    原来那条要靠 FBOpenApplication 从 root 进程把 App 拉起来，

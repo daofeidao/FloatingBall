@@ -12,10 +12,23 @@ struct AboutTab: View {
     @State private var fileInfoText = ""
     @State private var showResetConfirm = false
     @State private var resetResult: String?
+    /// 0.1.45：自动刷新信号状态（球进程每 6 秒写一次 /tmp/FloatingBall.autorefresh）
+    @State private var autoRefreshTick = 0
 
     private var version: String {
         let v = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String
         return v ?? "?"
+    }
+
+    /// 0.1.45：读球进程写的自动刷新状态小文件。
+    /// 球每 6 秒写一次；读不到说明球没起来，或者还没升到 0.1.45。
+    private var autoRefreshStatus: String {
+        _ = autoRefreshTick   // 点「刷新」时值变了 → body 重算
+        guard let text = try? String(contentsOfFile: "/tmp/FloatingBall.autorefresh",
+                                     encoding: .utf8) else {
+            return "（读不到 /tmp/FloatingBall.autorefresh）\n球进程没起来，或者还没装 0.1.45。"
+        }
+        return text.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     /// 0.1.44：设置文件那一节的页脚（拆成常量，减轻 body 的类型推断负担）
@@ -327,6 +340,14 @@ struct AboutTab: View {
                     Button("取消", role: .cancel) { }
                 } message: {
                     Text("会删掉设置文件。球的位置、大小、颜色、自定义图标、快捷菜单、手势绑定都会回到默认，没有备份。")
+                }
+
+                // ---- 0.1.45：自动刷新信号状态 ----
+                //   球进程（后台监控）每 6 秒写一次；这里只负责显示。
+                Section(header: Text("自动刷新信号（0.1.45）")) {
+                    Text(autoRefreshStatus)
+                        .font(.system(.caption2, design: .monospaced))
+                    Button("刷新这一行") { autoRefreshTick += 1 }
                 }
                 }
 

@@ -25,6 +25,20 @@ extern "C" {
 ///     没有这个权限，CommCenter 会直接把请求丢掉，连报错都没有。
 BOOL FBRefreshCellularSignal(void);
 
+/// 【自动刷新信号】（0.1.45，用户要求）—— 在 **HUD 进程**里挂一个后台定时器。
+///
+/// 每 6 秒看一次蜂窝状态；满足下面全部条件才动：
+///   ① 共享 plist 的 `AutoRefreshSignal` 开关是开的；
+///   ② **非飞行模式**；
+///   ③ **已插卡**（看 CTCarrier.isoCountryCode，不看 carrierName）；
+///   ④ 没服务（`serviceCurrentRadioAccessTechnology` 为空）；
+///   ⑤ 这个「没服务」已经持续 10 秒（过滤短暂抖动）。
+/// 满足 → 调 `FBRefreshCellularSignal()` **刷新一次**，本轮不再刷；
+/// 服务回来 / 飞行 / 没卡 / 读不到状态 → 本轮结束，下次丢信号重新来。
+///
+/// ⚠️ 只在 HUD 里调用（球进程常驻后台）。App 进程会被系统挂起，挂了也不顶用。
+void FBStartAutoRefreshSignalMonitor(void);
+
 /// 打开任意 App。
 /// 两条路：LSApplicationWorkspace（优先）→ SBSLaunchApplicationWithIdentifierAndLaunchOptions（兜底）。
 /// 全部字符串查找，取不到只是返回 NO，不会链接失败。

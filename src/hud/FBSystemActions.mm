@@ -705,7 +705,7 @@ static void FBProfileServerRun(int fd)
         NSMutableData *resp = [NSMutableData dataWithData:[head dataUsingEncoding:NSUTF8StringEncoding]];
         if (!isHead) [resp appendData:body];
 
-        const uint8_t *bytes = resp.bytes;
+        const uint8_t *bytes = (const uint8_t *)resp.bytes;
         NSUInteger left = resp.length;
         while (left > 0) {
             ssize_t w = write(c, bytes, left);

@@ -322,7 +322,7 @@ struct AppsTab: View {
                 return
             }
             DispatchQueue.global(qos: .userInitiated).async {
-                let r = FBRunShellScript(code)
+                let r = FBRunShellScript(code) ?? [:]
                 let status = (r["status"] as? NSNumber)?.intValue ?? -1
                 let output = (r["output"] as? String ?? "")
                     .trimmingCharacters(in: .whitespacesAndNewlines)
@@ -780,7 +780,7 @@ struct AddShortcutView: View {
     }
 
     private func addWebClip(_ target: WebClipTarget) {
-        let r = FBAddWebClipToHomeScreen(target.title, target.url, target.symbol)
+        let r = FBAddWebClipToHomeScreen(target.title, target.url, target.symbol) ?? [:]
         pendingWebClip = nil
 
         let ok = (r["ok"] as? Bool) ?? ((r["ok"] as? NSNumber)?.boolValue ?? false)

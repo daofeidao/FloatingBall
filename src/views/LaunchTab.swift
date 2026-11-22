@@ -71,21 +71,27 @@ struct LaunchTab: View {
                         set: { want in setHaptics(want) }
                     ))
 
-                    // 强度（0.1.9 起可调）：关着的时候就别摆出来，少点干扰
-                    // ⚠️ 0.1.12 起这里**只有强度**：时长去掉了（一律系统默认那一下 ≈40ms，
-                    //    用户 2026-10-17 明确说的「时长就用系统默认的 40 毫秒，再改效果一般」）。
+                    // 强度（0.1.48 改成两档）：球进程在后台，只能用系统给的两档
+                    // Taptic —— 1519 peek（轻）/ 1520 pop（重）。
+                    // 原来那个 0~100% 滑块在这条路上是骗人的：iOS 15 的
+                    // AudioServicesPlaySystemSoundWithVibration 不认 Intensity，
+                    // 只靠 8~40ms 时长区分，用户实测「拖了没变化」。
+                    // 现在用分段控件，两档都是**能明显摸出来**的差别。
                     if hapticsOn {
-                        VStack(alignment: .leading) {
-                            HStack {
-                                Text("强度")
-                                Spacer()
-                                Text("\(Int((hapticIntensity * 100).rounded()))%")
-                                    .foregroundColor(.secondary)
+                        VStack(alignment: .leading, spacing: 6) {
+                            Picker("震感", selection: Binding(
+                                get: { hapticIntensity >= 0.55 ? 1 : 0 },
+                                set: { setHapticIntensity($0 == 1 ? Haptics.maxIntensity
+                                                                  : Haptics.minIntensity) }
+                            )) {
+                                Text("轻").tag(0)
+                                Text("重").tag(1)
                             }
-                            Slider(value: $hapticIntensity, in: 0.2...1.0, step: 0.05)
-                                .onChange(of: hapticIntensity) { value in
-                                    setHapticIntensity(value)
-                                }
+                            .pickerStyle(.segmented)
+
+                            Text("球在后台只能用系统给的两档 Taptic：轻 = peek，重 = pop。\n如果完全没震，去「设置 → 声音与触感 → 系统触感反馈」确认是开着的。")
+                                .font(.footnote)
+                                .foregroundColor(.secondary)
                         }
                     }
 

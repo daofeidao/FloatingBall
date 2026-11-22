@@ -66,12 +66,12 @@ static NSString *const kDefaultBallStyle = @"BallDot";   // 贴图名（见 scri
 
 // ---- 震动反馈 ----
 //
-// 开关 + 两个参数都存在共享设置里（App「启动」页：「震动反馈」开关、强度滑块、时长滑块）。
+// 开关 + 强度都存在共享设置里（App「启动」页：「震动反馈」开关、「轻/重」）。
 // App 那边有一份等价实现（src/controllers/Haptics.swift）——
-// ⚠️ 键名 / 默认值 / 分段算法 两边必须一模一样，改一边就得改另一边。
+// ⚠️ 键名 / 默认值 / 档位阈值 两边必须一模一样，改一边就得改另一边。
 //
-// ⚠️ 手机的**静音键**不影响这里（系统振动照走）；「设置 → 声音与触感 → 系统触感反馈」
-//    关掉只影响 Taptic 引擎那种细腻反馈，不影响 `kSystemSoundID_Vibrate` 的整机振动。
+// ⚠️ 手机的**静音键**不影响这里（系统振动照走）；但「设置 → 声音与触感 → 系统触感反馈」
+//    关掉会让 1519/1520 一声都不响 —— 这是系统开关，我们绕不过去，界面上要提示。
 typedef NS_ENUM(NSInteger, FBHapticKind) {
     FBHapticTap = 0,   // 识别到点击 / 球落位                —— 轻
     FBHapticAction,    // 动作真的执行了（移动模式、数字开关）—— 中
@@ -80,104 +80,52 @@ typedef NS_ENUM(NSInteger, FBHapticKind) {
 
 // 震动参数（键名与 Haptics.swift 共用）：
 //   强度 `HapticIntensity`  0.2~1.0（默认 1.0）
-//        → 0.1.32 起用来定**震动时长**（8~40ms）：系统声音振动的 `Intensity` 键
-//          iOS 15 真机上不生效，只能靠时长区分强弱。
+//        → 0.1.48 起用来选**震感档位**：低 = 1519（peek，轻），高 = 1520（pop，重）。
 //   ~~时长 `HapticDurationMs`~~ —— **0.1.12 起作废**，老版本写进设置的值没人读（不用清）。
-//   ⚠️ 0.1.32 起**所有种类都只震一下**（含 notice），时长上限 40ms。
+//   ⚠️ 0.1.32 起**所有种类都只震一下**（含 notice）。
 
 /// 球控制器（viewDidLoad 时登记），给 FBBallHapticTouchDown() 用的。
 static BallRootViewController *sBallVC = nil;
 
-// ⭐ 0.1.31：震动换路 —— 从 UIImpactFeedbackGenerator 改成 AudioToolbox 的系统声音振动。
+// ⭐ 0.1.48：震动再换路 —— 从 AudioServicesPlaySystemSoundWithVibration 改成
+//    Taptic 的「系统声音」（1519 peek / 1520 pop）。
 //
-// 为什么换（用户 0.1.30 反馈「震动强度设定和它这个并没有起作用」）：
-//   HUD 是 `posix_spawn` 出来的**后台进程**（persona 99 / uid 0），不是前台 App。
-//   `UIImpactFeedbackGenerator` 的 Taptic 反馈只在前台有效 —— 后台进程调它，系统
-//   **直接吞掉**（0.1.16 自喂测试：手势成功、计数 +1，但一点震感都没有，就是这条）。
-//   既然压根没震，强度滑块当然「没起作用」。
+// 为什么换（用户 2026-11-23 反馈「强度修改没变化、震动的质感很差」）：
+//   HUD 是后台 root 进程，`UIImpactFeedbackGenerator` 被系统直接吞掉（0.1.16 实测），
+//   所以 0.1.31 退到了 `AudioServicesPlaySystemSoundWithVibration` —— 那是**振动马达**，
+//   出来是「嗡嗡」的整机震动，不是 Taptic 的「哒」，质感差是必然的。
+//   而且它在 iOS 15 上 `Intensity` 参数不生效（0.1.31 实测 20% 和 100% 没区别），
+//   只能靠 8~40ms 的时长区分 —— 这么短的两段，手感几乎分不出来，
+//   所以用户仍然觉得「强度滑块没起作用」。
 //
-//   `AudioServicesPlaySystemSoundWithVibration` 是 AudioToolbox 里的私有函数，
-//   走**系统声音服务**：不需要前台、不需要音频会话，root 守护进程也能震
-//   （越狱环境里的 `vibrate` 命令行就是同一个调用）。
-//   它的 `Intensity` 参数**在 iOS 15 真机上不生效**（0.1.31 实测：设置 20% 和 100%
-//   没区别），所以 0.1.32 起改用 `VibePattern` 的**时长**来表达强弱（见 FBHapticMsForIntensity）。
+//   1519 / 1520 是 3D Touch 的 peek / pop 系统声音：
+//     · 直接驱动 Taptic Engine，出来是清脆的「哒」，不是马达嗡嗡；
+//     · 走系统声音服务，**不需要前台、不需要音频会话**，后台 root 进程照样能震
+//       （相机、录音时的震动反馈就是这条路）；
+//     · 不需要 prepare()，调了就有。
+//   代价：系统只给这两档（外加 1521 = 三下轻的），没法像 CoreHaptics 那样连续调。
+//   所以「强度」映射成**档位**：低强度 = 1519，高强度 = 1520。
 //
-//   用 dlsym 取符号而不是直接声明：这个函数不在公开头文件里。拿不到符号时退回
-//   `AudioServicesPlaySystemSound(kSystemSoundID_Vibrate)`（固定强度，至少能震）。
-typedef void (*FBVibrateWithPatternFn)(UInt32, id, NSDictionary *);
-typedef void (*FBStopSoundFn)(UInt32);
-
-static FBVibrateWithPatternFn sVibrateWithPattern = NULL;
-static FBStopSoundFn sStopSystemSound = NULL;
-static BOOL sVibrateSymbolLoaded = NO;
-
-/// 0.1.32（用户要求）：**最长 40 毫秒、只震一下**（强度低时更短）。
-#define FBHapticPulseMs 40
-
-static void FBLoadVibrateSymbol(void)
-{
-    if (sVibrateSymbolLoaded) return;
-    sVibrateSymbolLoaded = YES;
-
-    void *h = dlopen("/System/Library/Frameworks/AudioToolbox.framework/AudioToolbox", RTLD_LAZY);
-    if (h) {
-        sVibrateWithPattern = (FBVibrateWithPatternFn)dlsym(h, "AudioServicesPlaySystemSoundWithVibration");
-        sStopSystemSound = (FBStopSoundFn)dlsym(h, "AudioServicesStopSystemSound");
-    }
-    FBLog(@"震动：系统声音通路%@（%@）",
-          sVibrateWithPattern ? @"可用" : @"不可用，退回固定强度",
-          sVibrateWithPattern ? @"AudioServicesPlaySystemSoundWithVibration"
-                              : @"AudioServicesPlaySystemSound");
-}
-
-/// 强度 → 震动时长（毫秒）。
+// 只保留这两档是刻意的：更多档位只能用 1521（三连震）或马达时长拼，
+//   前者听起来是「点了三下」而不是「更重」，后者就是用户嫌差的嗡嗡声。
+/// 敲一下。
 ///
-/// ⚠️ 为什么用「时长」表达强度：`AudioServicesPlaySystemSoundWithVibration` 的
-///    `Intensity` 键在 iOS 15 真机上**不生效**（0.1.31 实测：设置 20% 和 100% 没区别）。
-///    系统声音振动这条路上，唯一能被感知的变量就是「震多久」——
-///    所以低强度 = 短促一下，高强度 = 40ms 满一下。上限仍是用户要求的 40ms。
-static int FBHapticMsForIntensity(CGFloat intensity)
-{
-    double v = (double)MAX(0.05, MIN(intensity, 1.0));
-    int ms = (int)(8.0 + 32.0 * v + 0.5);   // 0.2 → 14ms，0.5 → 24ms，1.0 → 40ms
-    return MAX(8, MIN(ms, FBHapticPulseMs));
-}
-
-/// 敲一下（强度来自设置）
+/// 两档震感（Taptic 系统声音）：
+///   · 1519 = peek（轻，清脆一下）
+///   · 1520 = pop （重一点）
+/// 阈值：tap 要到 0.55 才升档（轻点不该太重）；动作 / 通知 0.35 就升档。
+/// 这样 0.2~1.0 的滑块至少有两段**能明显摸出来**的差别。
 static void FBHapticPulse(FBHapticKind kind, CGFloat intensity)
 {
-    (void)kind;   // 系统声音振动只有一种音色，轻 / 中不再区分
-
-    FBLoadVibrateSymbol();
-
-    double v = (double)MAX(0.05, MIN(intensity, 1.0));
-    int ms = FBHapticMsForIntensity(intensity);
-
-    if (sVibrateWithPattern) {
-        // VibePattern 是「开/关 + 毫秒」交替的数组：
-        // 震 ms 毫秒 → 停 1ms，只发一次（0.1.31 的 notice 敲两下已被用户否掉）。
-        NSDictionary *pattern = @{ @"VibePattern": @[ @YES, @(ms), @NO, @(1) ],
-                                   @"Intensity":   @(v) };
-        sVibrateWithPattern((UInt32)kSystemSoundID_Vibrate, nil, pattern);
-
-        // 保险：这个私有接口在个别系统上会把「开」段拖长，播完 20ms 后显式停一下。
-        // 正常情况下这一段是空操作；真的拖长了，用户的感受仍然是「短促一下」。
-        if (sStopSystemSound) {
-            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)((ms + 20) * NSEC_PER_MSEC)),
-                           dispatch_get_main_queue(), ^{
-                sStopSystemSound((UInt32)kSystemSoundID_Vibrate);
-            });
-        }
-        return;
-    }
-
-    // 兜底：固定强度，至少能感觉到「按到了」
-    AudioServicesPlaySystemSound(kSystemSoundID_Vibrate);
+    double v = (double)MAX(0.0, MIN(intensity, 1.0));
+    double threshold = (kind == FBHapticTap) ? 0.55 : 0.35;
+    SystemSoundID sid = (v >= threshold) ? 1520 : 1519;
+    AudioServicesPlaySystemSound(sid);
 }
 
 /// - Parameters:
-///   - kind:      震感种类（只作为日志/语义标记，0.1.31 起系统声音只有一种音色）
-///   - intensity: 0.2~1.0（设置里的「强度」）→ 决定**震多久**（8~40ms）
+///   - kind:      震感种类（影响升档阈值：tap 高一点、动作 / 通知低一点）
+///   - intensity: 0.2~1.0（设置里的「强度」）→ 选 1519（轻）/ 1520（重）
 /// ⚠️ 0.1.32：**一律只震一下**。原来 `FBHapticNotice`（「刷新信号」）会敲两下，
 ///    用户实测觉得拖拉（"只震动一次就行"），现在所有种类都只有一下。
 static void FBHapticPlay(FBHapticKind kind, CGFloat intensity)
@@ -766,10 +714,8 @@ static void FBChownSettingsToMobile(void)
     sBallVC = self;   // 登记给 FBBallHapticTouchDown()（HUD「起手在球上」那一震走这里）
     [self loadPrefs];
 
-    // 震动（0.1.31）：改成 AudioToolbox 的系统声音振动（见文件顶部），
-    // 不再需要常驻生成器 / 预热；这个定时器只剩 2 秒一次的外观巡检。
-    // 顺手把符号先加载一次，第一下震动不用等 dlopen。
-    FBLoadVibrateSymbol();
+    // 震动（0.1.48）：走 Taptic 的 1519/1520 系统声音（见文件顶部），
+    // 不需要生成器、不需要预热、也不需要 dlopen；下面只剩 2 秒一次的外观巡检。
     [NSTimer scheduledTimerWithTimeInterval:2.0
                                      target:self
                                    selector:@selector(pollTimerTick)

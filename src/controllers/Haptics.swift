@@ -61,6 +61,11 @@ enum Haptics {
     }
 
     /// 强度（0.2~1.0）
+    ///
+    /// ⚠️ 0.1.48：球进程那边把它映射成**两档** Taptic 系统声音
+    ///    （1519 peek / 1520 pop；阈值 tap 0.55、动作 / 通知 0.35）——
+    ///    后台进程用不了 UIImpactFeedbackGenerator，只能这样。
+    ///    App 这边仍用 UIImpactFeedbackGenerator 的连续强度。
     static var intensity: Double {
         if let v = cachedIntensity { return v }
         let raw = BallSettings.double("HapticIntensity", default: maxIntensity)

@@ -312,6 +312,26 @@ struct AppsTab: View {
                 say("打不开这个链接：\n\(item.id)\n\n可能是没装对应的 App，或者这条 scheme 不对。")
             }
 
+        case .script:
+            // 0.1.47：用户脚本。放后台跑，跑完把退出码 + 输出弹出来。
+            // ⚠️ FBRunShellScript 内部是 root 身份 + 15 秒超时，别在主线程等。
+            Haptics.fire(.tap)
+            let code = item.script ?? ""
+            guard !code.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+                say("这个脚本是空的 —— 删掉重新加一条吧。")
+                return
+            }
+            DispatchQueue.global(qos: .userInitiated).async {
+                let r = FBRunShellScript(code)
+                let status = (r["status"] as? NSNumber)?.intValue ?? -1
+                let output = (r["output"] as? String ?? "")
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                DispatchQueue.main.async {
+                    say("脚本「\(item.displayTitle)」退出码 \(status)\n\n"
+                        + (output.isEmpty ? "（没有输出）" : output))
+                }
+            }
+
         case .action:
             guard let action = item.action else { return }
             switch action {
@@ -454,6 +474,22 @@ struct AddShortcutView: View {
     @State private var customURL = ""
     @State private var hint = ""
 
+    // 0.1.47：脚本（名字 + 代码）
+    @State private var scriptName = ""
+    @State private var scriptCode = ""
+
+    // 0.1.47：添加到桌面（webclip）
+    @State private var desktopTitle = ""
+    @State private var desktopURL = ""
+    @State private var pendingWebClip: WebClipTarget?
+
+    private struct WebClipTarget: Identifiable {
+        let id = UUID()
+        let title: String
+        let url: String
+        let symbol: String
+    }
+
     private var usedKeys: Set<String> { Set(existing.map { $0.key }) }
 
     /// 「添加」这一节的说明（0.1.38 起收进 `*`）
@@ -462,6 +498,18 @@ struct AddShortcutView: View {
     URL 协议 = 别的 App 留的口子：下面几条是内置的，也可以自己填一条。
 
     ⚠️ 只能知道「系统收下了这个请求」；名字写错时是「快捷指令」App 自己提示找不到。
+    """
+
+    private static let scriptFooter = """
+    脚本以 **root** 身份执行（和球进程同一个权限）：能改 /var 下的文件、能 kill 进程。写完先自己看一遍再保存。
+    跑的时候 stdout / stderr 合并返回；超过 15 秒会强制结束。
+    球菜单里点 = root 执行；App 这一页点 = 同样是 root（用的是同一份 entitlement）。
+    """
+
+    private static let desktopFooter = """
+    把一条 URL 做成桌面图标（webclip），和 Safari「添加到主屏幕」同一个格式。
+    ⚠️ 写完会**重启 SpringBoard**（屏幕闪一下，球会自动回来），图标出现在桌面最后一页。
+    例子：微信扫一扫 weixin://scanqrcode。
     """
 
     /// 搜索框里有字 → 只显示「已安装的 App」这一块（内置动作库/添加两块先收起来）。
@@ -516,6 +564,84 @@ struct AddShortcutView: View {
                         systemShortcutRows
                         urlRows
                     }
+
+                    // ---- 0.1.47：脚本 ----
+                    //   用户自己写一段 shell，保存成一条快捷项。
+                    //   存进 Shortcuts 的 kind=script 行（id=UUID，代码在 script 字段）。
+                    Section(header: helpHeader("脚本", Self.scriptFooter)) {
+                        VStack(alignment: .leading, spacing: 6) {
+                            TextField("名字（可选，默认「脚本」）", text: $scriptName)
+                                .textFieldStyle(.roundedBorder)
+                                .autocapitalization(.none)
+                                .disableAutocorrection(true)
+
+                            TextEditor(text: $scriptCode)
+                                .frame(minHeight: 120)
+                                .font(.system(.caption, design: .monospaced))
+                                .autocapitalization(.none)
+                                .disableAutocorrection(true)
+                                .overlay(
+                                    RoundedRectangle(cornerRadius: 6)
+                                        .stroke(Color.secondary.opacity(0.35))
+                                )
+
+                            Button("添加脚本") { addScript() }
+                                .disabled(scriptCode.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                        }
+                        .padding(.vertical, 2)
+                    }
+
+                    // ---- 0.1.47：添加到桌面（webclip）----
+                    //   微信扫一扫这类 URL 快捷方式，直接做成桌面图标。
+                    Section(header: helpHeader("添加到桌面", Self.desktopFooter)) {
+                        ForEach(BuiltinURLs.presets) { preset in
+                            HStack(spacing: 12) {
+                                Image(systemName: preset.icon)
+                                    .frame(width: 26)
+                                    .foregroundColor(.accentColor)
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text(preset.title)
+                                    Text(preset.url)
+                                        .font(.caption)
+                                        .foregroundColor(.secondary)
+                                        .lineLimit(1)
+                                }
+                                Spacer()
+                                Button("放到桌面") {
+                                    pendingWebClip = WebClipTarget(title: preset.title,
+                                                                   url: preset.url,
+                                                                   symbol: preset.icon)
+                                }
+                                .buttonStyle(.borderless)
+                            }
+                        }
+
+                        VStack(alignment: .leading, spacing: 6) {
+                            HStack(spacing: 8) {
+                                TextField("名字", text: $desktopTitle)
+                                    .textFieldStyle(.roundedBorder)
+                                    .frame(width: 92)
+                                TextField("URL，如 weixin://scanqrcode", text: $desktopURL)
+                                    .textFieldStyle(.roundedBorder)
+                                    .autocapitalization(.none)
+                                    .disableAutocorrection(true)
+                                    .keyboardType(.URL)
+                            }
+                            Button("把这个 URL 放到桌面") {
+                                let raw = desktopURL.trimmingCharacters(in: .whitespaces)
+                                guard raw.contains("://") else {
+                                    hint = "「\(raw)」不像一条 URL —— 要带 scheme，例如 weixin://scanqrcode。"
+                                    return
+                                }
+                                let name = desktopTitle.trimmingCharacters(in: .whitespaces)
+                                pendingWebClip = WebClipTarget(title: name.isEmpty ? "快捷方式" : name,
+                                                               url: raw,
+                                                               symbol: "link")
+                            }
+                            .disabled(desktopURL.trimmingCharacters(in: .whitespaces).isEmpty)
+                        }
+                        .padding(.vertical, 2)
+                    }
                 }
 
                 Section(header: Text("已安装的 App（\(apps.count)）")) {
@@ -544,6 +670,20 @@ struct AddShortcutView: View {
                 guard let id = dict["id"], let name = dict["name"] else { return nil }
                 return ShortcutItem(kind: .app, id: id, title: name)
             }
+        }
+        // 0.1.47：写桌面图标前先确认 —— 因为写完要 respring（屏幕会闪、本 App 会被杀掉）
+        .confirmationDialog("放到桌面？",
+                            isPresented: Binding(
+                                get: { pendingWebClip != nil },
+                                set: { if !$0 { pendingWebClip = nil } }),
+                            titleVisibility: .visible) {
+            Button("写图标并重启 SpringBoard") {
+                if let t = pendingWebClip { addWebClip(t) }
+            }
+            Button("取消", role: .cancel) { pendingWebClip = nil }
+        } message: {
+            Text("会把「\(pendingWebClip?.title ?? "")」做成桌面图标，然后重启 SpringBoard。"
+                 + "屏幕会闪一下，球会自动回来；图标在桌面最后一页。")
         }
     }
 
@@ -624,6 +764,35 @@ struct AddShortcutView: View {
         let item = ShortcutItem(kind: .url, id: raw, title: raw, icon: "link")
         pick(item)
         customURL = ""
+    }
+
+    // MARK: 0.1.47 脚本 / 桌面图标
+
+    private func addScript() {
+        let code = scriptCode.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !code.isEmpty else { return }
+        let name = scriptName.trimmingCharacters(in: .whitespaces)
+        let item = ShortcutItem.makeScript(title: name.isEmpty ? "脚本" : name,
+                                           code: scriptCode)
+        hint = ""
+        onPick(item)
+        presentationMode.wrappedValue.dismiss()
+    }
+
+    private func addWebClip(_ target: WebClipTarget) {
+        let r = FBAddWebClipToHomeScreen(target.title, target.url, target.symbol)
+        pendingWebClip = nil
+
+        let ok = (r["ok"] as? Bool) ?? ((r["ok"] as? NSNumber)?.boolValue ?? false)
+        if ok {
+            hint = "已写入桌面图标：\(target.title)。SpringBoard 重启后出现在桌面最后一页。"
+            // 给 SwiftUI 一点时间把提示画出来，再 respring（respring 会杀掉本 App）
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) {
+                _ = FBRespringSpringBoard()
+            }
+        } else {
+            hint = "写桌面图标失败：\((r["error"] as? String) ?? "未知错误")"
+        }
     }
 
     private func pick(_ item: ShortcutItem) {

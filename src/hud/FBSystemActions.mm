@@ -18,6 +18,21 @@
 #import <UIKit/UIKit.h>
 #import <mach/mach_time.h>
 #import <unistd.h>
+#import <spawn.h>
+#import <sys/wait.h>
+#import <sys/stat.h>
+#import <signal.h>
+#import <fcntl.h>
+#import <errno.h>
+
+// 0.1.47：以 root 身份 spawn（和 HUDHelper.mm 里那组声明一致）。
+// 不放在公共头文件里：只有这个文件和 HUDHelper 需要。
+#ifndef POSIX_SPAWN_PERSONA_FLAGS_OVERRIDE
+#define POSIX_SPAWN_PERSONA_FLAGS_OVERRIDE 1
+#endif
+extern "C" int posix_spawnattr_set_persona_np(const posix_spawnattr_t* __restrict, uid_t, uint32_t);
+extern "C" int posix_spawnattr_set_persona_uid_np(const posix_spawnattr_t* __restrict, uid_t);
+extern "C" int posix_spawnattr_set_persona_gid_np(const posix_spawnattr_t* __restrict, uid_t);
 
 #pragma mark - 刷新蜂窝网络信号
 
@@ -355,6 +370,242 @@ void FBStartAutoRefreshSignalMonitor(void)
         dispatch_resume(timer);
         FBLog(@"自动刷新信号：后台监控已挂上（每 6 秒看一次；开关关着时什么都不做）");
     });
+}
+
+#pragma mark - 脚本（0.1.47）
+
+// ⚠️ 这是全项目权限最大的功能：用户写的 shell 以 **root** 身份跑，
+//    能改 /var 下任何东西、能 kill 任何进程。UI 里必须写清楚后果。
+//
+// 为什么「写临时文件 + /bin/sh <file>」而不是 `sh -c <code>`：
+//   -c 会把代码里的引号 / 换行再解释一遍，用户写 heredoc、多行 for 循环就废了。
+//   写到文件里再执行，代码原样交给 shell。
+//
+// 输出：stdout + stderr 合并进一个管道，最多留 8KB；15 秒没跑完就强杀整个进程组。
+
+NSDictionary<NSString *, id> *FBRunShellScript(NSString *code)
+{
+    if (![code isKindOfClass:[NSString class]] || code.length == 0) {
+        return @{ @"status": @(-1), @"output": @"（脚本是空的）" };
+    }
+
+    NSString *path = [NSTemporaryDirectory() stringByAppendingPathComponent:
+                      [NSString stringWithFormat:@"fb-script-%@.sh", [[NSUUID UUID] UUIDString]]];
+    NSError *err = nil;
+    if (![code writeToFile:path atomically:YES encoding:NSUTF8StringEncoding error:&err]) {
+        return @{ @"status": @(-1),
+                  @"output": [NSString stringWithFormat:@"写临时脚本失败：%@",
+                              err.localizedDescription ?: @"?"] };
+    }
+    chmod(path.fileSystemRepresentation, 0700);
+
+    int fds[2];
+    if (pipe(fds) != 0) {
+        [[NSFileManager defaultManager] removeItemAtPath:path error:NULL];
+        return @{ @"status": @(-1), @"output": @"pipe() 失败" };
+    }
+    fcntl(fds[0], F_SETFL, O_NONBLOCK);
+
+    posix_spawn_file_actions_t fa;
+    posix_spawn_file_actions_init(&fa);
+    posix_spawn_file_actions_adddup2(&fa, fds[1], STDOUT_FILENO);
+    posix_spawn_file_actions_adddup2(&fa, fds[1], STDERR_FILENO);
+    posix_spawn_file_actions_addclose(&fa, fds[0]);
+    posix_spawn_file_actions_addclose(&fa, fds[1]);
+
+    posix_spawnattr_t attr;
+    posix_spawnattr_init(&attr);
+    posix_spawnattr_set_persona_np(&attr, 99, POSIX_SPAWN_PERSONA_FLAGS_OVERRIDE);
+    posix_spawnattr_set_persona_uid_np(&attr, 0);
+    posix_spawnattr_set_persona_gid_np(&attr, 0);
+    posix_spawnattr_setpgroup(&attr, 0);
+    posix_spawnattr_setflags(&attr, POSIX_SPAWN_SETPGROUP);
+
+    const char *args[] = { "/bin/sh", path.fileSystemRepresentation, NULL };
+    pid_t pid = 0;
+    int rc = posix_spawn(&pid, "/bin/sh", &fa, &attr, (char **)args, environ);
+    posix_spawnattr_destroy(&attr);
+    posix_spawn_file_actions_destroy(&fa);
+    close(fds[1]);
+
+    if (rc != 0) {
+        close(fds[0]);
+        [[NSFileManager defaultManager] removeItemAtPath:path error:NULL];
+        return @{ @"status": @(-1),
+                  @"output": [NSString stringWithFormat:@"启动 /bin/sh 失败（rc=%d）", rc] };
+    }
+
+    NSMutableData *buf = [NSMutableData data];
+    NSDate *deadline = [NSDate dateWithTimeIntervalSinceNow:15.0];
+    char tmp[4096];
+    while ([deadline timeIntervalSinceNow] > 0) {
+        ssize_t n = read(fds[0], tmp, sizeof(tmp));
+        if (n > 0) {
+            [buf appendBytes:tmp length:(NSUInteger)n];
+            if (buf.length >= 8192) break;
+            continue;
+        }
+        if (n == 0) break;
+        if (errno == EAGAIN || errno == EWOULDBLOCK) { usleep(20000); continue; }
+        if (errno == EINTR) continue;
+        break;
+    }
+    BOOL timedOut = ([deadline timeIntervalSinceNow] <= 0);
+    close(fds[0]);
+
+    int st = 0;
+    BOOL reaped = NO;
+    for (int i = 0; i < 100; i++) {          // 最多再等 2 秒
+        pid_t w = waitpid(pid, &st, WNOHANG);
+        if (w == pid || w < 0) { reaped = YES; break; }
+        usleep(20000);
+    }
+    if (!reaped) {
+        kill(-pid, SIGKILL);                 // 整个进程组（脚本可能起了子进程）
+        waitpid(pid, &st, 0);
+    }
+    [[NSFileManager defaultManager] removeItemAtPath:path error:NULL];
+
+    NSString *out = [[NSString alloc] initWithData:buf encoding:NSUTF8StringEncoding];
+    if (!out) out = [[NSString alloc] initWithData:buf encoding:NSISOLatin1StringEncoding];
+    if (!out) out = @"";
+    if (out.length > 8000) {
+        out = [[out substringToIndex:8000] stringByAppendingString:@"\n…（输出过长，已截断）"];
+    }
+    if (timedOut) out = [out stringByAppendingString:@"\n（超过 15 秒，已强制结束）"];
+
+    int status = (reaped && WIFEXITED(st)) ? WEXITSTATUS(st) : -1;
+    if (out.length == 0) out = @"（没有输出）";
+    return @{ @"status": @(status), @"output": out };
+}
+
+#pragma mark - 桌面快捷方式 webclip（0.1.47）
+
+// 180×180 图标：渐变底 + 白色 SF Symbol。
+// 为什么不用目标 App 的图标：要读别的 App 的 bundle（多尺寸 / 加密 / 路径都可能翻车），
+// 这条功能的核心是「点一下能到」；统一图标 + 对应符号已经足够认。
+static UIImage *FBWebClipIcon(NSString *symbolName)
+{
+    CGSize size = CGSizeMake(180, 180);
+    UIGraphicsImageRenderer *renderer = [[UIGraphicsImageRenderer alloc] initWithSize:size];
+    return [renderer imageWithActions:^(UIGraphicsImageRendererContext *ctx) {
+        CGContextRef c = ctx.CGContext;
+        CGColorSpaceRef cs = CGColorSpaceCreateDeviceRGB();
+        CGFloat comps[] = { 0.10, 0.42, 0.86, 1.0,   0.09, 0.66, 0.42, 1.0 };
+        CGFloat locs[]  = { 0.0, 1.0 };
+        CGGradientRef g = CGGradientCreateWithColorComponents(cs, comps, locs, 2);
+        CGContextDrawLinearGradient(c, g, CGPointMake(0, 0),
+                                    CGPointMake(size.width, size.height), 0);
+        CGGradientRelease(g);
+        CGColorSpaceRelease(cs);
+
+        UIImageSymbolConfiguration *cfg =
+            [UIImageSymbolConfiguration configurationWithPointSize:96
+                                                            weight:UIImageSymbolWeightSemibold];
+        UIImage *sym = symbolName.length
+                     ? [UIImage systemImageNamed:symbolName withConfiguration:cfg]
+                     : nil;
+        if (!sym) sym = [UIImage systemImageNamed:@"link" withConfiguration:cfg];
+        sym = [sym imageWithTintColor:[UIColor whiteColor]
+                        renderingMode:UIImageRenderingModeAlwaysOriginal];
+        if (sym) {
+            CGRect r = CGRectMake((size.width - sym.size.width) / 2.0,
+                                  (size.height - sym.size.height) / 2.0,
+                                  sym.size.width, sym.size.height);
+            [sym drawInRect:r];
+        }
+    }];
+}
+
+NSDictionary<NSString *, id> *FBAddWebClipToHomeScreen(NSString *title,
+                                                       NSString *url,
+                                                       NSString *symbolName)
+{
+    if (![title isKindOfClass:[NSString class]] || title.length == 0) {
+        return @{ @"ok": @NO, @"error": @"标题为空" };
+    }
+    if (![url isKindOfClass:[NSString class]] || url.length == 0) {
+        return @{ @"ok": @NO, @"error": @"URL 为空" };
+    }
+
+    NSString *root = @"/var/mobile/Library/WebClips";
+    NSFileManager *fm = [NSFileManager defaultManager];
+    NSError *err = nil;
+    if (![fm createDirectoryAtPath:root withIntermediateDirectories:YES
+                        attributes:nil error:&err]) {
+        return @{ @"ok": @NO,
+                  @"error": [NSString stringWithFormat:@"建 WebClips 目录失败：%@",
+                             err.localizedDescription ?: @"?"] };
+    }
+
+    NSString *uuid = [[[NSUUID UUID] UUIDString] stringByReplacingOccurrencesOfString:@"-"
+                                                                           withString:@""];
+    NSString *dir = [root stringByAppendingPathComponent:[uuid stringByAppendingString:@".webclip"]];
+    if (![fm createDirectoryAtPath:dir withIntermediateDirectories:YES
+                        attributes:nil error:&err]) {
+        return @{ @"ok": @NO,
+                  @"error": [NSString stringWithFormat:@"建 webclip 目录失败：%@",
+                             err.localizedDescription ?: @"?"] };
+    }
+
+    // 和 Safari「添加到主屏幕」生成的 Info.plist 同一套键（少一个都可能不显示）
+    NSDictionary *plist = @{
+        @"URL":               url,
+        @"Title":             title,
+        @"IconIsPrecomposed": @YES,
+        @"FullScreen":        @NO,
+        @"UIStatusBarStyle":  @"UIStatusBarStyleDefault",
+        @"ClassicMode":       @NO,
+        @"Scale":             @1.0,
+    };
+    NSString *plistPath = [dir stringByAppendingPathComponent:@"Info.plist"];
+    if (![plist writeToFile:plistPath atomically:YES]) {
+        return @{ @"ok": @NO, @"error": @"写 Info.plist 失败" };
+    }
+
+    NSData *png = UIImagePNGRepresentation(FBWebClipIcon(symbolName));
+    NSString *pngPath = [dir stringByAppendingPathComponent:@"icon.png"];
+    if (!png || ![png writeToFile:pngPath atomically:YES]) {
+        return @{ @"ok": @NO, @"error": @"写 icon.png 失败" };
+    }
+
+    // 属主改回 mobile：App 进程本来就是 501，HUD（root）跑时也能让 SpringBoard 正常读
+    chown(dir.fileSystemRepresentation, 501, 501);
+    chown(plistPath.fileSystemRepresentation, 501, 501);
+    chown(pngPath.fileSystemRepresentation, 501, 501);
+    chmod(dir.fileSystemRepresentation, 0755);
+    chmod(plistPath.fileSystemRepresentation, 0644);
+    chmod(pngPath.fileSystemRepresentation, 0644);
+
+    FBLog(@"桌面图标已写入：%@ -> %@", title, dir);
+    return @{ @"ok": @YES, @"path": dir };
+}
+
+BOOL FBRespringSpringBoard(void)
+{
+    posix_spawnattr_t attr;
+    posix_spawnattr_init(&attr);
+    posix_spawnattr_set_persona_np(&attr, 99, POSIX_SPAWN_PERSONA_FLAGS_OVERRIDE);
+    posix_spawnattr_set_persona_uid_np(&attr, 0);
+    posix_spawnattr_set_persona_gid_np(&attr, 0);
+
+    const char *paths[] = { "/usr/bin/killall", "/bin/killall", NULL };
+    int rc = -1;
+    for (int i = 0; paths[i] != NULL; i++) {
+        if (access(paths[i], X_OK) != 0) continue;
+        const char *args[] = { paths[i], "SpringBoard", NULL };
+        pid_t pid = 0;
+        rc = posix_spawn(&pid, paths[i], NULL, &attr, (char **)args, environ);
+        if (rc == 0) {
+            FBLog(@"respring：已执行 %s SpringBoard（pid=%d）", paths[i], pid);
+            break;
+        }
+    }
+    posix_spawnattr_destroy(&attr);
+    if (rc != 0) {
+        FBLog(@"⚠️ respring 失败：找不到 killall（rc=%d），桌面图标要手动 respring 才会出现", rc);
+    }
+    return rc == 0;
 }
 
 #pragma mark - 打开 App

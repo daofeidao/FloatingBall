@@ -239,9 +239,10 @@ static const CGFloat kMenuGapFromBall = 10.0;
 static const CGFloat kMenuMaxHeightGap = 76.0;   // 菜单最多占「屏高 − 76pt」（上面给刘海/状态栏 56、下面留 20）
 
 @interface FBQuietMenuItem : NSObject
-@property (nonatomic, copy) NSString *key;      // "app:xxx" / "action:xxx" / "url:xxx"
+@property (nonatomic, copy) NSString *key;      // "app:xxx" / "action:xxx" / "url:xxx" / "script:xxx"
 @property (nonatomic, copy) NSString *title;
 @property (nonatomic, copy) NSString *symbol;   // SF Symbol 名
+@property (nonatomic, copy) NSString *script;   // 0.1.47：kind=script 时的 shell 代码
 @end
 @implementation FBQuietMenuItem
 @end
@@ -904,6 +905,10 @@ static void FBChownSettingsToMobile(void)
         item.symbol = ([icon isKindOfClass:[NSString class]] && [icon length] > 0) ? icon
                     : [self symbolForActionId:rid];
 
+        // 0.1.47：脚本内容（只有 kind=script 才有）
+        id script = r[@"script"];
+        item.script = [script isKindOfClass:[NSString class]] ? script : nil;
+
         [out addObject:item];
     }
     return out;
@@ -1209,6 +1214,46 @@ static void FBChownSettingsToMobile(void)
 
     if ([key hasPrefix:@"action:"]) {
         [self performAction:[key substringFromIndex:@"action:".length]];
+        return;
+    }
+
+    if ([key hasPrefix:@"script:"]) {
+        // 0.1.47：用户脚本。代码存在 Shortcuts 那一行的 script 字段里。
+        // 菜单里点的：_menuItems 里就有；手势绑的：_menuItems 可能是 nil，直接回 plist 找。
+        NSString *uuid = [key substringFromIndex:@"script:".length];
+        NSString *code = nil;
+        NSString *title = nil;
+
+        for (FBQuietMenuItem *it in _menuItems) {
+            if ([it.key isEqualToString:key]) {
+                code = it.script;
+                title = it.title;
+                break;
+            }
+        }
+        if (code.length == 0) {
+            NSDictionary *d = [NSDictionary dictionaryWithContentsOfFile:USER_DEFAULTS_PATH];
+            for (NSDictionary *row in d[@"Shortcuts"]) {
+                if (![row isKindOfClass:[NSDictionary class]]) continue;
+                if ([row[@"kind"] isEqualToString:@"script"] &&
+                    [row[@"id"] isEqualToString:uuid]) {
+                    code = row[@"script"];
+                    title = row[@"title"];
+                    break;
+                }
+            }
+        }
+
+        if (code.length == 0) {
+            FBLog(@"⚠️ 脚本 %@ 找不到代码（可能已经被删了）", key);
+            return;
+        }
+
+        [self haptic:FBHapticNotice];
+        dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
+            NSDictionary *r = FBRunShellScript(code);
+            FBLog(@"脚本「%@」退出码=%@\n%@", title ?: @"?", r[@"status"], r[@"output"]);
+        });
         return;
     }
 

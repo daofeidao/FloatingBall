@@ -39,6 +39,23 @@ BOOL FBRefreshCellularSignal(void);
 /// ⚠️ 只在 HUD 里调用（球进程常驻后台）。App 进程会被系统挂起，挂了也不顶用。
 void FBStartAutoRefreshSignalMonitor(void);
 
+#pragma mark - 0.1.47：脚本 / 桌面快捷方式
+
+/// 跑一段 shell 脚本（`/bin/sh`，以 **root** 身份）。
+/// - Returns: @{ @"status": NSNumber 退出码, @"output": NSString（stdout+stderr，最多 8KB） }
+/// ⚠️ 15 秒超时会强杀整个进程组。
+NSDictionary<NSString *, id> *FBRunShellScript(NSString *code);
+
+/// 把一条 URL 写成桌面图标（webclip）。
+/// 写 `/var/mobile/Library/WebClips/<UUID>.webclip/{Info.plist, icon.png}`（和 Safari 同一套格式）。
+/// - Returns: @{ @"ok": NSNumber, @"path": NSString, @"error": NSString }
+NSDictionary<NSString *, id> *FBAddWebClipToHomeScreen(NSString *title,
+                                                       NSString *url,
+                                                       NSString *symbolName);
+
+/// 重启 SpringBoard。返回有没有把 killall 发出去。
+BOOL FBRespringSpringBoard(void);
+
 /// 打开任意 App。
 /// 两条路：LSApplicationWorkspace（优先）→ SBSLaunchApplicationWithIdentifierAndLaunchOptions（兜底）。
 /// 全部字符串查找，取不到只是返回 NO，不会链接失败。

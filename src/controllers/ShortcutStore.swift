@@ -141,13 +141,16 @@ struct ShortcutItem: Identifiable, Equatable {
         case app    = "app"
         case action = "action"
         case url    = "url"     // URL 协议 / 系统快捷指令（id 就是一整条 URL）
+        case script = "script"  // 0.1.47：用户自己写的一段 shell（id 是 UUID，代码在 script 字段）
     }
 
     var kind: Kind
-    var id: String          // app -> bundleID；action -> ShortcutAction.rawValue；url -> 整条 URL
+    var id: String          // app -> bundleID；action -> ShortcutAction.rawValue；url -> 整条 URL；script -> UUID
     var title: String
     /// 内置图标（SF Symbol 名）。nil = 按 kind 猜一个
     var icon: String? = nil
+    /// 0.1.47：脚本内容（只有 kind == .script 才有）
+    var script: String? = nil
 
     /// 手势绑定 / 去重用的唯一 key
     var key: String { "\(kind.rawValue):\(id)" }
@@ -163,6 +166,7 @@ struct ShortcutItem: Identifiable, Equatable {
         case .app:    return "app"
         case .action: return action?.symbol ?? "questionmark"
         case .url:    return "link"
+        case .script: return "terminal"
         }
     }
 
@@ -174,13 +178,29 @@ struct ShortcutItem: Identifiable, Equatable {
         return title
     }
 
-    /// 列表里那行小字：内置动作看它的 detail，其它就把 id 摆出来（App 就是 bundleID、URL 就是那条 URL）
+    /// 列表里那行小字：内置动作看它的 detail，脚本看第一行，其它就把 id 摆出来
+    /// （App 就是 bundleID、URL 就是那条 URL）
     var detail: String {
-        action?.detail ?? id
+        if kind == .script {
+            let first = (script ?? "").split(separator: "\n", omittingEmptySubsequences: false)
+                .first.map(String.init) ?? ""
+            let trimmed = first.trimmingCharacters(in: .whitespaces)
+            return trimmed.isEmpty ? "脚本" : "脚本：\(trimmed)"
+        }
+        return action?.detail ?? id
     }
 
     static func make(action: ShortcutAction) -> ShortcutItem {
         ShortcutItem(kind: .action, id: action.rawValue, title: action.title)
+    }
+
+    /// 0.1.47：一段脚本 = 一条快捷项。id 用 UUID（脚本本身没有天然唯一键）。
+    static func makeScript(title: String, code: String) -> ShortcutItem {
+        ShortcutItem(kind: .script,
+                     id: UUID().uuidString,
+                     title: title,
+                     icon: "terminal",
+                     script: code)
     }
 }
 
@@ -314,7 +334,8 @@ enum ShortcutStore {
                   let title = row["title"] as? String
             else { return nil }
             return ShortcutItem(kind: kind, id: id, title: title,
-                                icon: row["icon"] as? String)
+                                icon: row["icon"] as? String,
+                                script: row["script"] as? String)
         }
         return parsed.isEmpty ? nil : parsed
     }
@@ -327,6 +348,7 @@ enum ShortcutStore {
                                       "id": item.id,
                                       "title": item.title]
             if let icon = item.icon { row["icon"] = icon }
+            if let script = item.script { row["script"] = script }
             return row
         }
     }

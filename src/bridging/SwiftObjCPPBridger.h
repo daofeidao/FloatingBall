@@ -34,6 +34,25 @@ OBJC_EXTERN BOOL FBOpenURL(NSString *urlString);
 /// ⚠️ 没有结果可看：这个 API 只是把请求交给 CommCenter，成没成只能看状态栏
 OBJC_EXTERN BOOL FBRefreshCellularSignal(void);
 
+#pragma mark - 0.1.47：脚本 / 桌面快捷方式
+
+/// 跑一段 shell 脚本（`/bin/sh`，以 **root** 身份）。
+/// - Returns: @{ @"status": NSNumber 退出码, @"output": NSString（stdout+stderr 合并，最多 8KB） }
+/// ⚠️ 超时 15 秒会强杀整个进程组。
+OBJC_EXTERN NSDictionary<NSString *, id> *FBRunShellScript(NSString *code);
+
+/// 把一条 URL 写成桌面图标（webclip）。
+/// 写的是 `/var/mobile/Library/WebClips/<UUID>.webclip/{Info.plist, icon.png}` ——
+/// 和 Safari「添加到主屏幕」同一套格式；写完需要 respring 才会出现。
+/// - Returns: @{ @"ok": NSNumber, @"path": NSString, @"error": NSString }
+OBJC_EXTERN NSDictionary<NSString *, id> *FBAddWebClipToHomeScreen(NSString *title,
+                                                                  NSString *url,
+                                                                  NSString *symbolName);
+
+/// 重启 SpringBoard（respring）。返回有没有把 killall 发出去。
+/// ⚠️ 会杀掉本 App 自己；球进程能活下来并自动重建。
+OBJC_EXTERN BOOL FBRespringSpringBoard(void);
+
 /// 【截屏】两条路：先试系统自己的截图服务（不注入输入，最安全），
 /// 取不到再注入一次「音量加 + 电源」组合键（iOS 的截图快捷键）。
 /// - Returns: 实际走的哪条路：0 = 都没走通，1 = 系统截图服务，2 = 按键注入。

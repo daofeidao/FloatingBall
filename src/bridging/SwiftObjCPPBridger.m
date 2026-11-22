@@ -78,3 +78,61 @@ NSArray<NSDictionary<NSString *, NSString *> *> *FBInstalledApps(void)
         return [a[@"name"] localizedCompare:b[@"name"]];
     }];
 }
+
+#pragma mark - 0.1.47：App 的 URL schemes
+
+NSArray<NSString *> *FBAppURLSchemes(NSString *bundleID)
+{
+    if (![bundleID isKindOfClass:[NSString class]] || bundleID.length == 0) return @[];
+
+    Class wsClass = objc_getClass("LSApplicationWorkspace");
+    if (!wsClass) return @[];
+    id ws = [(id)wsClass performSelector:@selector(defaultWorkspace)];
+    if (!ws) return @[];
+
+    // ① 按 bundleID 直接拿 proxy
+    id proxy = nil;
+    SEL byId = NSSelectorFromString(@"applicationProxyForIdentifier:");
+    if ([ws respondsToSelector:byId]) {
+        proxy = ((id (*)(id, SEL, NSString *))objc_msgSend)(ws, byId, bundleID);
+    }
+    // ② 退路：遍历已安装列表按 applicationIdentifier 匹配
+    if (!proxy) {
+        SEL listSel = NSSelectorFromString(@"allInstalledApplications");
+        if ([ws respondsToSelector:listSel]) {
+            NSArray *all = ((id (*)(id, SEL))objc_msgSend)(ws, listSel);
+            if ([all isKindOfClass:[NSArray class]]) {
+                SEL idSel = NSSelectorFromString(@"applicationIdentifier");
+                for (id p in all) {
+                    NSString *bid = ((id (*)(id, SEL))objc_msgSend)(p, idSel);
+                    if ([bid isKindOfClass:[NSString class]] && [bid isEqualToString:bundleID]) {
+                        proxy = p;
+                        break;
+                    }
+                }
+            }
+        }
+    }
+    if (!proxy) return @[];
+
+    // ③ 读它自己的 Info.plist（App 有 no-sandbox，bundle 目录读得到）
+    NSURL *bundleURL = ((id (*)(id, SEL))objc_msgSend)(proxy, NSSelectorFromString(@"bundleURL"));
+    if (![bundleURL isKindOfClass:[NSURL class]]) return @[];
+
+    NSDictionary *info = [NSDictionary dictionaryWithContentsOfURL:
+                          [bundleURL URLByAppendingPathComponent:@"Info.plist"]];
+    NSArray *types = info[@"CFBundleURLTypes"];
+    if (![types isKindOfClass:[NSArray class]]) return @[];
+
+    NSMutableArray<NSString *> *out = [NSMutableArray array];
+    for (id t in types) {
+        if (![t isKindOfClass:[NSDictionary class]]) continue;
+        NSArray *schemes = ((NSDictionary *)t)[@"CFBundleURLSchemes"];
+        if (![schemes isKindOfClass:[NSArray class]]) continue;
+        for (id s in schemes) {
+            if (![s isKindOfClass:[NSString class]] || [s length] == 0) continue;
+            if (![out containsObject:s]) [out addObject:s];
+        }
+    }
+    return out;
+}

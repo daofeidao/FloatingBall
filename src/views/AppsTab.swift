@@ -1,5 +1,6 @@
 import SwiftUI
 import UniformTypeIdentifiers
+import UIKit
 
 /// 第二栏：快捷菜单
 ///
@@ -10,17 +11,16 @@ import UniformTypeIdentifiers
 ///
 /// 这一栏既是「手动点一下」的清单，也是手势绑定的候选池（手势那一节就在下面，0.1.32 起）。
 ///
-/// ⚠️ 排序**不用系统的「编辑」模式**（2026-10-17 用户要求），也**不走 `.onDrag`/`.onDrop`**
-///    （那条在 2026-10-18 被真机证伪：手柄显示出来了，但拖动调不了顺序）。
-///    现在的改法：`ForEach` 挂 `.onMove(perform:)` —— SwiftUI 的 List 自带
-///    **长按一行就能拖着换位置**的能力（Apple 文档明说「by using a long press on a row」，
-///    不需要进编辑模式），每行右边照旧画着三条横线当「能拖」的示意。
-///    点一下照样执行、左滑照样删，排序时松手就写盘。
+/// 排序（0.1.47，用户 2026-11-23 要求「像控制中心那种」）：
+///   **长按一行 → 进编辑模式（震一下）→ 系统原生拖动（每移一格震一下）→ 顶部「完成」退出。**
+///   ⚠️ 走过的弯路：0.1.13 以为「onMove 挂了就能长按拖」，iOS 15 上必须进编辑模式；
+///      0.1.46 改 `onDrag`/`onDrop`，用户实测「预览动了、顺序没变」。现在回到编辑模式 + onMove。
+///   编辑模式里 `onDelete` 传 nil，不显示红色删除圈；非编辑模式左滑删除照旧。
 struct AppsTab: View {
 
     @State private var items: [ShortcutItem] = []
-    /// 0.1.46：正在被长按拖动的那一项（onDrag/onDrop 用）
-    @State private var dragging: ShortcutItem?
+    /// 0.1.47：排序编辑模式（长按进编辑 → 原生拖动 + 震动 → 完成）
+    @State private var editMode: EditMode = .inactive
     @State private var gestures: [String: String] = [:]
     /// 0.1.36：打开手势选择菜单时能选的东西（用户自己增删，见下面「手势动作」那一节）
     @State private var gestureItems: [ShortcutItem] = []
@@ -66,27 +66,28 @@ struct AppsTab: View {
                         Text("还是空的，点下面「添加」").foregroundColor(.secondary)
                     }
                     ForEach(items) { item in
-                        row(item)
-                            .contentShape(Rectangle())
-                            .onTapGesture { run(item) }
-                            // 0.1.46：长按即拖，不依赖编辑模式（iOS 15 的 onMove 必须进编辑模式）。
-                            //   拖起来的那一行半透明，松手才写盘（见 ShortcutDropDelegate）。
-                            .opacity(dragging?.key == item.key ? 0.5 : 1.0)
-                            .onDrag {
-                                dragging = item
-                                return NSItemProvider(object: item.key as NSString)
-                            }
-                            .onDrop(of: [UTType.text],
-                                    delegate: ShortcutDropDelegate(item: item,
-                                                                   items: $items,
-                                                                   dragging: $dragging))
+                        // 0.1.47：编辑模式下行上不挂 tap / 长按，交给系统原生拖动；
+                        // 平时点一下执行、长按进排序。
+                        if editMode == .active {
+                            row(item).contentShape(Rectangle())
+                        } else {
+                            row(item)
+                                .contentShape(Rectangle())
+                                .onTapGesture { run(item) }
+                                .onLongPressGesture(minimumDuration: 0.45) { enterSortMode() }
+                        }
                     }
-                    // ⚠️ 0.1.46：**不要**再挂 `.onMove`。iOS 15 上它必须进编辑模式才可拖；
-                    //    排上了也不会生效，反而会和上面的 onDrag 抢手势。
-                    .onDelete { offsets in
-                        items.remove(atOffsets: offsets)
+                    // 0.1.47：排序改回系统的编辑模式 + onMove。
+                    //   iOS 15 上 onMove 是**唯一**拖动真的会改顺序的路子：
+                    //   0.1.46 的 onDrag/onDrop 只让预览动了，落位没生效（用户实测）。
+                    .onMove { from, to in
+                        items.move(fromOffsets: from, toOffset: to)
                         ShortcutStore.save(items)
+                        Haptics.fire(.tap)
                     }
+                    // 编辑模式下不摆红色删除圈（控制中心那种只有拖动）；
+                    // 非编辑模式左滑删除照旧。
+                    .onDelete(perform: deleteAction)
 
                     // 0.1.36（用户要求）：「添加」从页面最底下挪到菜单项列表的末尾 ——
                     // 加完一条就往回看，不用再滑到最下面。
@@ -170,7 +171,18 @@ struct AppsTab: View {
                     }
                 }
             }
+            // 0.1.47：排序编辑模式（长按进编辑 → 原生拖动 + 震动 → 完成）
+            .environment(\.editMode, $editMode)
             .navigationTitle("快捷菜单")
+            .toolbar {
+                ToolbarItem(placement: .navigationBarTrailing) {
+                    Button(editMode == .active ? "完成" : "排序") {
+                        let entering = (editMode != .active)
+                        withAnimation { editMode = entering ? .active : .inactive }
+                        Haptics.fire(entering ? .action : .tap)
+                    }
+                }
+            }
         }
         .onAppear {
             items = ShortcutStore.load()
@@ -291,6 +303,24 @@ struct AppsTab: View {
         BallSettings.set(want, "AutoRefreshSignal")
         BallSettings.notifyReload()
         Haptics.fire(.tap)
+    }
+
+    /// 0.1.47：长按进排序。和「控制中心」设置一样：进去后是原生拖动，「完成」退出。
+    private func enterSortMode() {
+        guard editMode != .active else { return }
+        withAnimation { editMode = .active }
+        Haptics.fire(.action)
+    }
+
+    /// 非编辑模式的左滑删除（编辑模式里 `onDelete` 传 nil，不显示红色删除圈）
+    private func deleteShortcutItems(_ offsets: IndexSet) {
+        items.remove(atOffsets: offsets)
+        ShortcutStore.save(items)
+    }
+
+    /// 编辑模式里不挂删除；非编辑模式左滑删除。
+    private var deleteAction: ((IndexSet) -> Void)? {
+        editMode == .active ? nil : deleteShortcutItems
     }
 
     // MARK: - 执行
@@ -416,47 +446,15 @@ struct AppsTab: View {
     }
 }
 
-// MARK: - 拖动排序（0.1.46 重做）
+// MARK: - 拖动排序
 
-/// 长按一行 → 拖着上下走 → 松手落位。
+/// 0.1.47：排序回到「系统编辑模式 + ForEach.onMove」。
 ///
-/// 为什么不用 `ForEach.onMove`：iOS 15 上它**必须进编辑模式**才会出现拖动能力
-/// （0.1.13 以为「挂了 onMove 就能长按拖」，2026-11-23 用户实测证伪）。
-/// 用 `onDrag` + `onDrop` 不需要编辑模式：长按就是拖、跟手指走，点一下仍然执行。
-///
-/// 落点规则和系统一样：拖进哪一行就插到那一行的位置
-/// （往下拖插到对方后面、往上拖插到对方前面）。
-/// ⚠️ 拖动过程中只改内存 + 动画，**松手才写盘**（`performDrop`）——
-///    每移一格写一次 plist 太亏，而且松手前退出去会留下中间态。
-struct ShortcutDropDelegate: DropDelegate {
-    let item: ShortcutItem
-    @Binding var items: [ShortcutItem]
-    @Binding var dragging: ShortcutItem?
-
-    func dropEntered(info: DropInfo) {
-        guard let dragging = dragging,
-              dragging.key != item.key,
-              let from = items.firstIndex(where: { $0.key == dragging.key }),
-              let to = items.firstIndex(where: { $0.key == item.key })
-        else { return }
-        withAnimation(.easeInOut(duration: 0.16)) {
-            items.move(fromOffsets: IndexSet(integer: from),
-                       toOffset: to > from ? to + 1 : to)
-        }
-    }
-
-    func dropUpdated(info: DropInfo) -> DropProposal? {
-        DropProposal(operation: .move)
-    }
-
-    func performDrop(info: DropInfo) -> Bool {
-        dragging = nil
-        ShortcutStore.save(items)   // 松手才落盘
-        return true
-    }
-
-    func dropExited(info: DropInfo) { }
-}
+/// 走过的弯路（别再踩）：
+///   · 0.1.13 用 `onMove`，但以为「挂了就能长按拖」—— iOS 15 上必须进编辑模式，实际拖不动。
+///   · 0.1.46 改用 `onDrag` + `onDrop`，用户实测「预览动了、顺序没变」。
+///   · 0.1.47 正解：长按一行 → 进编辑模式（震一下）→ 原生拖动（每移一格震一下）→「完成」退出。
+///     编辑模式里 `onDelete` 传 nil，所以不显示红色删除圈；左滑删除仍在非编辑模式。
 
 // MARK: - 添加
 
@@ -482,6 +480,9 @@ struct AddShortcutView: View {
     @State private var desktopTitle = ""
     @State private var desktopURL = ""
     @State private var pendingWebClip: WebClipTarget?
+
+    /// 0.1.47：长按某个 App → 看它 Info.plist 里声明的 URL schemes
+    @State private var schemeTarget: ShortcutItem?
 
     private struct WebClipTarget: Identifiable {
         let id = UUID()
@@ -510,6 +511,11 @@ struct AddShortcutView: View {
     把一条 URL 做成桌面图标（webclip），和 Safari「添加到主屏幕」同一个格式。
     ⚠️ 写完会**重启 SpringBoard**（屏幕闪一下，球会自动回来），图标出现在桌面最后一页。
     例子：微信扫一扫 weixin://scanqrcode。
+    """
+
+    private static let appFooter = """
+    点一下加进菜单；**长按**一个 App 可以看它在 Info.plist 里声明的 URL scheme（CFBundleURLSchemes）。
+    有 scheme 的 App 才能做成桌面图标，或者填进「URL 协议」直接跳到它的某个页面。
     """
 
     /// 搜索框里有字 → 只显示「已安装的 App」这一块（内置动作库/添加两块先收起来）。
@@ -644,9 +650,9 @@ struct AddShortcutView: View {
                     }
                 }
 
-                Section(header: Text("已安装的 App（\(apps.count)）")) {
+                Section(header: helpHeader("已安装的 App（\(apps.count)）", Self.appFooter)) {
                     ForEach(filteredApps) { item in
-                        optionRow(item, detail: item.id, symbol: "app")
+                        appRow(item)
                     }
                 }
 
@@ -684,6 +690,10 @@ struct AddShortcutView: View {
         } message: {
             Text("会把「\(pendingWebClip?.title ?? "")」做成桌面图标，然后重启 SpringBoard。"
                  + "屏幕会闪一下，球会自动回来；图标在桌面最后一页。")
+        }
+        // 0.1.47：长按 App → 看它的 URL schemes
+        .sheet(item: $schemeTarget) { app in
+            AppSchemeSheet(app: app)
         }
     }
 
@@ -840,5 +850,88 @@ struct AddShortcutView: View {
             }
         }
         .disabled(used)
+    }
+
+    /// 0.1.47：App 行。点一下加入菜单；**长按**看它声明的 URL schemes。
+    private func appRow(_ item: ShortcutItem) -> some View {
+        let used = usedKeys.contains(item.key)
+        return HStack(spacing: 12) {
+            Image(systemName: "app")
+                .frame(width: 26)
+                .foregroundColor(.accentColor)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(item.displayTitle).foregroundColor(.primary)
+                Text(used ? "已经在列表里了" : item.id)
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+                    .lineLimit(1)
+            }
+            Spacer()
+            if used {
+                Image(systemName: "checkmark").foregroundColor(.secondary)
+            }
+        }
+        .contentShape(Rectangle())
+        .onTapGesture {
+            guard !used else { return }
+            onPick(item)
+            presentationMode.wrappedValue.dismiss()
+        }
+        .onLongPressGesture(minimumDuration: 0.45) {
+            Haptics.fire(.action)
+            schemeTarget = item
+        }
+    }
+}
+
+// MARK: - 0.1.47：App 的 URL schemes
+
+/// 长按「已安装的 App」里的某一行 → 看它声明的 URL schemes。
+/// 数据来自 App 自己的 Info.plist：`CFBundleURLTypes` → `CFBundleURLSchemes`。
+/// 点一行复制成 `scheme://`，可以拿去填「URL 协议」或「添加到桌面」。
+struct AppSchemeSheet: View {
+    let app: ShortcutItem
+
+    @Environment(\.presentationMode) private var presentationMode
+    @State private var schemes: [String] = []
+    @State private var copied: String?
+
+    var body: some View {
+        NavigationView {
+            List {
+                if schemes.isEmpty {
+                    Text("这个 App 没在 Info.plist 里声明 URL scheme。")
+                        .foregroundColor(.secondary)
+                } else {
+                    Section(header: Text("点一下复制"),
+                            footer: Text("格式是 scheme://；有些 scheme 要带参数，具体看 App 的文档。")) {
+                        ForEach(schemes, id: \.self) { s in
+                            Button {
+                                UIPasteboard.general.string = "\(s)://"
+                                copied = s
+                                Haptics.fire(.tap)
+                            } label: {
+                                HStack {
+                                    Text("\(s)://")
+                                        .font(.system(.body, design: .monospaced))
+                                    Spacer()
+                                    Image(systemName: copied == s ? "checkmark.circle.fill" : "doc.on.doc")
+                                        .foregroundColor(.secondary)
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            .navigationTitle(app.displayTitle)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("关闭") { presentationMode.wrappedValue.dismiss() }
+                }
+            }
+            .onAppear {
+                schemes = FBAppURLSchemes(app.id) ?? []
+            }
+        }
     }
 }

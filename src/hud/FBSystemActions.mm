@@ -33,6 +33,8 @@
 extern "C" int posix_spawnattr_set_persona_np(const posix_spawnattr_t* __restrict, uid_t, uint32_t);
 extern "C" int posix_spawnattr_set_persona_uid_np(const posix_spawnattr_t* __restrict, uid_t);
 extern "C" int posix_spawnattr_set_persona_gid_np(const posix_spawnattr_t* __restrict, uid_t);
+// posix_spawn 要环境变量；<unistd.h> 在 ObjC++ 里不声明它（HUDHelper.mm 里也是这么写的）
+extern "C" char **environ;
 
 #pragma mark - 刷新蜂窝网络信号
 

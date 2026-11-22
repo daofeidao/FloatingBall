@@ -20,6 +20,11 @@ OBJC_EXTERN NSString *const FBNotifyReloadHUD;
 /// 返回：@[ @{ @"id": bundleID, @"name": 显示名 } ]，按名字排好序。
 OBJC_EXTERN NSArray<NSDictionary<NSString *, NSString *> *> *FBInstalledApps(void);
 
+/// 0.1.47：列出某个 App 在 Info.plist 里声明的 URL schemes
+/// （`CFBundleURLTypes` → `CFBundleURLSchemes`，顺序保持不变、去重）。
+/// 没声明就返回空数组。
+OBJC_EXTERN NSArray<NSString *> *FBAppURLSchemes(NSString *bundleID);
+
 /// 打开任意 App（和悬浮球进程里那条是同一份实现）
 OBJC_EXTERN BOOL FBOpenApplication(NSString *bundleID);
 

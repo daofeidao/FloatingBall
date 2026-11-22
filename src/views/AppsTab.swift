@@ -1,4 +1,5 @@
 import SwiftUI
+import UniformTypeIdentifiers
 
 /// 第二栏：快捷菜单
 ///
@@ -18,6 +19,8 @@ import SwiftUI
 struct AppsTab: View {
 
     @State private var items: [ShortcutItem] = []
+    /// 0.1.46：正在被长按拖动的那一项（onDrag/onDrop 用）
+    @State private var dragging: ShortcutItem?
     @State private var gestures: [String: String] = [:]
     /// 0.1.36：打开手势选择菜单时能选的东西（用户自己增删，见下面「手势动作」那一节）
     @State private var gestureItems: [ShortcutItem] = []
@@ -66,13 +69,20 @@ struct AppsTab: View {
                         row(item)
                             .contentShape(Rectangle())
                             .onTapGesture { run(item) }
+                            // 0.1.46：长按即拖，不依赖编辑模式（iOS 15 的 onMove 必须进编辑模式）。
+                            //   拖起来的那一行半透明，松手才写盘（见 ShortcutDropDelegate）。
+                            .opacity(dragging?.key == item.key ? 0.5 : 1.0)
+                            .onDrag {
+                                dragging = item
+                                return NSItemProvider(object: item.key as NSString)
+                            }
+                            .onDrop(of: [UTType.text],
+                                    delegate: ShortcutDropDelegate(item: item,
+                                                                   items: $items,
+                                                                   dragging: $dragging))
                     }
-                    // ⚠️ 排序就这一句：List 对挂了 onMove 的 ForEach 自带「长按+拖动」。
-                    //    每换一次位置就写一次盘（plist 很小，写盘反而稳 —— 中途退出去也不丢）。
-                    .onMove { from, to in
-                        items.move(fromOffsets: from, toOffset: to)
-                        ShortcutStore.save(items)
-                    }
+                    // ⚠️ 0.1.46：**不要**再挂 `.onMove`。iOS 15 上它必须进编辑模式才可拖；
+                    //    排上了也不会生效，反而会和上面的 onDrag 抢手势。
                     .onDelete { offsets in
                         items.remove(atOffsets: offsets)
                         ShortcutStore.save(items)
@@ -386,17 +396,49 @@ struct AppsTab: View {
     }
 }
 
-// MARK: - 拖动排序
+// MARK: - 拖动排序（0.1.46 重做）
 
-/// 常驻拖动排序的落点逻辑：
-/// 拖着某一行进到另一行身上时，就把它插到那一行的位置（上下方向都对：
-/// 往下拖时插到对方后面、往上拖时插到对方前面）。
-/// ⚠️ 松手才写盘（`onCommit`）—— 拖的过程中每移一格都写一次 plist 太亏。
+/// 长按一行 → 拖着上下走 → 松手落位。
+///
+/// 为什么不用 `ForEach.onMove`：iOS 15 上它**必须进编辑模式**才会出现拖动能力
+/// （0.1.13 以为「挂了 onMove 就能长按拖」，2026-11-23 用户实测证伪）。
+/// 用 `onDrag` + `onDrop` 不需要编辑模式：长按就是拖、跟手指走，点一下仍然执行。
+///
+/// 落点规则和系统一样：拖进哪一行就插到那一行的位置
+/// （往下拖插到对方后面、往上拖插到对方前面）。
+/// ⚠️ 拖动过程中只改内存 + 动画，**松手才写盘**（`performDrop`）——
+///    每移一格写一次 plist 太亏，而且松手前退出去会留下中间态。
+struct ShortcutDropDelegate: DropDelegate {
+    let item: ShortcutItem
+    @Binding var items: [ShortcutItem]
+    @Binding var dragging: ShortcutItem?
+
+    func dropEntered(info: DropInfo) {
+        guard let dragging = dragging,
+              dragging.key != item.key,
+              let from = items.firstIndex(where: { $0.key == dragging.key }),
+              let to = items.firstIndex(where: { $0.key == item.key })
+        else { return }
+        withAnimation(.easeInOut(duration: 0.16)) {
+            items.move(fromOffsets: IndexSet(integer: from),
+                       toOffset: to > from ? to + 1 : to)
+        }
+    }
+
+    func dropUpdated(info: DropInfo) -> DropProposal? {
+        DropProposal(operation: .move)
+    }
+
+    func performDrop(info: DropInfo) -> Bool {
+        dragging = nil
+        ShortcutStore.save(items)   // 松手才落盘
+        return true
+    }
+
+    func dropExited(info: DropInfo) { }
+}
+
 // MARK: - 添加
-
-/// ⚠️ 0.1.13：`ShortcutDropDelegate`（onDrag/onDrop 那套）删了 ——
-///    0.1.10 写它时没条件真机验证，结果手柄能显示、顺序拖不动；排序改交给
-///    `ForEach.onMove`（长按+拖），结构简单一半。此段留个说明，别再写回来。
 
 struct AddShortcutView: View {
 

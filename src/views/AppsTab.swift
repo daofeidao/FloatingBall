@@ -16,6 +16,8 @@ import UIKit
 ///   ⚠️ 走过的弯路：0.1.13 以为「onMove 挂了就能长按拖」，iOS 15 上必须进编辑模式；
 ///      0.1.46 改 `onDrag`/`onDrop`，用户实测「预览动了、顺序没变」。现在回到编辑模式 + onMove。
 ///   编辑模式里 `onDelete` 传 nil，不显示红色删除圈；非编辑模式左滑删除照旧。
+///   ⚠️ 0.1.49：编辑模式**只挂在「菜单项」这一节**；行视图**始终保持同一种**
+///      （0.1.47 的 `if editMode` 分行会让整行重建 → 闪 / 抖 / 漂移，系统拖动把手也不出现）。
 struct AppsTab: View {
 
     @State private var items: [ShortcutItem] = []
@@ -66,16 +68,19 @@ struct AppsTab: View {
                         Text("还是空的，点下面「添加」").foregroundColor(.secondary)
                     }
                     ForEach(items) { item in
-                        // 0.1.47：编辑模式下行上不挂 tap / 长按，交给系统原生拖动；
-                        // 平时点一下执行、长按进排序。
-                        if editMode == .active {
-                            row(item).contentShape(Rectangle())
-                        } else {
-                            row(item)
-                                .contentShape(Rectangle())
-                                .onTapGesture { run(item) }
-                                .onLongPressGesture(minimumDuration: 0.45) { enterSortMode() }
-                        }
+                        // 0.1.49：行**始终保持同一种视图**。
+                        // 0.1.47 用 `if editMode` 分了两支 → 进编辑时整行被重建，
+                        // 用户看到的就是「闪一下、抖一下、项目漂移」，而且系统拖动把手也不出现。
+                        // 现在：行不变，只是编辑模式下 tap 不执行；长按仍是「进排序」。
+                        row(item)
+                            .contentShape(Rectangle())
+                            .onTapGesture {
+                                guard editMode != .active else { return }
+                                run(item)
+                            }
+                            .onLongPressGesture(minimumDuration: 0.45) {
+                                enterSortMode()
+                            }
                     }
                     // 0.1.47：排序改回系统的编辑模式 + onMove。
                     //   iOS 15 上 onMove 是**唯一**拖动真的会改顺序的路子：
@@ -97,6 +102,10 @@ struct AppsTab: View {
                         Label("添加", systemImage: "plus.circle")
                     }
                 }
+                // 0.1.49：编辑模式**只作用于「菜单项」这一节**。
+                //   挂在整个 List 上时，「手势动作」那节也会跟着进编辑
+                //   （出现 − 号却没有拖动把手，用户以为坏了），别的行也会跟着抖。
+                .environment(\.editMode, $editMode)
 
                 // ---- 0.1.45（用户 2026-11-23 要求）：自动刷新信号 ----
                 //   原来那个「刷新信号」是**手动点一下**，这条是**开关**：
@@ -171,14 +180,13 @@ struct AppsTab: View {
                     }
                 }
             }
-            // 0.1.47：排序编辑模式（长按进编辑 → 原生拖动 + 震动 → 完成）
-            .environment(\.editMode, $editMode)
+            // 0.1.49：`editMode` 只挂在「菜单项」那一节上（见上），这里不再挂整条 List。
             .navigationTitle("快捷菜单")
             .toolbar {
                 ToolbarItem(placement: .navigationBarTrailing) {
                     Button(editMode == .active ? "完成" : "排序") {
                         let entering = (editMode != .active)
-                        withAnimation { editMode = entering ? .active : .inactive }
+                        editMode = entering ? .active : .inactive
                         Haptics.fire(entering ? .action : .tap)
                     }
                 }
@@ -227,12 +235,14 @@ struct AppsTab: View {
                     .lineLimit(1)
             }
             Spacer(minLength: 8)
-            //三条横线手柄：老版本这里是「>」（点进二级页的箭头），
-            // 现在点一行就是执行，没有二级页可进 —— 换成「能拖着换顺序」的示意。
-            // 真正的排序靠 List 自带的「长按+拖」（onMove），从这附近按下去最顺手。
-            Image(systemName: "line.3.horizontal")
-                .font(.system(size: 14, weight: .semibold))
-                .foregroundColor(.secondary)
+            // 三条横线：平时只是「这行能排」的示意（不是真的拖动把手）。
+            // ⚠️ 0.1.49：编辑模式下**不画它** —— 系统会在行尾插自己的拖动把手，
+            //    两个「三」叠在一起用户会拖错（而且我们这条只是图标，拖不动）。
+            if editMode != .active {
+                Image(systemName: "line.3.horizontal")
+                    .font(.system(size: 14, weight: .semibold))
+                    .foregroundColor(.secondary)
+            }
         }
     }
 
@@ -305,10 +315,12 @@ struct AppsTab: View {
         Haptics.fire(.tap)
     }
 
-    /// 0.1.47：长按进排序。和「控制中心」设置一样：进去后是原生拖动，「完成」退出。
+    /// 0.1.49：长按进排序。和「控制中心」设置一样：进去后是原生拖动，「完成」退出。
+    /// ⚠️ 不要套 `withAnimation`：进编辑时系统要插拖动把手 / 调整布局，
+    ///    带动画反而是一过性的抖动（用户 2026-11-23 报的「闪一下、抖一下」）。
     private func enterSortMode() {
         guard editMode != .active else { return }
-        withAnimation { editMode = .active }
+        editMode = .active
         Haptics.fire(.action)
     }
 
@@ -455,6 +467,9 @@ struct AppsTab: View {
 ///   · 0.1.46 改用 `onDrag` + `onDrop`，用户实测「预览动了、顺序没变」。
 ///   · 0.1.47 正解：长按一行 → 进编辑模式（震一下）→ 原生拖动（每移一格震一下）→「完成」退出。
 ///     编辑模式里 `onDelete` 传 nil，所以不显示红色删除圈；左滑删除仍在非编辑模式。
+///   · 0.1.49：0.1.47 的 `if editMode` 分行导致进编辑时整行重建（闪 / 抖 / 漂移、无把手），
+///     而且 `editMode` 挂在整个 List 上，把「手势动作」也带进编辑（有 − 没把手）。
+///     现在：行固定同一种视图；`editMode` 只挂在「菜单项」Section 上。
 
 // MARK: - 添加
 

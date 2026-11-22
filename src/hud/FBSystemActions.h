@@ -56,6 +56,16 @@ NSDictionary<NSString *, id> *FBAddWebClipToHomeScreen(NSString *title,
 /// 重启 SpringBoard。返回有没有把 killall 发出去。
 BOOL FBRespringSpringBoard(void);
 
+/// 【0.1.51】生成「桌面快捷方式」配置描述文件（webClip.managed），
+/// 并用本地 HTTP 服务把它交给 Safari 安装（iOS 15 唯一可靠的方式）。
+/// - Returns: @{ @"ok": NSNumber, @"url": NSString（http://127.0.0.1:port/...，交给 FBOpenURL）,
+///               @"path": NSString, @"port": NSNumber, @"error": NSString }
+/// ⚠️ 调用方拿到 url 后要 `FBOpenURL(url)` 打开 Safari；Safari 会提示下载描述文件，
+///    用户去 设置 → 已下载描述文件 → 安装，图标才会出现。
+NSDictionary<NSString *, id> *FBAddWebClipProfile(NSString *title,
+                                                  NSString *url,
+                                                  NSString *symbolName);
+
 /// 打开任意 App。
 /// 两条路：LSApplicationWorkspace（优先）→ SBSLaunchApplicationWithIdentifierAndLaunchOptions（兜底）。
 /// 全部字符串查找，取不到只是返回 NO，不会链接失败。

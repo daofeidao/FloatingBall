@@ -27,6 +27,11 @@
 #import <mach-o/dyld.h>
 #import <string.h>
 #import <stdlib.h>
+#import <sys/socket.h>
+#import <sys/select.h>
+#import <sys/time.h>
+#import <netinet/in.h>
+#import <arpa/inet.h>
 
 // 0.1.47：以 root 身份 spawn（和 HUDHelper.mm 里那组声明一致）。
 // 不放在公共头文件里：只有这个文件和 HUDHelper 需要。
@@ -658,6 +663,153 @@ BOOL FBRespringSpringBoard(void)
 
     FBLog(@"⚠️ respring 全部失败（killall / launchctl / helper 都没发出去）");
     return NO;
+}
+
+#pragma mark - 桌面图标：描述文件（0.1.51）
+
+// iOS 15 不允许第三方 App 直接往桌面加图标：
+//   · 只把 `.webclip` 文件夹写进 /var/mobile/Library/WebClips，SpringBoard 不认（用户实测）；
+//   · `setIconState` / IconState.plist 在 iOS 13+ 被系统**静默忽略**（社区实测结论）。
+// 唯一可靠的官方通路是「配置描述文件」里的 com.apple.webClip.managed：
+//   生成 .mobileconfig → 用本地 HTTP 服务以 application/x-apple-aspen-config 交给 Safari
+//   → 用户在 设置 里点安装 → 图标出现。
+// 为什么不用 file://：iOS 的 profile 安装只认 http(s)，file:// 会报 -10814（Apple DTS 确认）。
+
+static NSData *sProfileData = nil;
+
+static void FBProfileServerRun(int fd)
+{
+    // 最多处理 5 个连接（Safari 可能先 HEAD 再 GET）
+    for (int i = 0; i < 5; i++) {
+        fd_set rfds;
+        FD_ZERO(&rfds);
+        FD_SET(fd, &rfds);
+        struct timeval tv = { 120, 0 };
+        int sel = select(fd + 1, &rfds, NULL, NULL, &tv);
+        if (sel <= 0) break;
+
+        int c = accept(fd, NULL, NULL);
+        if (c < 0) break;
+
+        char req[2048] = {0};
+        ssize_t n = read(c, req, sizeof(req) - 1);
+        BOOL isHead = (n >= 4 && strncmp(req, "HEAD", 4) == 0);
+
+        NSData *body = sProfileData ?: [NSData data];
+        NSString *head = [NSString stringWithFormat:
+            @"HTTP/1.1 200 OK\r\n"
+            @"Content-Type: application/x-apple-aspen-config\r\n"
+            @"Content-Length: %lu\r\n"
+            @"Connection: close\r\n\r\n",
+            (unsigned long)body.length];
+        NSMutableData *resp = [NSMutableData dataWithData:[head dataUsingEncoding:NSUTF8StringEncoding]];
+        if (!isHead) [resp appendData:body];
+
+        const uint8_t *bytes = resp.bytes;
+        NSUInteger left = resp.length;
+        while (left > 0) {
+            ssize_t w = write(c, bytes, left);
+            if (w <= 0) break;
+            bytes += w;
+            left -= (NSUInteger)w;
+        }
+        close(c);
+        if (!isHead) break;
+    }
+    close(fd);
+}
+
+NSDictionary<NSString *, id> *FBAddWebClipProfile(NSString *title,
+                                                  NSString *url,
+                                                  NSString *symbolName)
+{
+    if (![title isKindOfClass:[NSString class]] || title.length == 0) {
+        return @{ @"ok": @NO, @"error": @"标题为空" };
+    }
+    if (![url isKindOfClass:[NSString class]] || url.length == 0) {
+        return @{ @"ok": @NO, @"error": @"URL 为空" };
+    }
+
+    NSData *icon = UIImagePNGRepresentation(FBWebClipIcon(symbolName));
+    if (!icon) return @{ @"ok": @NO, @"error": @"生成图标失败" };
+
+    NSString *uuid1 = [[NSUUID UUID] UUIDString];
+    NSString *uuid2 = [[NSUUID UUID] UUIDString];
+
+    NSDictionary *clip = @{
+        @"PayloadType":        @"com.apple.webClip.managed",
+        @"PayloadIdentifier":  [NSString stringWithFormat:@"com.daofeidao.floatingball.webclip.%@", uuid1],
+        @"PayloadUUID":        uuid1,
+        @"PayloadVersion":     @1,
+        @"PayloadDisplayName": title,
+        @"Label":              title,
+        @"URL":                url,
+        @"Icon":               icon,
+        @"IsRemovable":        @YES,
+        @"Precomposed":        @YES,
+        @"FullScreen":         @NO,
+    };
+    NSDictionary *profile = @{
+        @"PayloadType":              @"Configuration",
+        @"PayloadIdentifier":        [NSString stringWithFormat:@"com.daofeidao.floatingball.profile.%@", uuid2],
+        @"PayloadUUID":              uuid2,
+        @"PayloadVersion":           @1,
+        @"PayloadDisplayName":       [NSString stringWithFormat:@"桌面快捷方式 - %@", title],
+        @"PayloadOrganization":      @"FloatingBall",
+        @"PayloadDescription":       @"把一条快捷方式放到桌面（Web Clip）。只包含这一个图标，不读取任何数据。",
+        @"PayloadRemovalDisallowed": @NO,
+        @"PayloadContent":           @[ clip ],
+    };
+
+    NSError *err = nil;
+    NSData *data = [NSPropertyListSerialization dataWithPropertyList:profile
+                                                              format:NSPropertyListXMLFormat_v1_0
+                                                             options:0
+                                                               error:&err];
+    if (!data) {
+        return @{ @"ok": @NO,
+                  @"error": [NSString stringWithFormat:@"生成描述文件失败：%@",
+                             err.localizedDescription ?: @"?"] };
+    }
+
+    sProfileData = data;
+
+    int fd = socket(AF_INET, SOCK_STREAM, 0);
+    if (fd < 0) return @{ @"ok": @NO, @"error": @"socket() 失败" };
+    int yes = 1;
+    setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &yes, sizeof(yes));
+
+    struct sockaddr_in addr;
+    memset(&addr, 0, sizeof(addr));
+    addr.sin_family = AF_INET;
+    addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    addr.sin_port = 0;
+    if (bind(fd, (struct sockaddr *)&addr, sizeof(addr)) != 0) {
+        close(fd);
+        return @{ @"ok": @NO, @"error": @"bind 127.0.0.1 失败" };
+    }
+    socklen_t len = sizeof(addr);
+    if (getsockname(fd, (struct sockaddr *)&addr, &len) != 0) {
+        close(fd);
+        return @{ @"ok": @NO, @"error": @"getsockname 失败" };
+    }
+    int port = ntohs(addr.sin_port);
+    if (listen(fd, 2) != 0) {
+        close(fd);
+        return @{ @"ok": @NO, @"error": @"listen 失败" };
+    }
+
+    dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
+        FBProfileServerRun(fd);
+    });
+
+    NSString *profileURL = [NSString stringWithFormat:@"http://127.0.0.1:%d/p.mobileconfig", port];
+    NSString *path = [NSTemporaryDirectory() stringByAppendingPathComponent:
+                      [NSString stringWithFormat:@"FloatingBall-%@.mobileconfig", uuid1]];
+    [data writeToFile:path atomically:YES];
+
+    FBLog(@"桌面描述文件：%@ -> %@（本地服务端口 %d）", title, path, port);
+    return @{ @"ok": @YES, @"url": profileURL, @"path": path, @"port": @(port) };
 }
 
 #pragma mark - 打开 App

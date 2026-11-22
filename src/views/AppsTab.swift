@@ -502,7 +502,8 @@ struct AddShortcutView: View {
     @State private var pendingWebClip: WebClipTarget?
     /// 0.1.50：写桌面图标的结果（成功/失败都弹出来，别再「没反应」）
     @State private var webClipAlert: String?
-    @State private var webClipNeedsRespring = false
+    /// 0.1.51：描述文件的本地 http 地址（点「好」后交给 Safari）
+    @State private var webClipProfileURL: String?
 
     /// 0.1.47：长按某个 App → 看它 Info.plist 里声明的 URL schemes
     @State private var schemeTarget: ShortcutItem?
@@ -531,8 +532,8 @@ struct AddShortcutView: View {
     """
 
     private static let desktopFooter = """
-    把一条 URL 做成桌面图标（webclip），和 Safari「添加到主屏幕」同一个格式。
-    ⚠️ 写完会**重启 SpringBoard**（屏幕闪一下，球会自动回来），图标出现在桌面最后一页。
+    把一条 URL 做成桌面图标。
+    iOS 15 只允许「配置描述文件」这条路：生成后用 Safari 安装，图标就会出现在桌面（不需要 respring）。
     例子：微信扫一扫 weixin://scanqrcode。
     """
 
@@ -711,8 +712,8 @@ struct AddShortcutView: View {
             }
             Button("取消", role: .cancel) { pendingWebClip = nil }
         } message: {
-            Text("会把「\(pendingWebClip?.title ?? "")」做成桌面图标，然后重启 SpringBoard。"
-                 + "屏幕会闪一下，球会自动回来；图标在桌面最后一页。")
+            Text("会为「\(pendingWebClip?.title ?? "")」生成一个桌面快捷方式描述文件，"
+                 + "接着用 Safari 打开安装页。安装后图标出现在桌面最后一页。")
         }
         // 0.1.47：长按 App → 看它的 URL schemes
         .sheet(item: $schemeTarget) { app in
@@ -723,11 +724,11 @@ struct AddShortcutView: View {
             get: { webClipAlert != nil },
             set: { if !$0 { webClipAlert = nil } })) {
             Button("好") {
-                if webClipNeedsRespring {
-                    webClipNeedsRespring = false
-                    // 留一拍让弹窗先收起来，再 respring（respring 会杀掉本 App）
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
-                        _ = FBRespringSpringBoard()
+                if let u = webClipProfileURL {
+                    webClipProfileURL = nil
+                    // 留一拍让弹窗先收起来，再交给 Safari
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
+                        _ = FBOpenURL(u)
                     }
                 }
             }
@@ -829,19 +830,23 @@ struct AddShortcutView: View {
     }
 
     private func addWebClip(_ target: WebClipTarget) {
-        let r = FBAddWebClipToHomeScreen(target.title, target.url, target.symbol) ?? [:]
+        let r = FBAddWebClipProfile(target.title, target.url, target.symbol) ?? [:]
         pendingWebClip = nil
 
         let ok = (r["ok"] as? Bool) ?? ((r["ok"] as? NSNumber)?.boolValue ?? false)
-        if ok {
-            let path = (r["path"] as? String) ?? "?"
-            webClipAlert = "已写入桌面图标：\(target.title)\n\n路径：\(path)\n\n"
-                + "点「好」后重启 SpringBoard（屏幕闪一下，球会自动回来）。图标出现在桌面最后一页。"
-            webClipNeedsRespring = true
+        if ok, let profileURL = r["url"] as? String {
+            webClipProfileURL = profileURL
+            webClipAlert = "已生成「\(target.title)」的桌面描述文件。\n\n"
+                + "点「好」打开 Safari：\n"
+                + "1. Safari 提示「下载配置描述文件」→ 允许\n"
+                + "2. 设置 → 已下载描述文件 → 安装（要输锁屏密码）\n"
+                + "3. 装完图标就在桌面最后一页\n\n"
+                + "⚠️ iOS 15 只允许这种方式：直接往桌面写图标会被系统忽略。\n"
+                + "不想要了：设置 → 通用 → VPN 与设备管理 里删掉这个描述文件。"
         } else {
             let err = (r["error"] as? String) ?? "未知错误"
-            webClipAlert = "写桌面图标失败：\(err)\n\n把这句话发给我，我照着改。"
-            webClipNeedsRespring = false
+            webClipProfileURL = nil
+            webClipAlert = "生成桌面描述文件失败：\(err)\n\n把这句话发给我。"
         }
     }
 

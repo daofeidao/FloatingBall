@@ -58,6 +58,13 @@ OBJC_EXTERN NSDictionary<NSString *, id> *FBAddWebClipToHomeScreen(NSString *tit
 /// ⚠️ 会杀掉本 App 自己；球进程能活下来并自动重建。
 OBJC_EXTERN BOOL FBRespringSpringBoard(void);
 
+/// 0.1.51：生成桌面快捷方式的配置描述文件（webClip.managed），并用本地 HTTP 服务交给 Safari。
+/// - Returns: @{ @"ok": NSNumber, @"url": NSString, @"path": NSString, @"error": NSString }
+/// ⚠️ 拿到 url 后要调 FBOpenURL(url) 打开 Safari；用户在 设置 里安装描述文件后图标才出现。
+OBJC_EXTERN NSDictionary<NSString *, id> *FBAddWebClipProfile(NSString *title,
+                                                              NSString *url,
+                                                              NSString *symbolName);
+
 /// 【截屏】两条路：先试系统自己的截图服务（不注入输入，最安全），
 /// 取不到再注入一次「音量加 + 电源」组合键（iOS 的截图快捷键）。
 /// - Returns: 实际走的哪条路：0 = 都没走通，1 = 系统截图服务，2 = 按键注入。

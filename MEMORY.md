@@ -765,6 +765,8 @@ send([r"...\FloatingBall.tipa"],
 | 0.1.48 | 2026-11-23 | `E:\下载\FloatingBall_0.1.48.tipa`（本地 Mac 构建，邮件已发 02:04，to sz202610@126.com / cc lion.2026.10@proton.me，附件 641.3 KB）。震动重做：球端改 Taptic 系统声音 1519 peek（轻）/ 1520 pop（重），后台 root 可用、质感是「哒」不是嗡嗡；强度改轻/重两档（tap 0.55、动作 0.35 阈值）；设置页滑块改分段控件 | 656,739 | `60476fff1ea18f02a6b6efd53ec5212a834f38314a2414a2f5ed05c953c5201d` |
 | 0.1.49 | 2026-11-23 | `E:\下载\FloatingBall_0.1.49.tipa`（本地 Mac 构建，邮件已发 02:10，to sz202610@126.com / cc lion.2026.10@proton.me，附件 642.4 KB）。修排序编辑态：行固定同一种视图（不再闪/抖/漂移、不再套 withAnimation）+ `editMode` 挂 List、手势/手势动作/自动刷新/恢复默认覆盖 `.inactive`（只有菜单项进编辑，手势动作不再有 − 没把手）+ 编辑时隐藏装饰性「三」，只留系统真把手 | 657,791 | `532c523495346f42d77519d1a5ffd630cf8565a20355315451eb2c5042567aea` |
 | 0.1.50 | 2026-11-23 | `E:\下载\FloatingBall_0.1.50.tipa`（本地 Mac 构建，邮件已发 02:15，to sz202610@126.com / cc lion.2026.10@proton.me，附件 647.8 KB）。桌面图标（webclip）排查：结果弹窗（成功+路径 / 失败+原因）+ respring 三路兜底（killall → launchctl kickstart → spawn self `-respring`，libproc 找 PID kill）+ webclip 补 `IconIsScreenShotBased`/`ScrollPoint`；含 0.1.49 排序修复 | 663,375 | `8f416d25ac6d3734922b504192e4b45ac08b93d109e412de4981b63a796595b2` |
+| 0.1.51 | 2026-11-23 | 未交付（仅本机构建：654K / `66e88b07…`，把桌面图标改成描述文件通路，被 0.1.52 取代） | — | — |
+| 0.1.52 | 2026-11-23 | `E:\下载\FloatingBall_0.1.52.tipa`（本地 Mac 构建，邮件已发 02:31，to sz202610@126.com / cc lion.2026.10@proton.me，附件 653.7 KB）。① 桌面图标改官方通路：查资料确认 iOS 13~15 上 `setIconState` 静默忽略 / IconState.plist 失效 / 裸 webclip 文件夹不认 → 改用 `com.apple.webClip.managed` 描述文件 + 本地 HTTP 交给 Safari 安装（`file://` 报 -10814）。② 「刷新信号 / 截屏」不再显示小字解释 | 669,421 | `8d2eac569e57138f9c5b4eec1ee3819a6a443ea5ffb6c7797864f4e3172e64a4` |
 
 - 0.1.38（用户 2026-10-20 一次提的五件事）：
   · ① **震动改成「只在按下去那一下」**（用户原话：「有手点下去震一下，抬起来不震」）。

@@ -16,8 +16,9 @@ import UIKit
 ///   ⚠️ 走过的弯路：0.1.13 以为「onMove 挂了就能长按拖」，iOS 15 上必须进编辑模式；
 ///      0.1.46 改 `onDrag`/`onDrop`，用户实测「预览动了、顺序没变」。现在回到编辑模式 + onMove。
 ///   编辑模式里 `onDelete` 传 nil，不显示红色删除圈；非编辑模式左滑删除照旧。
-///   ⚠️ 0.1.49：编辑模式**只挂在「菜单项」这一节**；行视图**始终保持同一种**
-///      （0.1.47 的 `if editMode` 分行会让整行重建 → 闪 / 抖 / 漂移，系统拖动把手也不出现）。
+///   ⚠️ 0.1.49：编辑模式挂在 List 上（系统靠 List 级环境值才进编辑），但
+///      「手势 / 手势动作 / 自动刷新 / 恢复默认」各自覆盖成 `.inactive`（只有菜单项能拖）；
+///      行视图**始终保持同一种**（0.1.47 的 `if editMode` 分行会让整行重建 → 闪 / 抖 / 漂移）。
 struct AppsTab: View {
 
     @State private var items: [ShortcutItem] = []
@@ -102,10 +103,9 @@ struct AppsTab: View {
                         Label("添加", systemImage: "plus.circle")
                     }
                 }
-                // 0.1.49：编辑模式**只作用于「菜单项」这一节**。
-                //   挂在整个 List 上时，「手势动作」那节也会跟着进编辑
-                //   （出现 − 号却没有拖动把手，用户以为坏了），别的行也会跟着抖。
-                .environment(\.editMode, $editMode)
+                // 0.1.49：`editMode` 挂在**List 上**（系统要靠 List 级的环境值才会真正进编辑态，
+                //   0.1.47 就是这么进去的）；下面「手势 / 手势动作 / 恢复默认」几节各自覆盖成
+                //   `.inactive`，避免出现「只有 − 号、没有拖动把手」的假编辑态。
 
                 // ---- 0.1.45（用户 2026-11-23 要求）：自动刷新信号 ----
                 //   原来那个「刷新信号」是**手动点一下**，这条是**开关**：
@@ -121,6 +121,7 @@ struct AppsTab: View {
                         .font(.footnote)
                         .foregroundColor(.secondary)
                 }
+                .environment(\.editMode, .constant(.inactive))
 
                 // ⚠️ 0.1.32（用户要求）：手势绑定从「启动」页搬到这一页。
                 //    理由：这一页既是「点一下」的清单，也是手势的候选池；
@@ -137,6 +138,7 @@ struct AppsTab: View {
                         Text("移动球，松手吸边").foregroundColor(.secondary)
                     }
                 }
+                .environment(\.editMode, .constant(.inactive))
 
                 // ⚠️ 0.1.36（用户 2026-10-20 要求）：手势下面再加一节「手势动作」。
                 //    这一节就是「打开手势选择菜单时能选的动作」的清单 ——
@@ -172,6 +174,7 @@ struct AppsTab: View {
                         Label("添加手势项目", systemImage: "hand.tap")
                     }
                 }
+                .environment(\.editMode, .constant(.inactive))
 
                 Section {
                     Button("恢复默认三条") {
@@ -179,8 +182,10 @@ struct AppsTab: View {
                         ShortcutStore.save(items)
                     }
                 }
+                .environment(\.editMode, .constant(.inactive))
             }
-            // 0.1.49：`editMode` 只挂在「菜单项」那一节上（见上），这里不再挂整条 List。
+            // 0.1.49：List 级 editMode（系统靠它进编辑态）；非菜单项的小节在各自 Section 上覆盖。
+            .environment(\.editMode, $editMode)
             .navigationTitle("快捷菜单")
             .toolbar {
                 ToolbarItem(placement: .navigationBarTrailing) {
@@ -469,7 +474,7 @@ struct AppsTab: View {
 ///     编辑模式里 `onDelete` 传 nil，所以不显示红色删除圈；左滑删除仍在非编辑模式。
 ///   · 0.1.49：0.1.47 的 `if editMode` 分行导致进编辑时整行重建（闪 / 抖 / 漂移、无把手），
 ///     而且 `editMode` 挂在整个 List 上，把「手势动作」也带进编辑（有 − 没把手）。
-///     现在：行固定同一种视图；`editMode` 只挂在「菜单项」Section 上。
+///     现在：行固定同一种视图；`editMode` 挂在 List 上，其它节覆盖成 `.inactive`。
 
 // MARK: - 添加
 

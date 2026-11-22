@@ -1393,7 +1393,8 @@ int main(int argc, char *argv[])
                 if (pids) {
                     int got = proc_listallpids(pids, n * (int)sizeof(pid_t));
                     for (int i = 0; i < got; i++) {
-                        char p[PROC_PIDPATHINFO_MAXSIZE] = {0};
+                        // 4096 = PROC_PIDPATHINFO_MAXSIZE（项目自带的 libproc.h 没这个常量）
+                        char p[4096] = {0};
                         if (proc_pidpath(pids[i], p, sizeof(p)) <= 0) continue;
                         if (strstr(p, "/SpringBoard")) {
                             FBLog(@"-respring：kill SpringBoard pid=%d path=%s", pids[i], p);

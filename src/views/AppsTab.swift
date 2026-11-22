@@ -500,6 +500,9 @@ struct AddShortcutView: View {
     @State private var desktopTitle = ""
     @State private var desktopURL = ""
     @State private var pendingWebClip: WebClipTarget?
+    /// 0.1.50：写桌面图标的结果（成功/失败都弹出来，别再「没反应」）
+    @State private var webClipAlert: String?
+    @State private var webClipNeedsRespring = false
 
     /// 0.1.47：长按某个 App → 看它 Info.plist 里声明的 URL schemes
     @State private var schemeTarget: ShortcutItem?
@@ -715,6 +718,22 @@ struct AddShortcutView: View {
         .sheet(item: $schemeTarget) { app in
             AppSchemeSheet(app: app)
         }
+        // 0.1.50：写桌面图标的结果 —— 成功/失败都明确弹出来，不再「没反应」
+        .alert("放到桌面", isPresented: Binding(
+            get: { webClipAlert != nil },
+            set: { if !$0 { webClipAlert = nil } })) {
+            Button("好") {
+                if webClipNeedsRespring {
+                    webClipNeedsRespring = false
+                    // 留一拍让弹窗先收起来，再 respring（respring 会杀掉本 App）
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
+                        _ = FBRespringSpringBoard()
+                    }
+                }
+            }
+        } message: {
+            Text(webClipAlert ?? "")
+        }
     }
 
     // MARK: 系统快捷指令 / URL 协议（同一页）
@@ -815,13 +834,14 @@ struct AddShortcutView: View {
 
         let ok = (r["ok"] as? Bool) ?? ((r["ok"] as? NSNumber)?.boolValue ?? false)
         if ok {
-            hint = "已写入桌面图标：\(target.title)。SpringBoard 重启后出现在桌面最后一页。"
-            // 给 SwiftUI 一点时间把提示画出来，再 respring（respring 会杀掉本 App）
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) {
-                _ = FBRespringSpringBoard()
-            }
+            let path = (r["path"] as? String) ?? "?"
+            webClipAlert = "已写入桌面图标：\(target.title)\n\n路径：\(path)\n\n"
+                + "点「好」后重启 SpringBoard（屏幕闪一下，球会自动回来）。图标出现在桌面最后一页。"
+            webClipNeedsRespring = true
         } else {
-            hint = "写桌面图标失败：\((r["error"] as? String) ?? "未知错误")"
+            let err = (r["error"] as? String) ?? "未知错误"
+            webClipAlert = "写桌面图标失败：\(err)\n\n把这句话发给我，我照着改。"
+            webClipNeedsRespring = false
         }
     }
 

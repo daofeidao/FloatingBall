@@ -24,6 +24,9 @@
 #import <signal.h>
 #import <fcntl.h>
 #import <errno.h>
+#import <mach-o/dyld.h>
+#import <string.h>
+#import <stdlib.h>
 
 // 0.1.47：以 root 身份 spawn（和 HUDHelper.mm 里那组声明一致）。
 // 不放在公共头文件里：只有这个文件和 HUDHelper 需要。
@@ -552,13 +555,15 @@ NSDictionary<NSString *, id> *FBAddWebClipToHomeScreen(NSString *title,
 
     // 和 Safari「添加到主屏幕」生成的 Info.plist 同一套键（少一个都可能不显示）
     NSDictionary *plist = @{
-        @"URL":               url,
-        @"Title":             title,
-        @"IconIsPrecomposed": @YES,
-        @"FullScreen":        @NO,
-        @"UIStatusBarStyle":  @"UIStatusBarStyleDefault",
-        @"ClassicMode":       @NO,
-        @"Scale":             @1.0,
+        @"URL":                  url,
+        @"Title":                title,
+        @"IconIsPrecomposed":    @YES,
+        @"IconIsScreenShotBased": @YES,
+        @"FullScreen":           @NO,
+        @"ClassicMode":          @NO,
+        @"UIStatusBarStyle":     @"UIStatusBarStyleDefault",
+        @"Scale":                @1.0,
+        @"ScrollPoint":          @[ @0.0, @0.0 ],
     };
     NSString *plistPath = [dir stringByAppendingPathComponent:@"Info.plist"];
     if (![plist writeToFile:plistPath atomically:YES]) {
@@ -583,31 +588,76 @@ NSDictionary<NSString *, id> *FBAddWebClipToHomeScreen(NSString *title,
     return @{ @"ok": @YES, @"path": dir };
 }
 
-BOOL FBRespringSpringBoard(void)
+/// 以 root 身份 spawn 一个进程（和 SetHUDEnabled 同一套 persona 参数）。
+static BOOL FBSpawnRootPath(const char *path, const char **args)
 {
     posix_spawnattr_t attr;
     posix_spawnattr_init(&attr);
     posix_spawnattr_set_persona_np(&attr, 99, POSIX_SPAWN_PERSONA_FLAGS_OVERRIDE);
     posix_spawnattr_set_persona_uid_np(&attr, 0);
     posix_spawnattr_set_persona_gid_np(&attr, 0);
+    posix_spawnattr_setpgroup(&attr, 0);
+    posix_spawnattr_setflags(&attr, POSIX_SPAWN_SETPGROUP);
 
-    const char *paths[] = { "/usr/bin/killall", "/bin/killall", NULL };
-    int rc = -1;
-    for (int i = 0; paths[i] != NULL; i++) {
-        if (access(paths[i], X_OK) != 0) continue;
-        const char *args[] = { paths[i], "SpringBoard", NULL };
-        pid_t pid = 0;
-        rc = posix_spawn(&pid, paths[i], NULL, &attr, (char **)args, environ);
-        if (rc == 0) {
-            FBLog(@"respring：已执行 %s SpringBoard（pid=%d）", paths[i], pid);
-            break;
-        }
-    }
+    pid_t pid = 0;
+    int rc = posix_spawn(&pid, path, NULL, &attr, (char **)args, environ);
     posix_spawnattr_destroy(&attr);
-    if (rc != 0) {
-        FBLog(@"⚠️ respring 失败：找不到 killall（rc=%d），桌面图标要手动 respring 才会出现", rc);
+    if (rc == 0) {
+        FBLog(@"root spawn：%s pid=%d", path, pid);
+    } else {
+        FBLog(@"⚠️ root spawn 失败：%s rc=%d", path, rc);
     }
     return rc == 0;
+}
+
+/// 以 root 身份 spawn 自己（带一个 argv）。
+static BOOL FBSpawnSelfRoot(NSString *arg)
+{
+    uint32_t size = 0;
+    _NSGetExecutablePath(NULL, &size);
+    char *exe = (char *)calloc(1, size);
+    if (!exe) return NO;
+    if (_NSGetExecutablePath(exe, &size) != 0) {
+        free(exe);
+        return NO;
+    }
+    const char *args[] = { exe, arg.UTF8String, NULL };
+    BOOL ok = FBSpawnRootPath(exe, args);
+    free(exe);
+    return ok;
+}
+
+BOOL FBRespringSpringBoard(void)
+{
+    // ① killall（最常见；有些系统裁剪了就没有）
+    const char *killalls[] = { "/usr/bin/killall", "/bin/killall", NULL };
+    for (int i = 0; killalls[i] != NULL; i++) {
+        if (access(killalls[i], X_OK) != 0) continue;
+        const char *args[] = { killalls[i], "SpringBoard", NULL };
+        if (FBSpawnRootPath(killalls[i], args)) {
+            FBLog(@"respring：killall SpringBoard 已发出（%s）", killalls[i]);
+            return YES;
+        }
+    }
+
+    // ② launchctl kickstart（iOS 15 上一定在）
+    if (access("/bin/launchctl", X_OK) == 0) {
+        const char *args[] = { "/bin/launchctl", "kickstart", "-k",
+                               "system/com.apple.SpringBoard", NULL };
+        if (FBSpawnRootPath("/bin/launchctl", args)) {
+            FBLog(@"respring：launchctl kickstart 已发出");
+            return YES;
+        }
+    }
+
+    // ③ 兜底：spawn 自己 -respring（root），用 libproc 找 SpringBoard 的 PID 再 kill
+    if (FBSpawnSelfRoot(@"-respring")) {
+        FBLog(@"respring：已交给 -respring helper");
+        return YES;
+    }
+
+    FBLog(@"⚠️ respring 全部失败（killall / launchctl / helper 都没发出去）");
+    return NO;
 }
 
 #pragma mark - 打开 App

@@ -17,6 +17,9 @@
 #import <sys/stat.h>
 #import <errno.h>
 #import <dlfcn.h>
+#import <signal.h>
+#import <string.h>
+#import <stdlib.h>
 
 #import "HUDHelper.h"
 #import "FBLog.h"
@@ -27,6 +30,7 @@
 #import "../helpers/private_headers/AXEventRepresentation.h"
 #import "../helpers/private_headers/BackboardServices.h"
 #import "../helpers/private_headers/UIApplication+Private.h"
+#import "../helpers/private_headers/libproc.h"
 
 // ============================================================================
 // 触摸走哪条路（2026-10-17 真机结论，别再往回改）
@@ -1376,6 +1380,29 @@ int main(int argc, char *argv[])
             {
                 // 读不到内容：文件可能是个空壳/过期了，直接删掉
                 FBHUDUnlinkPIDFile();
+            }
+            return EXIT_SUCCESS;
+        }
+        else if (strcmp(argv[1], "-respring") == 0)
+        {
+            // 0.1.50：以 root 身份重启 SpringBoard（App 的「放到桌面」用）。
+            // 为什么不用 killall：不保证它存在；用 libproc 找 SpringBoard 的 PID 再 kill 最稳。
+            int n = proc_listallpids(NULL, 0);
+            if (n > 0) {
+                pid_t *pids = (pid_t *)calloc((size_t)n, sizeof(pid_t));
+                if (pids) {
+                    int got = proc_listallpids(pids, n * (int)sizeof(pid_t));
+                    for (int i = 0; i < got; i++) {
+                        char p[PROC_PIDPATHINFO_MAXSIZE] = {0};
+                        if (proc_pidpath(pids[i], p, sizeof(p)) <= 0) continue;
+                        if (strstr(p, "/SpringBoard")) {
+                            FBLog(@"-respring：kill SpringBoard pid=%d path=%s", pids[i], p);
+                            kill(pids[i], SIGKILL);
+                            break;
+                        }
+                    }
+                    free(pids);
+                }
             }
             return EXIT_SUCCESS;
         }
